@@ -8,6 +8,12 @@ const path = require('path');
 const https = require('https');
 const { promisify } = require('util');
 
+// Configurar binários do FFmpeg/FFprobe via npm installers
+const ffmpegPath = require('@ffmpeg-installer/ffmpeg').path;
+const ffprobePath = require('@ffprobe-installer/ffprobe').path;
+ffmpeg.setFfmpegPath(ffmpegPath);
+ffmpeg.setFfprobePath(ffprobePath);
+
 // Configuração
 const app = express();
 const PORT = process.env.PORT || 8080;
