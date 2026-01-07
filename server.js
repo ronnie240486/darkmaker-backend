@@ -24,10 +24,19 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use('/outputs', express.static(OUTPUT_DIR));
 
+// Logger Middleware (Opcional, para debug)
+app.use((req, res, next) => {
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
+    next();
+});
+
 // Rota Raiz (Health Check)
 app.get('/', (req, res) => {
     res.status(200).send('DarkMaker Backend API is running. 🚀');
 });
+
+// Favicon (evitar 404)
+app.get('/favicon.ico', (req, res) => res.status(204).end());
 
 // Configuração Multer (Uploads)
 const storage = multer.diskStorage({
@@ -43,21 +52,6 @@ const storage = multer.diskStorage({
 const upload = multer({ storage: storage });
 
 // --- FUNÇÕES AUXILIARES ---
-
-// Helper para baixar arquivo de URL (para proxy)
-const downloadFile = (url, dest) => {
-    return new Promise((resolve, reject) => {
-        const file = fs.createWriteStream(dest);
-        https.get(url, (response) => {
-            response.pipe(file);
-            file.on('finish', () => {
-                file.close(resolve);
-            });
-        }).on('error', (err) => {
-            fs.unlink(dest, () => reject(err));
-        });
-    });
-};
 
 // Helper para embaralhar array
 const shuffleArray = (array) => {
@@ -103,17 +97,11 @@ app.post('/mixar-video-turbo-advanced', upload.fields([{ name: 'narration', maxC
 
         // 2. Construir Filtro Complexo
         if (transitionType === 'fade' && numImages > 1) {
-            // Lógica XFADE (Crossfade)
-            // Requer FFmpeg 4.3+
-            
-            // Preparar streams de vídeo a partir das imagens
             imageFiles.forEach((_, i) => {
-                // Escalar e definir duração (duration + transition para overlap)
                 const d = durationPerImage + (i === numImages - 1 ? 0 : transitionDuration);
                 complexFilter.push(`[${i}:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,loop=loop=-1:size=1:start=0,tpad=stop_mode=clone:stop_duration=0.1,trim=duration=${d},setpts=PTS-STARTPTS[v${i}]`);
             });
 
-            // Aplicar Xfade em cadeia
             let lastStream = '[v0]';
             let offset = durationPerImage - transitionDuration;
             
@@ -124,23 +112,16 @@ app.post('/mixar-video-turbo-advanced', upload.fields([{ name: 'narration', maxC
                 lastStream = outStream;
                 offset += (durationPerImage - transitionDuration);
             }
-            
-            // Mapear o último stream do xfade
-            inputMap = ['-map', lastStream.replace(']', ']')]; // Corrige formato string
+            inputMap = ['-map', lastStream.replace(']', ']')];
             
         } else if (transitionType === 'zoom') {
-            // Lógica Zoompan (Ken Burns)
             imageFiles.forEach((_, i) => {
-                // Zoom simples: zoom in no centro
                 complexFilter.push(`[${i}:v]scale=8000:-1,zoompan=z='min(zoom+0.0015,1.5)':d=${durationPerImage*25}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1280x720,trim=duration=${durationPerImage}[v${i}]`);
             });
-            // Concatenar simples os clips com zoom
             const concatInputs = imageFiles.map((_, i) => `[v${i}]`).join('');
             complexFilter.push(`${concatInputs}concat=n=${numImages}:v=1:a=0[v]`);
             inputMap = ['-map', '[v]'];
-
         } else {
-            // Corte Seco (Padrão)
             imageFiles.forEach((_, i) => {
                 complexFilter.push(`[${i}:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,loop=loop=${durationPerImage*30}:size=1:start=0,trim=duration=${durationPerImage}[v${i}]`);
             });
@@ -156,11 +137,11 @@ app.post('/mixar-video-turbo-advanced', upload.fields([{ name: 'narration', maxC
             .complexFilter(finalFilter)
             .outputOptions([
                 ...inputMap,
-                '-map', `${numImages}:a`, // Áudio
+                '-map', `${numImages}:a`,
                 '-c:v', 'libx264',
                 '-pix_fmt', 'yuv420p',
-                '-shortest', // Corta vídeo se áudio acabar, ou vice-versa
-                '-r', '30'   // 30fps
+                '-shortest',
+                '-r', '30'
             ])
             .save(outputPath)
             .on('end', () => {
@@ -191,7 +172,7 @@ app.post('/cortar-video', upload.array('video'), (req, res) => {
 
     ffmpeg(file.path)
         .setStartTime(start)
-        .setDuration(end) // Nota: setDuration no fluent-ffmpeg age como "-t" (duração), não "-to" (fim).
+        .setDuration(end)
         .output(outputPath)
         .on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` }))
         .on('error', (err) => res.status(500).send(err.message))
@@ -225,7 +206,7 @@ app.post('/remover-audio', upload.array('video'), (req, res) => {
     const outputPath = path.join(OUTPUT_DIR, outputFilename);
 
     ffmpeg(file.path)
-        .outputOptions(['-c copy', '-an']) // -an remove áudio
+        .outputOptions(['-c copy', '-an'])
         .save(outputPath)
         .on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` }))
         .on('error', (err) => res.status(500).send(err.message));
@@ -236,13 +217,12 @@ app.post('/gerar-shorts', upload.array('video'), (req, res) => {
     const file = req.files && req.files.length > 0 ? req.files[0] : req.file;
     if(!file) return res.status(400).send('Vídeo necessário');
     
-    // Simplesmente corta os primeiros 60 segundos e converte para 9:16
     const outputFilename = `short_${Date.now()}.mp4`;
     const outputPath = path.join(OUTPUT_DIR, outputFilename);
 
     ffmpeg(file.path)
         .setDuration(60)
-        .complexFilter('scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2') // Crop 9:16
+        .complexFilter('scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2')
         .save(outputPath)
         .on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` }))
         .on('error', (err) => res.status(500).send(err.message));
@@ -256,7 +236,6 @@ app.post('/unir-videos', upload.array('video'), (req, res) => {
     const outputPath = path.join(OUTPUT_DIR, outputFilename);
     const listFileName = path.join(UPLOAD_DIR, `list_${Date.now()}.txt`);
 
-    // Criar arquivo de lista para o concat demuxer do ffmpeg
     const fileContent = req.files.map(f => `file '${f.path}'`).join('\n');
     fs.writeFileSync(listFileName, fileContent);
 
@@ -320,7 +299,6 @@ app.post('/colorize-video', upload.array('video'), (req, res) => {
     const outputFilename = `colorized_${Date.now()}.mp4`;
     const outputPath = path.join(OUTPUT_DIR, outputFilename);
 
-    // Simulação: Aumenta saturação e ajusta color balance para parecer "restaurado"
     ffmpeg(file.path)
         .videoFilter('eq=saturation=1.5:brightness=0.05:contrast=1.1')
         .save(outputPath)
@@ -330,7 +308,7 @@ app.post('/colorize-video', upload.array('video'), (req, res) => {
 
 // --- ROTAS DE ÁUDIO ---
 
-// Proxy Replicate (Geração de Áudio/Música)
+// Proxy Replicate
 app.post('/generate-audio-replicate', async (req, res) => {
     const { prompt, type, apiKey } = req.body;
     if (!prompt || !apiKey) return res.status(400).send("Faltam dados.");
@@ -340,7 +318,6 @@ app.post('/generate-audio-replicate', async (req, res) => {
             ? "b05b1dff1d8c6dc63d14b0cdb42135378dcb87f6373b0d3d341ede46e59e2b38" 
             : "b71bba26d69787bb772e76a7f9f3c327f73838c699290027360f302243f09647";
 
-        // 1. Iniciar Predição
         const startResponse = await fetch("https://api.replicate.com/v1/predictions", {
             method: "POST",
             headers: {
@@ -357,11 +334,10 @@ app.post('/generate-audio-replicate', async (req, res) => {
         const startData = await startResponse.json();
         const getUrl = startData.urls.get;
 
-        // 2. Polling até concluir
         let audioUrl = null;
         let attempts = 0;
         while (!audioUrl && attempts < 30) {
-            await new Promise(r => setTimeout(r, 2000)); // Espera 2s
+            await new Promise(r => setTimeout(r, 2000));
             const pollRes = await fetch(getUrl, {
                 headers: { "Authorization": `Token ${apiKey}` }
             });
@@ -375,10 +351,6 @@ app.post('/generate-audio-replicate', async (req, res) => {
         }
 
         if (audioUrl) {
-            // Opcional: Baixar para o servidor local
-            const localName = `gen_audio_${Date.now()}.wav`;
-            // res.json({ audio: audioUrl }); // Retorna URL remota direta
-            // Ou proxy:
             res.json({ audio: audioUrl });
         } else {
             res.status(500).send("Timeout na geração.");
@@ -402,7 +374,7 @@ app.post('/unir-audio', upload.array('files'), (req, res) => {
 
     command
         .mergeToFile(outputPath, UPLOAD_DIR)
-        .on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` })) // Changed to JSON response to match VideoTools expectation
+        .on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` }))
         .on('error', (err) => res.status(500).send(err.message));
 });
 
@@ -423,8 +395,8 @@ app.post('/embaralhar-audio', upload.array('files'), (req, res) => {
         .on('error', (err) => res.status(500).send(err.message));
 });
 
-// Extrair Áudio
-app.post('/extrair-audio', upload.array('video'), (req, res) => {
+// Extrair Áudio (Fixed to use 'files' to match frontend)
+app.post('/extrair-audio', upload.array('files'), (req, res) => {
     const file = req.files && req.files.length > 0 ? req.files[0] : req.file;
     if(!file) return res.status(400).send('Arquivo necessário.');
     
@@ -462,7 +434,7 @@ app.post('/separar-faixas', upload.array('files'), (req, res) => {
     const outputPath = path.join(OUTPUT_DIR, outputFilename);
 
     ffmpeg(file.path)
-        .audioFilters('highpass=f=200') // Simula remoção de graves
+        .audioFilters('highpass=f=200')
         .save(outputPath)
         .on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` }))
         .on('error', (err) => res.status(500).send(err.message));
@@ -493,20 +465,22 @@ app.post('/melhorar-audio', upload.array('files'), (req, res) => {
     const outputPath = path.join(OUTPUT_DIR, outputFilename);
 
     ffmpeg(file.path)
-        .audioFilters('highpass=f=100,lowpass=f=3000') // Filtro simples de limpeza
+        .audioFilters('highpass=f=100,lowpass=f=3000')
         .save(outputPath)
         .on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` }))
         .on('error', (err) => res.status(500).send(err.message));
 });
 
-// Rota Placeholder para Workflow Mágico (Retorna vídeo de exemplo ou processa inputs reais se complexidade permitir)
+// Rota Placeholder
 app.post('/workflow-magico-avancado', upload.none(), (req, res) => {
-    // Em produção, isso chamaria múltiplos agentes de IA + FFmpeg
-    // Aqui retornamos um "sucesso simulado" para o frontend iniciar o polling ou mostrar msg
     setTimeout(() => {
-        // Retornar um vídeo de demonstração local ou URL externa
         res.json({ url: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4" });
     }, 2000);
+});
+
+// 404 handler for undefined routes
+app.use((req, res) => {
+    res.status(404).send('Route not found');
 });
 
 // Inicialização
