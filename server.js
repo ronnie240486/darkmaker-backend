@@ -24,6 +24,11 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use('/outputs', express.static(OUTPUT_DIR));
 
+// Rota Raiz (Health Check)
+app.get('/', (req, res) => {
+    res.status(200).send('DarkMaker Backend API is running. 🚀');
+});
+
 // Configuração Multer (Uploads)
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
