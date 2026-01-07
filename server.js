@@ -54,6 +54,15 @@ const downloadFile = (url, dest) => {
     });
 };
 
+// Helper para embaralhar array
+const shuffleArray = (array) => {
+    for (let i = array.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [array[i], array[j]] = [array[j], array[i]];
+    }
+    return array;
+};
+
 // --- ROTAS DE VÍDEO (CORE) ---
 
 // 1. Mixar Vídeo Turbo (COM TRANSIÇÕES REAIS)
@@ -166,15 +175,16 @@ app.post('/mixar-video-turbo-advanced', upload.fields([{ name: 'narration', maxC
 // --- UTILITÁRIOS DE VÍDEO ---
 
 // Cortar Vídeo
-app.post('/cortar-video', upload.single('video'), (req, res) => {
-    if(!req.file) return res.status(400).send('Vídeo necessário');
+app.post('/cortar-video', upload.array('video'), (req, res) => {
+    const file = req.files && req.files.length > 0 ? req.files[0] : req.file;
+    if(!file) return res.status(400).send('Vídeo necessário');
     
     const start = req.body.startTime || '00:00:00';
     const end = req.body.endTime || '00:00:10';
     const outputFilename = `cut_${Date.now()}.mp4`;
     const outputPath = path.join(OUTPUT_DIR, outputFilename);
 
-    ffmpeg(req.file.path)
+    ffmpeg(file.path)
         .setStartTime(start)
         .setDuration(end) // Nota: setDuration no fluent-ffmpeg age como "-t" (duração), não "-to" (fim).
         .output(outputPath)
@@ -184,8 +194,9 @@ app.post('/cortar-video', upload.single('video'), (req, res) => {
 });
 
 // Comprimir Vídeo
-app.post('/comprimir-videos', upload.single('video'), (req, res) => {
-    if(!req.file) return res.status(400).send('Vídeo necessário');
+app.post('/comprimir-videos', upload.array('video'), (req, res) => {
+    const file = req.files && req.files.length > 0 ? req.files[0] : req.file;
+    if(!file) return res.status(400).send('Vídeo necessário');
     
     const quality = req.body.quality || 'media';
     const crf = quality === 'alta' ? 18 : quality === 'baixa' ? 35 : 28;
@@ -193,7 +204,7 @@ app.post('/comprimir-videos', upload.single('video'), (req, res) => {
     const outputFilename = `compressed_${Date.now()}.mp4`;
     const outputPath = path.join(OUTPUT_DIR, outputFilename);
 
-    ffmpeg(req.file.path)
+    ffmpeg(file.path)
         .outputOptions(['-vcodec libx264', `-crf ${crf}`, '-preset veryfast'])
         .save(outputPath)
         .on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` }))
@@ -201,13 +212,14 @@ app.post('/comprimir-videos', upload.single('video'), (req, res) => {
 });
 
 // Remover Áudio
-app.post('/remover-audio', upload.single('video'), (req, res) => {
-    if(!req.file) return res.status(400).send('Vídeo necessário');
+app.post('/remover-audio', upload.array('video'), (req, res) => {
+    const file = req.files && req.files.length > 0 ? req.files[0] : req.file;
+    if(!file) return res.status(400).send('Vídeo necessário');
     
     const outputFilename = `no_audio_${Date.now()}.mp4`;
     const outputPath = path.join(OUTPUT_DIR, outputFilename);
 
-    ffmpeg(req.file.path)
+    ffmpeg(file.path)
         .outputOptions(['-c copy', '-an']) // -an remove áudio
         .save(outputPath)
         .on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` }))
@@ -215,14 +227,15 @@ app.post('/remover-audio', upload.single('video'), (req, res) => {
 });
 
 // Gerar Shorts (Segmentar)
-app.post('/gerar-shorts', upload.single('video'), (req, res) => {
-    if(!req.file) return res.status(400).send('Vídeo necessário');
+app.post('/gerar-shorts', upload.array('video'), (req, res) => {
+    const file = req.files && req.files.length > 0 ? req.files[0] : req.file;
+    if(!file) return res.status(400).send('Vídeo necessário');
     
     // Simplesmente corta os primeiros 60 segundos e converte para 9:16
     const outputFilename = `short_${Date.now()}.mp4`;
     const outputPath = path.join(OUTPUT_DIR, outputFilename);
 
-    ffmpeg(req.file.path)
+    ffmpeg(file.path)
         .setDuration(60)
         .complexFilter('scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2') // Crop 9:16
         .save(outputPath)
@@ -254,15 +267,40 @@ app.post('/unir-videos', upload.array('video'), (req, res) => {
         .on('error', (err) => res.status(500).send('Erro: ' + err.message));
 });
 
+// Embaralhar Vídeos
+app.post('/embaralhar-videos', upload.array('video'), (req, res) => {
+    if (!req.files || req.files.length < 2) return res.status(400).send('Envie pelo menos 2 vídeos.');
+
+    const shuffledFiles = shuffleArray([...req.files]);
+    const outputFilename = `shuffled_${Date.now()}.mp4`;
+    const outputPath = path.join(OUTPUT_DIR, outputFilename);
+    const listFileName = path.join(UPLOAD_DIR, `list_shuffle_${Date.now()}.txt`);
+
+    const fileContent = shuffledFiles.map(f => `file '${f.path}'`).join('\n');
+    fs.writeFileSync(listFileName, fileContent);
+
+    ffmpeg()
+        .input(listFileName)
+        .inputOptions(['-f concat', '-safe 0'])
+        .outputOptions('-c copy')
+        .save(outputPath)
+        .on('end', () => {
+            res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` });
+            fs.unlinkSync(listFileName);
+        })
+        .on('error', (err) => res.status(500).send('Erro: ' + err.message));
+});
+
 // Upscale (Simulado com Lanczos)
-app.post('/upscale-video', upload.single('video'), (req, res) => {
-    if(!req.file) return res.status(400).send('Vídeo necessário');
+app.post('/upscale-video', upload.array('video'), (req, res) => {
+    const file = req.files && req.files.length > 0 ? req.files[0] : req.file;
+    if(!file) return res.status(400).send('Vídeo necessário');
     const resolution = req.body.option === '4K (2160p)' ? '3840x2160' : '2560x1440';
     
     const outputFilename = `upscaled_${Date.now()}.mp4`;
     const outputPath = path.join(OUTPUT_DIR, outputFilename);
 
-    ffmpeg(req.file.path)
+    ffmpeg(file.path)
         .videoFilter(`scale=${resolution}:flags=lanczos`)
         .save(outputPath)
         .on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` }))
@@ -270,14 +308,15 @@ app.post('/upscale-video', upload.single('video'), (req, res) => {
 });
 
 // Colorizar (Simulado - Saturation boost)
-app.post('/colorize-video', upload.single('video'), (req, res) => {
-    if(!req.file) return res.status(400).send('Vídeo necessário');
+app.post('/colorize-video', upload.array('video'), (req, res) => {
+    const file = req.files && req.files.length > 0 ? req.files[0] : req.file;
+    if(!file) return res.status(400).send('Vídeo necessário');
     
     const outputFilename = `colorized_${Date.now()}.mp4`;
     const outputPath = path.join(OUTPUT_DIR, outputFilename);
 
     // Simulação: Aumenta saturação e ajusta color balance para parecer "restaurado"
-    ffmpeg(req.file.path)
+    ffmpeg(file.path)
         .videoFilter('eq=saturation=1.5:brightness=0.05:contrast=1.1')
         .save(outputPath)
         .on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` }))
@@ -362,14 +401,32 @@ app.post('/unir-audio', upload.array('files'), (req, res) => {
         .on('error', (err) => res.status(500).send(err.message));
 });
 
+// Embaralhar Áudios
+app.post('/embaralhar-audio', upload.array('files'), (req, res) => {
+    if (!req.files || req.files.length < 2) return res.status(400).send('Envie pelo menos 2 arquivos.');
+
+    const shuffledFiles = shuffleArray([...req.files]);
+    const outputFilename = `audio_shuffled_${Date.now()}.mp3`;
+    const outputPath = path.join(OUTPUT_DIR, outputFilename);
+    
+    let command = ffmpeg();
+    shuffledFiles.forEach(f => command = command.input(f.path));
+
+    command
+        .mergeToFile(outputPath, UPLOAD_DIR)
+        .on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` }))
+        .on('error', (err) => res.status(500).send(err.message));
+});
+
 // Extrair Áudio
-app.post('/extrair-audio', upload.single('video'), (req, res) => {
-    if(!req.file) return res.status(400).send('Arquivo necessário.');
+app.post('/extrair-audio', upload.array('video'), (req, res) => {
+    const file = req.files && req.files.length > 0 ? req.files[0] : req.file;
+    if(!file) return res.status(400).send('Arquivo necessário.');
     
     const outputFilename = `extracted_${Date.now()}.mp3`;
     const outputPath = path.join(OUTPUT_DIR, outputFilename);
 
-    ffmpeg(req.file.path)
+    ffmpeg(file.path)
         .noVideo()
         .save(outputPath)
         .on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` }))
@@ -377,14 +434,61 @@ app.post('/extrair-audio', upload.single('video'), (req, res) => {
 });
 
 // Remover Silêncio
-app.post('/remover-silencio', upload.single('files'), (req, res) => {
-    if(!req.file) return res.status(400).send('Arquivo necessário.');
+app.post('/remover-silencio', upload.array('files'), (req, res) => {
+    const file = req.files && req.files.length > 0 ? req.files[0] : req.file;
+    if(!file) return res.status(400).send('Arquivo necessário.');
     
     const outputFilename = `silence_removed_${Date.now()}.mp3`;
     const outputPath = path.join(OUTPUT_DIR, outputFilename);
 
-    ffmpeg(req.file.path)
+    ffmpeg(file.path)
         .audioFilters('silenceremove=stop_periods=-1:stop_duration=1:stop_threshold=-30dB')
+        .save(outputPath)
+        .on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` }))
+        .on('error', (err) => res.status(500).send(err.message));
+});
+
+// Separar Faixas (Simulado)
+app.post('/separar-faixas', upload.array('files'), (req, res) => {
+    const file = req.files && req.files.length > 0 ? req.files[0] : req.file;
+    if(!file) return res.status(400).send('Arquivo necessário.');
+    
+    const outputFilename = `vocals_simulated_${Date.now()}.mp3`;
+    const outputPath = path.join(OUTPUT_DIR, outputFilename);
+
+    ffmpeg(file.path)
+        .audioFilters('highpass=f=200') // Simula remoção de graves
+        .save(outputPath)
+        .on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` }))
+        .on('error', (err) => res.status(500).send(err.message));
+});
+
+// Limpar Metadados Áudio
+app.post('/limpar-metadados-audio', upload.array('files'), (req, res) => {
+    const file = req.files && req.files.length > 0 ? req.files[0] : req.file;
+    if(!file) return res.status(400).send('Arquivo necessário.');
+    
+    const outputFilename = `clean_meta_${Date.now()}.mp3`;
+    const outputPath = path.join(OUTPUT_DIR, outputFilename);
+
+    ffmpeg(file.path)
+        .outputOptions('-map_metadata -1')
+        .outputOptions('-c:a copy')
+        .save(outputPath)
+        .on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` }))
+        .on('error', (err) => res.status(500).send(err.message));
+});
+
+// Melhorar Áudio (Simulado)
+app.post('/melhorar-audio', upload.array('files'), (req, res) => {
+    const file = req.files && req.files.length > 0 ? req.files[0] : req.file;
+    if(!file) return res.status(400).send('Arquivo necessário.');
+    
+    const outputFilename = `enhanced_${Date.now()}.mp3`;
+    const outputPath = path.join(OUTPUT_DIR, outputFilename);
+
+    ffmpeg(file.path)
+        .audioFilters('highpass=f=100,lowpass=f=3000') // Filtro simples de limpeza
         .save(outputPath)
         .on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` }))
         .on('error', (err) => res.status(500).send(err.message));
