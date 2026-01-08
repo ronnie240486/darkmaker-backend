@@ -477,8 +477,8 @@ app.post('/melhorar-audio', upload.array('files'), (req, res) => {
         .on('error', (err) => res.status(500).send(err.message));
 });
 /**
- * Normaliza qualquer arquivo (imagem ou vídeo) para um padrão 720p/30fps MP4
- * Isso é crucial para que o 'concat demuxer' funcione sem erros de mismatch.
+ * Normalizes input sequentially to avoid overloading the server.
+ * Handles both images (converting to 5s clips) and videos.
  */
 const normalizeInput = (filePath) => {
     return new Promise((resolve, reject) => {
@@ -488,42 +488,7 @@ const normalizeInput = (filePath) => {
         const command = ffmpeg(filePath);
 
         if (['.png', '.jpg', '.jpeg', '.webp'].includes(ext)) {
-            // Se for imagem, cria clipe de 5 segundos em loop
-            command.inputOptions(['-loop 1', '-t 5']);
-        }
-
-        command
-            .size('1280x720')
-            .aspect('16:9')
-            .autoPad(true, 'black')
-            .fps(30)
-            .videoCodec('libx264')
-            .audioCodec('aac')
-            .outputOptions([
-                '-pix_fmt yuv420p',
-                '-preset superfast',
-                '-crf 23'
-            ])
-            .save(outPath)
-            .on('end', () => resolve(outPath))
-            .on('error', (err) => {
-                console.error(`Erro ao normalizar ${filePath}:`, err);
-                reject(err);
-            });
-    });
-};
-
-/**
- * Normalizes input sequentially to avoid overloading the server
- */
-const normalizeInput = (filePath) => {
-    return new Promise((resolve, reject) => {
-        const ext = path.extname(filePath).toLowerCase();
-        const outPath = filePath + '_normalized.mp4';
-        
-        const command = ffmpeg(filePath);
-
-        if (['.png', '.jpg', '.jpeg', '.webp'].includes(ext)) {
+            // Image input: loop for 5 seconds
             command.inputOptions(['-loop 1', '-t 5']);
         }
 
@@ -548,11 +513,12 @@ const normalizeInput = (filePath) => {
     });
 };
 
-// Helper to construct secure URLs
+// Helper to construct secure URLs for the frontend
 const getFullUrl = (req, filename) => {
     const host = req.get('host');
-    // Force HTTPS for Railway/Production to prevent Mixed Content blocks
-    const protocol = (host.includes('localhost') || host.includes('127.0.0.1')) ? req.protocol : 'https';
+    // Force HTTPS on production environments (e.g., Railway)
+    const isLocal = host.includes('localhost') || host.includes('127.0.0.1');
+    const protocol = isLocal ? req.protocol : 'https';
     return `${protocol}://${host}/outputs/${filename}`;
 };
 
@@ -563,22 +529,23 @@ app.post('/ia-turbo', upload.array('video'), async (req, res) => {
     console.log(`🚀 IA TURBO: Processing ${files.length} files...`);
     
     let normalizedPaths = [];
+    let listFileName = null;
     try {
         const outputFilename = `turbo_master_${Date.now()}.mp4`;
         const outputPath = path.join(OUTPUT_DIR, outputFilename);
         
-        // SEQUENTIAL PROCESSING: Prevents server freezing/crashing on large batches
+        // SEQUENTIAL PROCESSING: Crucial for cloud environments to avoid CPU/RAM limits
         for (const file of files) {
             console.log(`  - Normalizing: ${file.filename}`);
             const normalized = await normalizeInput(file.path);
             normalizedPaths.push(normalized);
         }
         
-        const listFileName = path.join(UPLOAD_DIR, `turbo_list_${Date.now()}.txt`);
+        listFileName = path.join(UPLOAD_DIR, `turbo_list_${Date.now()}.txt`);
         const fileContent = normalizedPaths.map(p => `file '${p.replace(/'/g, "'\\''")}'`).join('\n');
         fs.writeFileSync(listFileName, fileContent);
 
-        console.log(`📦 IA TURBO: Concatenating...`);
+        console.log(`📦 IA TURBO: Concatenating normalized segments...`);
 
         ffmpeg()
             .input(listFileName)
@@ -596,7 +563,7 @@ app.post('/ia-turbo', upload.array('video'), async (req, res) => {
             ])
             .save(outputPath)
             .on('end', () => {
-                fs.unlinkSync(listFileName);
+                if (listFileName && fs.existsSync(listFileName)) fs.unlinkSync(listFileName);
                 normalizedPaths.forEach(p => { if (fs.existsSync(p)) fs.unlinkSync(p); });
                 files.forEach(f => { if (fs.existsSync(f.path)) fs.unlinkSync(f.path); });
                 
@@ -605,20 +572,23 @@ app.post('/ia-turbo', upload.array('video'), async (req, res) => {
             })
             .on('error', (err) => {
                 console.error("FFmpeg Concat Error:", err);
+                if (listFileName && fs.existsSync(listFileName)) fs.unlinkSync(listFileName);
                 res.status(500).send(`Render Error: ${err.message}`);
             });
     } catch (err) {
         console.error("Critical Processing Error:", err);
         normalizedPaths.forEach(p => { if (fs.existsSync(p)) fs.unlinkSync(p); });
+        if (listFileName && fs.existsSync(listFileName)) fs.unlinkSync(listFileName);
         res.status(500).send("Server error during mastering.");
     }
 });
 
 app.post('/ia-workflow', upload.array('video'), async (req, res) => {
     const files = req.files;
-    if (!files || files.length === 0) return res.status(400).send('No files.');
+    if (!files || files.length === 0) return res.status(400).send('No files provided.');
 
     let normalizedPaths = [];
+    let listFileName = null;
     try {
         const outputFilename = `workflow_final_${Date.now()}.mp4`;
         const outputPath = path.join(OUTPUT_DIR, outputFilename);
@@ -628,7 +598,7 @@ app.post('/ia-workflow', upload.array('video'), async (req, res) => {
             normalizedPaths.push(normalized);
         }
         
-        const listFileName = path.join(UPLOAD_DIR, `wf_list_${Date.now()}.txt`);
+        listFileName = path.join(UPLOAD_DIR, `wf_list_${Date.now()}.txt`);
         const fileContent = normalizedPaths.map(p => `file '${p.replace(/'/g, "'\\''")}'`).join('\n');
         fs.writeFileSync(listFileName, fileContent);
 
@@ -638,18 +608,21 @@ app.post('/ia-workflow', upload.array('video'), async (req, res) => {
             .outputOptions(['-c:v libx264', '-preset superfast', '-crf 22'])
             .save(outputPath)
             .on('end', () => {
-                fs.unlinkSync(listFileName);
+                if (listFileName && fs.existsSync(listFileName)) fs.unlinkSync(listFileName);
                 normalizedPaths.forEach(p => { if (fs.existsSync(p)) fs.unlinkSync(p); });
                 res.json({ url: getFullUrl(req, outputFilename) });
             })
-            .on('error', (err) => res.status(500).send(err.message));
+            .on('error', (err) => {
+                if (listFileName && fs.existsSync(listFileName)) fs.unlinkSync(listFileName);
+                res.status(500).send(err.message);
+            });
     } catch (err) {
         res.status(500).send("Workflow failure.");
     }
 });
 
 app.post('/remover-audio', upload.single('video'), (req, res) => {
-    if(!req.file) return res.status(400).send('No video.');
+    if(!req.file) return res.status(400).send('No video provided.');
     const outputFilename = `no_audio_${Date.now()}.mp4`;
     const outputPath = path.join(OUTPUT_DIR, outputFilename);
     ffmpeg(req.file.path).outputOptions(['-c copy', '-an']).save(outputPath)
@@ -661,18 +634,21 @@ app.post('/remover-audio', upload.single('video'), (req, res) => {
 });
 
 app.post('/unir-videos', upload.array('video'), (req, res) => {
-    if (!req.files || req.files.length < 2) return res.status(400).send('Need 2+ videos.');
+    if (!req.files || req.files.length < 2) return res.status(400).send('Need 2+ videos to merge.');
     const outputFilename = `merged_${Date.now()}.mp4`;
     const outputPath = path.join(OUTPUT_DIR, outputFilename);
     const listFileName = path.join(UPLOAD_DIR, `list_${Date.now()}.txt`);
-    fs.writeFileSync(listFileName, req.files.map(f => `file '${f.path}'`).join('\n'));
+    fs.writeFileSync(listFileName, req.files.map(f => `file '${f.path.replace(/'/g, "'\\''")}'`).join('\n'));
     ffmpeg().input(listFileName).inputOptions(['-f concat', '-safe 0']).outputOptions('-c copy').save(outputPath)
         .on('end', () => { 
             fs.unlinkSync(listFileName); 
             req.files.forEach(f => { if (fs.existsSync(f.path)) fs.unlinkSync(f.path); });
             res.json({ url: getFullUrl(req, outputFilename) }); 
         })
-        .on('error', (err) => res.status(500).send(err.message));
+        .on('error', (err) => {
+            if (fs.existsSync(listFileName)) fs.unlinkSync(listFileName);
+            res.status(500).send(err.message);
+        });
 });
 
 app.listen(PORT, '0.0.0.0', () => {
