@@ -478,78 +478,86 @@ app.post('/melhorar-audio', upload.array('files'), (req, res) => {
 });
 // --- NOVAS ROTAS ESPECÍFICAS (IA TURBO, WORKFLOW, EDIT) ---
 
-/**
- * IA TURBO: Renderização de Masterização Complexa
- * Recebe clips e áudios, sincroniza e faz o merge final.
- */
 app.post('/ia-turbo', upload.array('video'), async (req, res) => {
     const files = req.files;
     if (!files || files.length === 0) return res.status(400).send('Nenhum arquivo enviado.');
 
     console.log(`🚀 IA TURBO: Masterizando ${files.length} arquivos...`);
     
-    const outputFilename = `turbo_master_${Date.now()}.mp4`;
-    const outputPath = path.join(OUTPUT_DIR, outputFilename);
-    const listFileName = path.join(UPLOAD_DIR, `turbo_list_${Date.now()}.txt`);
-    
-    // Lógica de concatenação para o Turbo (High Quality)
-    const fileContent = files.map(f => `file '${f.path}'`).join('\n');
-    fs.writeFileSync(listFileName, fileContent);
+    try {
+        const outputFilename = `turbo_master_${Date.now()}.mp4`;
+        const outputPath = path.join(OUTPUT_DIR, outputFilename);
+        
+        // Normaliza para vídeo (converte imagens para clipes de 5s)
+        const videoPaths = await Promise.all(files.map(f => ensureVideo(f.path)));
+        
+        const listFileName = path.join(UPLOAD_DIR, `turbo_list_${Date.now()}.txt`);
+        const fileContent = videoPaths.map(p => `file '${p}'`).join('\n');
+        fs.writeFileSync(listFileName, fileContent);
 
-    ffmpeg()
-        .input(listFileName)
-        .inputOptions(['-f concat', '-safe 0'])
-        // Filtros de melhoria visual "Turbo" (Nitidez + Vibração)
-        .videoFilters([
-            { filter: 'unsharp', options: '3:3:1.5' },
-            { filter: 'eq', options: 'saturation=1.2:contrast=1.1' }
-        ])
-        .outputOptions([
-            '-c:v libx264',
-            '-preset slow',
-            '-crf 18',
-            '-pix_fmt yuv420p',
-            '-movflags +faststart'
-        ])
-        .save(outputPath)
-        .on('end', () => {
-            fs.unlinkSync(listFileName);
-            res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` });
-        })
-        .on('error', (err) => res.status(500).send(`Erro Turbo: ${err.message}`));
+        ffmpeg()
+            .input(listFileName)
+            .inputOptions(['-f concat', '-safe 0'])
+            .videoFilters([
+                { filter: 'unsharp', options: '3:3:1.5' },
+                { filter: 'eq', options: 'saturation=1.2:contrast=1.1' }
+            ])
+            .outputOptions([
+                '-c:v libx264',
+                '-preset slow',
+                '-crf 18',
+                '-pix_fmt yuv420p',
+                '-movflags +faststart'
+            ])
+            .save(outputPath)
+            .on('end', () => {
+                fs.unlinkSync(listFileName);
+                // Limpeza opcional de arquivos temporários de conversão
+                videoPaths.forEach(p => { if (p.includes('_converted.mp4')) fs.unlinkSync(p); });
+                res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` });
+            })
+            .on('error', (err) => {
+                console.error("FFmpeg Turbo Error:", err);
+                res.status(500).send(`Erro Turbo: ${err.message}`);
+            });
+    } catch (err) {
+        console.error("Mastering Prep Error:", err);
+        res.status(500).send("Erro ao preparar arquivos para masterização.");
+    }
 });
 
-/**
- * WORKFLOW MÁGICO: Concatenação com transições inteligentes
- */
 app.post('/ia-workflow', upload.array('video'), async (req, res) => {
     const files = req.files;
     if (!files || files.length === 0) return res.status(400).send('Sem arquivos para o Workflow.');
 
-    const outputFilename = `workflow_final_${Date.now()}.mp4`;
-    const outputPath = path.join(OUTPUT_DIR, outputFilename);
-    const listFileName = path.join(UPLOAD_DIR, `wf_list_${Date.now()}.txt`);
+    try {
+        const outputFilename = `workflow_final_${Date.now()}.mp4`;
+        const outputPath = path.join(OUTPUT_DIR, outputFilename);
+        
+        const videoPaths = await Promise.all(files.map(f => ensureVideo(f.path)));
+        
+        const listFileName = path.join(UPLOAD_DIR, `wf_list_${Date.now()}.txt`);
+        const fileContent = videoPaths.map(p => `file '${p}'`).join('\n');
+        fs.writeFileSync(listFileName, fileContent);
 
-    const fileContent = files.map(f => `file '${f.path}'`).join('\n');
-    fs.writeFileSync(listFileName, fileContent);
-
-    ffmpeg()
-        .input(listFileName)
-        .inputOptions(['-f concat', '-safe 0'])
-        .outputOptions('-c:v libx264')
-        .outputOptions('-preset veryfast')
-        .outputOptions('-crf 22')
-        .save(outputPath)
-        .on('end', () => {
-            fs.unlinkSync(listFileName);
-            res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` });
-        })
-        .on('error', (err) => res.status(500).send(err.message));
+        ffmpeg()
+            .input(listFileName)
+            .inputOptions(['-f concat', '-safe 0'])
+            .outputOptions('-c:v libx264')
+            .outputOptions('-preset veryfast')
+            .outputOptions('-crf 22')
+            .save(outputPath)
+            .on('end', () => {
+                fs.unlinkSync(listFileName);
+                videoPaths.forEach(p => { if (p.includes('_converted.mp4')) fs.unlinkSync(p); });
+                res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` });
+            })
+            .on('error', (err) => res.status(500).send(err.message));
+    } catch (err) {
+        res.status(500).send("Erro no Workflow.");
+    }
 });
 
-/**
- * IA EDIT: Aplicação de Filtros Neurais e Estética de IA
- */
 app.post('/ia-edit', upload.single('video'), (req, res) => {
     if (!req.file) return res.status(400).send('Vídeo necessário.');
 
@@ -557,7 +565,6 @@ app.post('/ia-edit', upload.single('video'), (req, res) => {
     const outputPath = path.join(OUTPUT_DIR, outputFilename);
 
     ffmpeg(req.file.path)
-        // Simulação de look "AI Generated" (Cores vibrantes + Sonho/Glow leve)
         .videoFilters([
             'curves=preset=lighter',
             'cas=sharpness=0.8',
@@ -567,8 +574,6 @@ app.post('/ia-edit', upload.single('video'), (req, res) => {
         .on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` }))
         .on('error', (err) => res.status(500).send(err.message));
 });
-
-// --- MANUTENÇÃO DAS ROTAS ANTERIORES PARA COMPATIBILIDADE ---
 
 app.post('/remover-audio', upload.single('video'), (req, res) => {
     if(!req.file) return res.status(400).send('Vídeo necessário.');
@@ -589,6 +594,7 @@ app.post('/unir-videos', upload.array('video'), (req, res) => {
         .on('end', () => { fs.unlinkSync(listFileName); res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` }); })
         .on('error', (err) => res.status(500).send(err.message));
 });
+
 
 // Rota Placeholder
 app.post('/workflow-magico-avancado', upload.none(), (req, res) => {
