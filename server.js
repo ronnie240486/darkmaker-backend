@@ -775,7 +775,32 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
     }
 });
 
-// Health check
+// Audio & Image Tools
+app.post('/process-audio', upload.array('audio'), (req, res) => {
+    const file = req.files[0];
+    const outputFilename = `audio_proc_${Date.now()}.mp3`;
+    const outputPath = path.join(OUTPUT_DIR, outputFilename);
+    
+    ffmpeg(file.path)
+        .output(outputPath)
+        .on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` }))
+        .on('error', (err) => res.status(500).send(err.message))
+        .run();
+});
+
+app.post('/process-image', upload.array('image'), (req, res) => {
+    const file = req.files[0];
+    const outputFilename = `img_proc_${Date.now()}.png`;
+    const outputPath = path.join(OUTPUT_DIR, outputFilename);
+    
+    ffmpeg(file.path)
+        .output(outputPath)
+        .on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` }))
+        .on('error', (err) => res.status(500).send(err.message))
+        .run();
+});
+
 app.get('/', (req, res) => res.send('AI Media Backend: Master Sync Active. 🚀'));
 
 app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Rendering Engine on port ${PORT}`));
+
