@@ -513,144 +513,133 @@ const normalizeInput = (filePath) => {
     });
 };
 
-// Helper to construct secure URLs for the frontend
-const getFullUrl = (req, filename) => {
-    const host = req.get('host');
-    // Force HTTPS on production environments (e.g., Railway)
-    const isLocal = host.includes('localhost') || host.includes('127.0.0.1');
-    const protocol = isLocal ? req.protocol : 'https';
-    return `${protocol}://${host}/outputs/${filename}`;
+// Helper: MP4/MOV Output Options
+const getOutputOptions = (format = 'mp4', resolution = '1080p') => {
+    const res = resolution === '4K' ? '3840x2160' : '1920x1080';
+    return [
+        `-vf scale=${res}:force_original_aspect_ratio=decrease,pad=${res}:(ow-iw)/2:(oh-ih)/2,setsar=1`,
+        '-c:v libx264',
+        '-preset medium',
+        '-crf 23',
+        '-c:a aac',
+        '-b:a 128k',
+        '-pix_fmt yuv420p',
+        '-movflags +faststart'
+    ];
 };
 
+// Health Check
+app.get('/', (req, res) => res.status(200).send('API is running. MP4/MOV Export Active. 🚀'));
+
+/**
+ * IA TURBO / MASTERING / JOIN
+ */
 app.post('/ia-turbo', upload.array('video'), async (req, res) => {
     const files = req.files;
-    if (!files || files.length === 0) return res.status(400).send('No files provided.');
+    if (!files || files.length === 0) return res.status(400).send('No files sent.');
 
-    console.log(`🚀 IA TURBO: Processing ${files.length} files...`);
+    const format = req.body.format || 'mp4';
+    const resolution = req.body.resolution || '1080p';
     
-    let normalizedPaths = [];
-    let listFileName = null;
-    try {
-        const outputFilename = `turbo_master_${Date.now()}.mp4`;
-        const outputPath = path.join(OUTPUT_DIR, outputFilename);
-        
-        // SEQUENTIAL PROCESSING: Crucial for cloud environments to avoid CPU/RAM limits
-        for (const file of files) {
-            console.log(`  - Normalizing: ${file.filename}`);
-            const normalized = await normalizeInput(file.path);
-            normalizedPaths.push(normalized);
-        }
-        
-        listFileName = path.join(UPLOAD_DIR, `turbo_list_${Date.now()}.txt`);
-        const fileContent = normalizedPaths.map(p => `file '${p.replace(/'/g, "'\\''")}'`).join('\n');
-        fs.writeFileSync(listFileName, fileContent);
-
-        console.log(`📦 IA TURBO: Concatenating normalized segments...`);
-
-        ffmpeg()
-            .input(listFileName)
-            .inputOptions(['-f concat', '-safe 0'])
-            .videoFilters([
-                { filter: 'unsharp', options: '3:3:1.0' },
-                { filter: 'eq', options: 'saturation=1.1' }
-            ])
-            .outputOptions([
-                '-c:v libx264',
-                '-preset fast',
-                '-crf 20',
-                '-pix_fmt yuv420p',
-                '-movflags +faststart'
-            ])
-            .save(outputPath)
-            .on('end', () => {
-                if (listFileName && fs.existsSync(listFileName)) fs.unlinkSync(listFileName);
-                normalizedPaths.forEach(p => { if (fs.existsSync(p)) fs.unlinkSync(p); });
-                files.forEach(f => { if (fs.existsSync(f.path)) fs.unlinkSync(f.path); });
-                
-                console.log(`✅ IA TURBO Complete: ${outputFilename}`);
-                res.json({ url: getFullUrl(req, outputFilename) });
-            })
-            .on('error', (err) => {
-                console.error("FFmpeg Concat Error:", err);
-                if (listFileName && fs.existsSync(listFileName)) fs.unlinkSync(listFileName);
-                res.status(500).send(`Render Error: ${err.message}`);
-            });
-    } catch (err) {
-        console.error("Critical Processing Error:", err);
-        normalizedPaths.forEach(p => { if (fs.existsSync(p)) fs.unlinkSync(p); });
-        if (listFileName && fs.existsSync(listFileName)) fs.unlinkSync(listFileName);
-        res.status(500).send("Server error during mastering.");
-    }
-});
-
-app.post('/ia-workflow', upload.array('video'), async (req, res) => {
-    const files = req.files;
-    if (!files || files.length === 0) return res.status(400).send('No files provided.');
-
-    let normalizedPaths = [];
-    let listFileName = null;
-    try {
-        const outputFilename = `workflow_final_${Date.now()}.mp4`;
-        const outputPath = path.join(OUTPUT_DIR, outputFilename);
-        
-        for (const file of files) {
-            const normalized = await normalizeInput(file.path);
-            normalizedPaths.push(normalized);
-        }
-        
-        listFileName = path.join(UPLOAD_DIR, `wf_list_${Date.now()}.txt`);
-        const fileContent = normalizedPaths.map(p => `file '${p.replace(/'/g, "'\\''")}'`).join('\n');
-        fs.writeFileSync(listFileName, fileContent);
-
-        ffmpeg()
-            .input(listFileName)
-            .inputOptions(['-f concat', '-safe 0'])
-            .outputOptions(['-c:v libx264', '-preset superfast', '-crf 22'])
-            .save(outputPath)
-            .on('end', () => {
-                if (listFileName && fs.existsSync(listFileName)) fs.unlinkSync(listFileName);
-                normalizedPaths.forEach(p => { if (fs.existsSync(p)) fs.unlinkSync(p); });
-                res.json({ url: getFullUrl(req, outputFilename) });
-            })
-            .on('error', (err) => {
-                if (listFileName && fs.existsSync(listFileName)) fs.unlinkSync(listFileName);
-                res.status(500).send(err.message);
-            });
-    } catch (err) {
-        res.status(500).send("Workflow failure.");
-    }
-});
-
-app.post('/remover-audio', upload.single('video'), (req, res) => {
-    if(!req.file) return res.status(400).send('No video provided.');
-    const outputFilename = `no_audio_${Date.now()}.mp4`;
+    const outputFilename = `turbo_master_${Date.now()}.${format}`;
     const outputPath = path.join(OUTPUT_DIR, outputFilename);
-    ffmpeg(req.file.path).outputOptions(['-c copy', '-an']).save(outputPath)
+    const listFileName = path.join(UPLOAD_DIR, `turbo_list_${Date.now()}.txt`);
+    
+    const fileContent = files.map(f => `file '${f.path}'`).join('\n');
+    fs.writeFileSync(listFileName, fileContent);
+
+    ffmpeg()
+        .input(listFileName)
+        .inputOptions(['-f concat', '-safe 0'])
+        .outputOptions(getOutputOptions(format, resolution))
+        .save(outputPath)
         .on('end', () => {
-            if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
-            res.json({ url: getFullUrl(req, outputFilename) });
-        })
-        .on('error', (err) => res.status(500).send(err.message));
-});
-
-app.post('/unir-videos', upload.array('video'), (req, res) => {
-    if (!req.files || req.files.length < 2) return res.status(400).send('Need 2+ videos to merge.');
-    const outputFilename = `merged_${Date.now()}.mp4`;
-    const outputPath = path.join(OUTPUT_DIR, outputFilename);
-    const listFileName = path.join(UPLOAD_DIR, `list_${Date.now()}.txt`);
-    fs.writeFileSync(listFileName, req.files.map(f => `file '${f.path.replace(/'/g, "'\\''")}'`).join('\n'));
-    ffmpeg().input(listFileName).inputOptions(['-f concat', '-safe 0']).outputOptions('-c copy').save(outputPath)
-        .on('end', () => { 
-            fs.unlinkSync(listFileName); 
-            req.files.forEach(f => { if (fs.existsSync(f.path)) fs.unlinkSync(f.path); });
-            res.json({ url: getFullUrl(req, outputFilename) }); 
+            fs.unlinkSync(listFileName);
+            res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` });
         })
         .on('error', (err) => {
-            if (fs.existsSync(listFileName)) fs.unlinkSync(listFileName);
+            console.error(err);
+            res.status(500).send(`Turbo Error: ${err.message}`);
+        });
+});
+
+/**
+ * UNIR VIDEOS (Standard Route used by most tools)
+ */
+app.post('/unir-videos', upload.array('video'), (req, res) => {
+    if (!req.files || req.files.length < 2) return res.status(400).send('2+ videos required.');
+    
+    const format = req.body.format || 'mp4';
+    const resolution = req.body.resolution || '1080p';
+
+    const outputFilename = `merged_${Date.now()}.${format}`;
+    const outputPath = path.join(OUTPUT_DIR, outputFilename);
+    const listFileName = path.join(UPLOAD_DIR, `list_${Date.now()}.txt`);
+    fs.writeFileSync(listFileName, req.files.map(f => `file '${f.path}'`).join('\n'));
+
+    ffmpeg()
+        .input(listFileName).inputOptions(['-f concat', '-safe 0'])
+        .outputOptions(getOutputOptions(format, resolution))
+        .save(outputPath)
+        .on('end', () => {
+            fs.unlinkSync(listFileName);
+            res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` });
+        })
+        .on('error', (err) => {
+            console.error(err);
             res.status(500).send(err.message);
         });
 });
 
+/**
+ * GENERIC VIDEO EDITING (MP4/MOV Guaranteed)
+ */
+const genericEditHandler = (route, commandTransform) => {
+    app.post(route, upload.array('video'), (req, res) => {
+        const file = req.files?.[0];
+        if(!file) return res.status(400).send('Video required');
+        
+        const format = req.body.format || 'mp4';
+        const resolution = req.body.resolution || '1080p';
+
+        const outputFilename = `edited_${Date.now()}.${format}`;
+        const outputPath = path.join(OUTPUT_DIR, outputFilename);
+        
+        let cmd = ffmpeg(file.path);
+        commandTransform(cmd, req);
+        
+        cmd.outputOptions(getOutputOptions(format, resolution))
+           .save(outputPath)
+           .on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` }))
+           .on('error', (err) => res.status(500).send(err.message));
+    });
+};
+
+genericEditHandler('/cortar-video', (cmd, req) => {
+    cmd.setStartTime(req.body.startTime || '00:00:00')
+       .setDuration(req.body.endTime || '00:00:10');
+});
+
+genericEditHandler('/comprimir-videos', (cmd, req) => {
+    const q = req.body.quality || 'medium';
+    const crf = q === 'high' ? '18' : q === 'low' ? '30' : '24';
+    cmd.outputOptions(['-crf', crf]);
+});
+
+genericEditHandler('/re_rem-audio', (cmd) => cmd.outputOptions('-an'));
+
+genericEditHandler('/upscale-video', (cmd, req) => {
+    // scale is handled in getOutputOptions based on req.body.resolution
+});
+
+genericEditHandler('/colorize-video', (cmd) => {
+    cmd.videoFilter('eq=saturation=1.4:contrast=1.1');
+});
+
+genericEditHandler('/gerar-shorts', (cmd) => {
+    cmd.complexFilter('scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920').setDuration(60);
+});
+
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Dedicated Media Backend running on port ${PORT}`);
+    console.log(`🚀 Backend Standardized to MP4/MOV on port ${PORT}`);
 });
