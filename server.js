@@ -639,6 +639,143 @@ genericEditHandler('/gerar-shorts', (cmd) => {
     cmd.complexFilter('scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920').setDuration(60);
 });
 
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Backend Robustified on port ${PORT}`);
+// Unified master route for Video Turbo / Magic Workflow
+// Expects 'visuals' and 'audios' arrays
+app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), async (req, res) => {
+    const visualFiles = req.files['visuals'];
+    const audioFiles = req.files['audios'];
+
+    if (!visualFiles || visualFiles.length === 0) return res.status(400).send('Visual files required.');
+
+    const format = req.body.format || 'mp4';
+    const resolution = req.body.resolution || '1080p';
+    const resScale = resolution === '4K' ? '3840:2160' : '1920:1080';
+    const outputFilename = `master_render_${Date.now()}.${format}`;
+    const outputPath = path.join(OUTPUT_DIR, outputFilename);
+
+    try {
+        const segmentPaths = [];
+        
+        // Process each scene individually to combine visual + audio + movement
+        for (let i = 0; i < visualFiles.length; i++) {
+            const visual = visualFiles[i];
+            const audio = audioFiles && audioFiles[i] ? audioFiles[i] : null;
+            const segmentPath = path.join(UPLOAD_DIR, `seg_${i}_${Date.now()}.mp4`);
+            
+            const isImage = visual.mimetype.startsWith('image/') || /\.(jpg|jpeg|png|webp)$/i.test(visual.path);
+            
+            await new Promise((resolve, reject) => {
+                let cmd = ffmpeg(visual.path);
+
+                if (isImage) {
+                    // For images, we need to loop and apply movement
+                    // We also need a duration. If there's audio, use audio duration, else default 5s
+                    cmd.inputOptions(['-loop 1']);
+                    if (audio) {
+                        cmd.input(audio.path);
+                        // Complex filter for images: Scale -> ZoomPan (Ken Burns) -> Normalization
+                        cmd.complexFilter([
+                            {
+                                filter: 'scale', options: 'iw*2:ih*2',
+                                inputs: '0:v', outputs: 'scaled'
+                            },
+                            {
+                                filter: 'zoompan', options: {
+                                    z: 'min(zoom+0.0015,1.5)',
+                                    d: '125', // roughly 5s at 25fps
+                                    s: resScale.replace(':', 'x'),
+                                    x: 'iw/2-(iw/zoom/2)',
+                                    y: 'ih/2-(ih/zoom/2)'
+                                },
+                                inputs: 'scaled', outputs: 'v_moved'
+                            },
+                            {
+                                filter: 'format', options: 'yuv420p',
+                                inputs: 'v_moved', outputs: 'v_final'
+                            }
+                        ]);
+                        cmd.map('v_final').map('1:a');
+                    } else {
+                        cmd.duration(5);
+                        cmd.complexFilter([
+                            `scale=${resScale.replace(':', '*')}:force_original_aspect_ratio=increase,crop=${resScale.replace(':', ':')},zoompan=z='min(zoom+0.001,1.5)':d=125:s=${resScale.replace(':', 'x')}`
+                        ]);
+                    }
+                } else {
+                    // For videos, scale and pad
+                    if (audio) {
+                        cmd.input(audio.path);
+                        cmd.complexFilter([
+                            {
+                                filter: 'scale', options: `${resScale}:force_original_aspect_ratio=decrease`,
+                                inputs: '0:v', outputs: 'v1'
+                            },
+                            {
+                                filter: 'pad', options: `${resScale}:(ow-iw)/2:(oh-ih)/2`,
+                                inputs: 'v1', outputs: 'v2'
+                            },
+                            {
+                                filter: 'setsar', options: '1',
+                                inputs: 'v2', outputs: 'v_final'
+                            }
+                        ]);
+                        // Map the visual from input 0 and audio from input 1 (narration)
+                        // If user wants original video audio + narration, complex mixing is needed
+                        // Here we prioritize the narration audio
+                        cmd.map('v_final').map('1:a');
+                    } else {
+                        cmd.videoFilter([
+                            `scale=${resScale}:force_original_aspect_ratio=decrease`,
+                            `pad=${resScale}:(ow-iw)/2:(oh-ih)/2`,
+                            'setsar=1'
+                        ]);
+                    }
+                }
+
+                cmd.outputOptions([
+                    '-c:v libx264',
+                    '-preset fast',
+                    '-crf 22',
+                    '-c:a aac',
+                    '-b:a 128k',
+                    '-ar 44100',
+                    '-pix_fmt yuv420p',
+                    '-shortest'
+                ])
+                .save(segmentPath)
+                .on('end', () => {
+                    segmentPaths.push(segmentPath);
+                    resolve();
+                })
+                .on('error', reject);
+            });
+        }
+
+        // Final Concatenation
+        if (segmentPaths.length === 0) throw new Error("Processing segments failed.");
+
+        const concatCommand = ffmpeg();
+        segmentPaths.forEach(p => concatCommand.input(p));
+        
+        concatCommand
+            .on('end', () => {
+                // Cleanup segments
+                segmentPaths.forEach(p => fs.unlink(p, () => {}));
+                res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` });
+            })
+            .on('error', (err) => {
+                console.error("Concat Error:", err);
+                res.status(500).send(err.message);
+            })
+            .mergeToFile(outputPath, UPLOAD_DIR);
+
+    } catch (error) {
+        console.error("Master Export Error:", error);
+        res.status(500).send(error.message);
+    }
 });
+
+// Health check
+app.get('/', (req, res) => res.send('AI Media Backend: Master Sync Active. 🚀'));
+
+app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Rendering Engine on port ${PORT}`));
