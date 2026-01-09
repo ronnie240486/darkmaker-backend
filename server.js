@@ -513,139 +513,30 @@ const normalizeInput = (filePath) => {
     });
 };
 
-// Helper: Standard Output Options (Excluding filters)
-const getBaseOutputOptions = (format = 'mp4') => {
-    return [
-        '-c:v libx264',
-        '-preset medium',
-        '-crf 23',
-        '-c:a aac',
-        '-b:a 128k',
-        '-pix_fmt yuv420p',
-        '-movflags +faststart'
-    ];
-};
-
-// Health Check
-app.get('/', (req, res) => res.status(200).send('API is running. MP4/MOV Export Active. 🚀'));
+// Helper: Standard Output Options
+const getBaseOutputOptions = () => [
+    '-c:v libx264',
+    '-preset fast',
+    '-crf 23',
+    '-pix_fmt yuv420p',
+    '-c:a aac',
+    '-b:a 128k',
+    '-ar 44100',
+    '-ac 2'
+];
 
 /**
- * IA TURBO / MASTERING / JOIN
- * Uses complex filter for robustness against varying input resolutions/properties
+ * IA TURBO / MASTER RENDER
+ * Robust concatenation with audio/video normalization
  */
-const handleConcatenation = async (req, res, prefix) => {
-    const files = req.files;
-    if (!files || files.length === 0) return res.status(400).send('No files sent.');
-
-    const format = req.body.format || 'mp4';
-    const resolution = req.body.resolution || '1080p';
-    const durationPerImage = parseFloat(req.body.durationPerImage) || 5;
-    
-    const outputFilename = `${prefix}_${Date.now()}.${format}`;
-    const outputPath = path.join(OUTPUT_DIR, outputFilename);
-    
-    const resScale = resolution === '4K' ? '3840:2160' : '1920:1080';
-
-    let command = ffmpeg();
-    let filterComplex = "";
-    let concatNodes = "";
-
-    files.forEach((file, i) => {
-        // Detect if image
-        const isImage = file.mimetype.startsWith('image/') || /\.(jpg|jpeg|png|webp)$/i.test(file.path);
-        
-        if (isImage) {
-            command.input(file.path).inputOptions(['-loop 1', `-t ${durationPerImage}`]);
-        } else {
-            command.input(file.path);
-        }
-
-        // Normalize each input: scale, pad, setsar, framerate, and format
-        // This ensures the filter network doesn't need to re-init mid-stream
-        filterComplex += `[${i}:v]scale=${resScale}:force_original_aspect_ratio=decrease,pad=${resScale}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[v${i}];`;
-        concatNodes += `[v${i}]`;
-    });
-
-    filterComplex += `${concatNodes}concat=n=${files.length}:v=1:a=0[outv]`;
-
-    command
-        .complexFilter(filterComplex)
-        .map('[outv]')
-        .outputOptions(getBaseOutputOptions(format))
-        .save(outputPath)
-        .on('start', (cmd) => console.log(`Starting ${prefix}:`, cmd))
-        .on('end', () => {
-            res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` });
-        })
-        .on('error', (err) => {
-            console.error(`FFmpeg ${prefix} Error:`, err.message);
-            res.status(500).send(`${prefix} Error: ${err.message}`);
-        });
-};
-
-app.post('/ia-turbo', upload.array('video'), (req, res) => handleConcatenation(req, res, 'turbo'));
-app.post('/unir-videos', upload.array('video'), (req, res) => handleConcatenation(req, res, 'merged'));
-
-/**
- * GENERIC VIDEO EDITING
- */
-const genericEditHandler = (route, commandTransform) => {
-    app.post(route, upload.array('video'), (req, res) => {
-        const file = req.files?.[0];
-        if(!file) return res.status(400).send('Video required');
-        
-        const format = req.body.format || 'mp4';
-        const resolution = req.body.resolution || '1080p';
-        const resValue = resolution === '4K' ? '3840x2160' : '1920x1080';
-
-        const outputFilename = `edited_${Date.now()}.${format}`;
-        const outputPath = path.join(OUTPUT_DIR, outputFilename);
-        
-        let cmd = ffmpeg(file.path);
-        commandTransform(cmd, req);
-        
-        cmd.videoFilter([
-            `scale=${resValue.replace('x', ':')}:force_original_aspect_ratio=decrease`,
-            `pad=${resValue.replace('x', ':')}:(ow-iw)/2:(oh-ih)/2`,
-            'setsar=1'
-        ])
-        .outputOptions(getBaseOutputOptions(format))
-        .save(outputPath)
-        .on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` }))
-        .on('error', (err) => res.status(500).send(err.message));
-    });
-};
-
-genericEditHandler('/cortar-video', (cmd, req) => {
-    cmd.setStartTime(req.body.startTime || '00:00:00')
-       .setDuration(req.body.endTime || '00:00:10');
-});
-
-genericEditHandler('/comprimir-videos', (cmd, req) => {
-    const q = req.body.quality || 'medium';
-    const crf = q === 'high' ? '18' : q === 'low' ? '30' : '24';
-    cmd.outputOptions(['-crf', crf]);
-});
-
-genericEditHandler('/re_rem-audio', (cmd) => cmd.outputOptions('-an'));
-
-genericEditHandler('/upscale-video', (cmd) => {}); // Scale handled in filter chain
-
-genericEditHandler('/colorize-video', (cmd) => {
-    cmd.videoFilter('eq=saturation=1.4:contrast=1.1');
-});
-
-genericEditHandler('/gerar-shorts', (cmd) => {
-    cmd.complexFilter('scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920').setDuration(60);
-});
-
-// Unified master route for Video Turbo / Magic Workflow
-// Expects 'visuals' and 'audios' arrays
 app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), async (req, res) => {
+    console.log("🚀 Starting IA Turbo mastering process...");
     const visualFiles = req.files['visuals'];
-    const audioFiles = req.files['audios'];
+    const audioFiles = req.files['audios'] || [];
 
-    if (!visualFiles || visualFiles.length === 0) return res.status(400).send('Visual files required.');
+    if (!visualFiles || visualFiles.length === 0) {
+        return res.status(400).send('Visual files required.');
+    }
 
     const format = req.body.format || 'mp4';
     const resolution = req.body.resolution || '1080p';
@@ -653,130 +544,140 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
     const outputFilename = `master_render_${Date.now()}.${format}`;
     const outputPath = path.join(OUTPUT_DIR, outputFilename);
 
+    const segmentPaths = [];
+
     try {
-        const segmentPaths = [];
-        
-        // Process each scene individually to combine visual + audio + movement
         for (let i = 0; i < visualFiles.length; i++) {
             const visual = visualFiles[i];
-            const audio = audioFiles && audioFiles[i] ? audioFiles[i] : null;
+            const audio = audioFiles[i] || null;
             const segmentPath = path.join(UPLOAD_DIR, `seg_${i}_${Date.now()}.mp4`);
-            
             const isImage = visual.mimetype.startsWith('image/') || /\.(jpg|jpeg|png|webp)$/i.test(visual.path);
             
+            console.log(`Processing Segment ${i+1}/${visualFiles.length} (Type: ${isImage ? 'Image' : 'Video'})`);
+
             await new Promise((resolve, reject) => {
-                let cmd = ffmpeg(visual.path);
+                let cmd = ffmpeg();
 
                 if (isImage) {
-                    // For images, we need to loop and apply movement
-                    // We also need a duration. If there's audio, use audio duration, else default 5s
-                    cmd.inputOptions(['-loop 1']);
+                    cmd.input(visual.path).inputOptions(['-loop 1']);
                     if (audio) {
                         cmd.input(audio.path);
-                        // Complex filter for images: Scale -> ZoomPan (Ken Burns) -> Normalization
                         cmd.complexFilter([
-                            {
-                                filter: 'scale', options: 'iw*2:ih*2',
-                                inputs: '0:v', outputs: 'scaled'
-                            },
-                            {
-                                filter: 'zoompan', options: {
-                                    z: 'min(zoom+0.0015,1.5)',
-                                    d: '125', // roughly 5s at 25fps
-                                    s: resScale.replace(':', 'x'),
-                                    x: 'iw/2-(iw/zoom/2)',
-                                    y: 'ih/2-(ih/zoom/2)'
-                                },
-                                inputs: 'scaled', outputs: 'v_moved'
-                            },
-                            {
-                                filter: 'format', options: 'yuv420p',
-                                inputs: 'v_moved', outputs: 'v_final'
-                            }
+                            { filter: 'scale', options: `${resScale.replace(':', 'x')}`, inputs: '0:v', outputs: 'scaled' },
+                            { filter: 'format', options: 'yuv420p', inputs: 'scaled', outputs: 'v_final' }
                         ]);
                         cmd.map('v_final').map('1:a');
                     } else {
                         cmd.duration(5);
-                        cmd.complexFilter([
-                            `scale=${resScale.replace(':', '*')}:force_original_aspect_ratio=increase,crop=${resScale.replace(':', ':')},zoompan=z='min(zoom+0.001,1.5)':d=125:s=${resScale.replace(':', 'x')}`
+                        cmd.videoFilter([
+                            `scale=${resScale}:force_original_aspect_ratio=increase`,
+                            `crop=${resScale}`,
+                            'format=yuv420p'
                         ]);
+                        cmd.input('anullsrc=r=44100:cl=stereo').inputFormat('lavfi');
                     }
                 } else {
-                    // For videos, scale and pad
+                    cmd.input(visual.path);
                     if (audio) {
                         cmd.input(audio.path);
                         cmd.complexFilter([
-                            {
-                                filter: 'scale', options: `${resScale}:force_original_aspect_ratio=decrease`,
-                                inputs: '0:v', outputs: 'v1'
-                            },
-                            {
-                                filter: 'pad', options: `${resScale}:(ow-iw)/2:(oh-ih)/2`,
-                                inputs: 'v1', outputs: 'v2'
-                            },
-                            {
-                                filter: 'setsar', options: '1',
-                                inputs: 'v2', outputs: 'v_final'
-                            }
-                        ]);
-                        // Map the visual from input 0 and audio from input 1 (narration)
-                        // If user wants original video audio + narration, complex mixing is needed
-                        // Here we prioritize the narration audio
-                        cmd.map('v_final').map('1:a');
+                            `[0:v]scale=${resScale}:force_original_aspect_ratio=decrease,pad=${resScale}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[vfinal]`
+                        ]).map('[vfinal]').map('1:a');
                     } else {
                         cmd.videoFilter([
                             `scale=${resScale}:force_original_aspect_ratio=decrease`,
                             `pad=${resScale}:(ow-iw)/2:(oh-ih)/2`,
-                            'setsar=1'
+                            'setsar=1', 'fps=30', 'format=yuv420p'
                         ]);
+                        cmd.input('anullsrc=r=44100:cl=stereo').inputFormat('lavfi');
                     }
                 }
 
-                cmd.outputOptions([
-                    '-c:v libx264',
-                    '-preset fast',
-                    '-crf 22',
-                    '-c:a aac',
-                    '-b:a 128k',
-                    '-ar 44100',
-                    '-pix_fmt yuv420p',
-                    '-shortest'
-                ])
-                .save(segmentPath)
-                .on('end', () => {
-                    segmentPaths.push(segmentPath);
-                    resolve();
-                })
-                .on('error', reject);
+                cmd.outputOptions([...getBaseOutputOptions(), '-shortest'])
+                   .save(segmentPath)
+                   .on('end', () => { 
+                       segmentPaths.push(segmentPath); 
+                       resolve(); 
+                   })
+                   .on('error', (err) => { 
+                       console.error(`❌ Segment ${i} Error:`, err); 
+                       reject(err); 
+                   });
             });
         }
 
-        // Final Concatenation
-        if (segmentPaths.length === 0) throw new Error("Processing segments failed.");
-
-        const concatCommand = ffmpeg();
-        segmentPaths.forEach(p => concatCommand.input(p));
+        console.log("🔗 Merging segments...");
+        const finalCmd = ffmpeg();
+        segmentPaths.forEach(p => finalCmd.input(p));
         
-        concatCommand
+        const filterStr = segmentPaths.map((_, i) => `[${i}:v][${i}:a]`).join('') + `concat=n=${segmentPaths.length}:v=1:a=1[v][a]`;
+
+        finalCmd.complexFilter(filterStr)
+            .map('[v]')
+            .map('[a]')
+            .outputOptions(getBaseOutputOptions())
+            .save(outputPath)
             .on('end', () => {
-                // Cleanup segments
+                console.log("✅ Render Successful:", outputFilename);
                 segmentPaths.forEach(p => fs.unlink(p, () => {}));
                 res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` });
             })
             .on('error', (err) => {
-                console.error("Concat Error:", err);
-                res.status(500).send(err.message);
-            })
-            .mergeToFile(outputPath, UPLOAD_DIR);
+                console.error("❌ Final Merge Error:", err);
+                res.status(500).send("Final rendering stage failed: " + err.message);
+            });
 
     } catch (error) {
-        console.error("Master Export Error:", error);
+        console.error("❌ Global Export Error:", error);
         res.status(500).send(error.message);
     }
 });
 
+/**
+ * GENERIC PROCESSING ROUTES
+ */
+const genericHandler = (route, optionsCallback) => {
+    app.post(route, upload.array('video'), async (req, res) => {
+        const files = req.files;
+        if (!files || files.length === 0) return res.status(400).send('Files required.');
+        
+        const outputFilename = `proc_${Date.now()}.mp4`;
+        const outputPath = path.join(OUTPUT_DIR, outputFilename);
+        let cmd = ffmpeg(files[0].path);
+
+        if (route === '/join' && files.length > 1) {
+            files.slice(1).forEach(f => cmd.input(f.path));
+            cmd.mergeToFile(outputPath, UPLOAD_DIR)
+               .on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` }))
+               .on('error', (err) => res.status(500).send(err.message));
+        } else {
+            if (optionsCallback) optionsCallback(cmd, req);
+            cmd.outputOptions(getBaseOutputOptions())
+               .save(outputPath)
+               .on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` }))
+               .on('error', (err) => res.status(500).send(err.message));
+        }
+    });
+};
+
+genericHandler('/upscale', (cmd) => cmd.videoFilter('scale=3840:2160:flags=lanczos'));
+genericHandler('/colorize', (cmd) => cmd.videoFilter('eq=saturation=1.5:contrast=1.2'));
+genericHandler('/compress', (cmd) => cmd.outputOptions(['-crf', '28', '-preset', 'slow']));
+genericHandler('/shuffle', (cmd) => cmd.videoFilter('noise=alls=20:allf=t+u'));
+genericHandler('/cut', (cmd, req) => cmd.setStartTime(req.body.startTime || 0).duration(req.body.duration || 10));
+genericHandler('/join', null);
+genericHandler('/remove-audio', (cmd) => cmd.noAudio());
+genericHandler('/extract-audio', (cmd, req) => {
+    const out = path.join(OUTPUT_DIR, `audio_${Date.now()}.mp3`);
+    cmd.output(out).noVideo()
+       .on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${path.basename(out)}` }))
+       .on('error', (err) => res.status(500).send(err.message))
+       .run();
+});
+
 // Audio & Image Tools
 app.post('/process-audio', upload.array('audio'), (req, res) => {
+    if (!req.files || req.files.length === 0) return res.status(400).send("No audio file provided");
     const file = req.files[0];
     const outputFilename = `audio_proc_${Date.now()}.mp3`;
     const outputPath = path.join(OUTPUT_DIR, outputFilename);
@@ -789,6 +690,7 @@ app.post('/process-audio', upload.array('audio'), (req, res) => {
 });
 
 app.post('/process-image', upload.array('image'), (req, res) => {
+    if (!req.files || req.files.length === 0) return res.status(400).send("No image file provided");
     const file = req.files[0];
     const outputFilename = `img_proc_${Date.now()}.png`;
     const outputPath = path.join(OUTPUT_DIR, outputFilename);
@@ -800,7 +702,12 @@ app.post('/process-image', upload.array('image'), (req, res) => {
         .run();
 });
 
-app.get('/', (req, res) => res.send('AI Media Backend: Master Sync Active. 🚀'));
+// Error handling middleware
+app.use((err, req, res, next) => {
+    console.error("Unhandled Server Error:", err);
+    res.status(500).send("Internal Server Error: " + err.message);
+});
 
-app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Rendering Engine on port ${PORT}`));
+app.get('/', (req, res) => res.send('AI Media Backend: Active and ready for mastering. 🚀'));
 
+app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Rendering Engine listening on port ${PORT}`));
