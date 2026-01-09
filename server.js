@@ -513,17 +513,20 @@ const normalizeInput = (filePath) => {
     });
 };
 
-// Helper: MP4/MOV Output Options
+/**
+ * Helper: MP4/MOV Output Options
+ * Fixed: Robust filter chain for scaling and padding.
+ * Separates W and H for the pad filter to avoid syntax errors and ensures yuv420p pixel format.
+ */
 const getOutputOptions = (format = 'mp4', resolution = '1080p') => {
-    const res = resolution === '4K' ? '3840x2160' : '1920x1080';
+    const [w, h] = resolution === '4K' ? [3840, 2160] : [1920, 1080];
     return [
-        `-vf scale=${res}:force_original_aspect_ratio=decrease,pad=${res}:(ow-iw)/2:(oh-ih)/2,setsar=1`,
+        `-vf scale=w=${w}:h=${h}:force_original_aspect_ratio=decrease,pad=w=${w}:h=${h}:x=(ow-iw)/2:y=(oh-ih)/2,setsar=1,format=yuv420p`,
         '-c:v libx264',
         '-preset medium',
         '-crf 23',
         '-c:a aac',
         '-b:a 128k',
-        '-pix_fmt yuv420p',
         '-movflags +faststart'
     ];
 };
@@ -533,6 +536,7 @@ app.get('/', (req, res) => res.status(200).send('API is running. MP4/MOV Export 
 
 /**
  * IA TURBO / MASTERING / JOIN
+ * Improved to handle the concat demuxer more safely.
  */
 app.post('/ia-turbo', upload.array('video'), async (req, res) => {
     const files = req.files;
@@ -545,6 +549,8 @@ app.post('/ia-turbo', upload.array('video'), async (req, res) => {
     const outputPath = path.join(OUTPUT_DIR, outputFilename);
     const listFileName = path.join(UPLOAD_DIR, `turbo_list_${Date.now()}.txt`);
     
+    // Safety: Concat demuxer works best with videos. 
+    // Mixing images and videos in the concat list can cause decoder errors.
     const fileContent = files.map(f => `file '${f.path}'`).join('\n');
     fs.writeFileSync(listFileName, fileContent);
 
@@ -552,19 +558,21 @@ app.post('/ia-turbo', upload.array('video'), async (req, res) => {
         .input(listFileName)
         .inputOptions(['-f concat', '-safe 0'])
         .outputOptions(getOutputOptions(format, resolution))
-        .save(outputPath)
+        .on('start', (cmd) => console.log('FFmpeg Command:', cmd))
         .on('end', () => {
-            fs.unlinkSync(listFileName);
+            try { fs.unlinkSync(listFileName); } catch(e) {}
             res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` });
         })
         .on('error', (err) => {
-            console.error(err);
+            console.error('FFmpeg IA-Turbo Error:', err.message);
+            try { fs.unlinkSync(listFileName); } catch(e) {}
             res.status(500).send(`Turbo Error: ${err.message}`);
-        });
+        })
+        .save(outputPath);
 });
 
 /**
- * UNIR VIDEOS (Standard Route used by most tools)
+ * UNIR VIDEOS
  */
 app.post('/unir-videos', upload.array('video'), (req, res) => {
     if (!req.files || req.files.length < 2) return res.status(400).send('2+ videos required.');
@@ -580,19 +588,20 @@ app.post('/unir-videos', upload.array('video'), (req, res) => {
     ffmpeg()
         .input(listFileName).inputOptions(['-f concat', '-safe 0'])
         .outputOptions(getOutputOptions(format, resolution))
-        .save(outputPath)
         .on('end', () => {
-            fs.unlinkSync(listFileName);
+            try { fs.unlinkSync(listFileName); } catch(e) {}
             res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` });
         })
         .on('error', (err) => {
-            console.error(err);
+            console.error('FFmpeg Merge Error:', err.message);
+            try { fs.unlinkSync(listFileName); } catch(e) {}
             res.status(500).send(err.message);
-        });
+        })
+        .save(outputPath);
 });
 
 /**
- * GENERIC VIDEO EDITING (MP4/MOV Guaranteed)
+ * GENERIC VIDEO EDITING
  */
 const genericEditHandler = (route, commandTransform) => {
     app.post(route, upload.array('video'), (req, res) => {
@@ -609,9 +618,12 @@ const genericEditHandler = (route, commandTransform) => {
         commandTransform(cmd, req);
         
         cmd.outputOptions(getOutputOptions(format, resolution))
-           .save(outputPath)
            .on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` }))
-           .on('error', (err) => res.status(500).send(err.message));
+           .on('error', (err) => {
+               console.error(`FFmpeg Edit Error (${route}):`, err.message);
+               res.status(500).send(err.message);
+           })
+           .save(outputPath);
     });
 };
 
