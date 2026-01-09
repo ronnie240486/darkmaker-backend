@@ -513,11 +513,9 @@ const normalizeInput = (filePath) => {
     });
 };
 
-// Helper: MP4/MOV Output Options
-const getOutputOptions = (format = 'mp4', resolution = '1080p') => {
-    const res = resolution === '4K' ? '3840x2160' : '1920x1080';
+// Helper: Standard Output Options (Excluding filters)
+const getBaseOutputOptions = (format = 'mp4') => {
     return [
-        `-vf scale=${res}:force_original_aspect_ratio=decrease,pad=${res}:(ow-iw)/2:(oh-ih)/2,setsar=1`,
         '-c:v libx264',
         '-preset medium',
         '-crf 23',
@@ -533,9 +531,9 @@ app.get('/', (req, res) => res.status(200).send('API is running. MP4/MOV Export 
 
 /**
  * IA TURBO / MASTERING / JOIN
- * Fixed to handle image durations for FFmpeg concat demuxer
+ * Uses complex filter for robustness against varying input resolutions/properties
  */
-app.post('/ia-turbo', upload.array('video'), async (req, res) => {
+const handleConcatenation = async (req, res, prefix) => {
     const files = req.files;
     if (!files || files.length === 0) return res.status(400).send('No files sent.');
 
@@ -543,78 +541,53 @@ app.post('/ia-turbo', upload.array('video'), async (req, res) => {
     const resolution = req.body.resolution || '1080p';
     const durationPerImage = parseFloat(req.body.durationPerImage) || 5;
     
-    const outputFilename = `turbo_master_${Date.now()}.${format}`;
+    const outputFilename = `${prefix}_${Date.now()}.${format}`;
     const outputPath = path.join(OUTPUT_DIR, outputFilename);
-    const listFileName = path.join(UPLOAD_DIR, `turbo_list_${Date.now()}.txt`);
     
-    // Construct concat list with durations. 
-    // This is CRITICAL for images, otherwise the resulting video has 0 duration.
-    const fileEntries = [];
-    files.forEach((f) => {
-        fileEntries.push(`file '${f.path}'`);
-        fileEntries.push(`duration ${durationPerImage}`);
+    const resScale = resolution === '4K' ? '3840:2160' : '1920:1080';
+
+    let command = ffmpeg();
+    let filterComplex = "";
+    let concatNodes = "";
+
+    files.forEach((file, i) => {
+        // Detect if image
+        const isImage = file.mimetype.startsWith('image/') || /\.(jpg|jpeg|png|webp)$/i.test(file.path);
+        
+        if (isImage) {
+            command.input(file.path).inputOptions(['-loop 1', `-t ${durationPerImage}`]);
+        } else {
+            command.input(file.path);
+        }
+
+        // Normalize each input: scale, pad, setsar, framerate, and format
+        // This ensures the filter network doesn't need to re-init mid-stream
+        filterComplex += `[${i}:v]scale=${resScale}:force_original_aspect_ratio=decrease,pad=${resScale}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[v${i}];`;
+        concatNodes += `[v${i}]`;
     });
-    // Final file entry (ffmpeg concat requirement for some versions to process the last duration)
-    fileEntries.push(`file '${files[files.length - 1].path}'`);
 
-    const fileContent = fileEntries.join('\n');
-    fs.writeFileSync(listFileName, fileContent);
+    filterComplex += `${concatNodes}concat=n=${files.length}:v=1:a=0[outv]`;
 
-    ffmpeg()
-        .input(listFileName)
-        .inputOptions(['-f concat', '-safe 0'])
-        .outputOptions(getOutputOptions(format, resolution))
+    command
+        .complexFilter(filterComplex)
+        .map('[outv]')
+        .outputOptions(getBaseOutputOptions(format))
         .save(outputPath)
+        .on('start', (cmd) => console.log(`Starting ${prefix}:`, cmd))
         .on('end', () => {
-            fs.unlinkSync(listFileName);
             res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` });
         })
         .on('error', (err) => {
-            console.error(err);
-            res.status(500).send(`Turbo Error: ${err.message}`);
+            console.error(`FFmpeg ${prefix} Error:`, err.message);
+            res.status(500).send(`${prefix} Error: ${err.message}`);
         });
-});
+};
+
+app.post('/ia-turbo', upload.array('video'), (req, res) => handleConcatenation(req, res, 'turbo'));
+app.post('/unir-videos', upload.array('video'), (req, res) => handleConcatenation(req, res, 'merged'));
 
 /**
- * UNIR VIDEOS (Standard Route used by most tools)
- */
-app.post('/unir-videos', upload.array('video'), (req, res) => {
-    const files = req.files;
-    if (!files || files.length < 1) return res.status(400).send('Files required.');
-    
-    const format = req.body.format || 'mp4';
-    const resolution = req.body.resolution || '1080p';
-    const durationPerImage = parseFloat(req.body.durationPerImage) || 5;
-
-    const outputFilename = `merged_${Date.now()}.${format}`;
-    const outputPath = path.join(OUTPUT_DIR, outputFilename);
-    const listFileName = path.join(UPLOAD_DIR, `list_${Date.now()}.txt`);
-    
-    const fileEntries = [];
-    files.forEach((f) => {
-        fileEntries.push(`file '${f.path}'`);
-        fileEntries.push(`duration ${durationPerImage}`);
-    });
-    fileEntries.push(`file '${files[files.length - 1].path}'`);
-    
-    fs.writeFileSync(listFileName, fileEntries.join('\n'));
-
-    ffmpeg()
-        .input(listFileName).inputOptions(['-f concat', '-safe 0'])
-        .outputOptions(getOutputOptions(format, resolution))
-        .save(outputPath)
-        .on('end', () => {
-            fs.unlinkSync(listFileName);
-            res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` });
-        })
-        .on('error', (err) => {
-            console.error(err);
-            res.status(500).send(err.message);
-        });
-});
-
-/**
- * GENERIC VIDEO EDITING (MP4/MOV Guaranteed)
+ * GENERIC VIDEO EDITING
  */
 const genericEditHandler = (route, commandTransform) => {
     app.post(route, upload.array('video'), (req, res) => {
@@ -623,6 +596,7 @@ const genericEditHandler = (route, commandTransform) => {
         
         const format = req.body.format || 'mp4';
         const resolution = req.body.resolution || '1080p';
+        const resValue = resolution === '4K' ? '3840x2160' : '1920x1080';
 
         const outputFilename = `edited_${Date.now()}.${format}`;
         const outputPath = path.join(OUTPUT_DIR, outputFilename);
@@ -630,10 +604,15 @@ const genericEditHandler = (route, commandTransform) => {
         let cmd = ffmpeg(file.path);
         commandTransform(cmd, req);
         
-        cmd.outputOptions(getOutputOptions(format, resolution))
-           .save(outputPath)
-           .on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` }))
-           .on('error', (err) => res.status(500).send(err.message));
+        cmd.videoFilter([
+            `scale=${resValue.replace('x', ':')}:force_original_aspect_ratio=decrease`,
+            `pad=${resValue.replace('x', ':')}:(ow-iw)/2:(oh-ih)/2`,
+            'setsar=1'
+        ])
+        .outputOptions(getBaseOutputOptions(format))
+        .save(outputPath)
+        .on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` }))
+        .on('error', (err) => res.status(500).send(err.message));
     });
 };
 
@@ -650,9 +629,7 @@ genericEditHandler('/comprimir-videos', (cmd, req) => {
 
 genericEditHandler('/re_rem-audio', (cmd) => cmd.outputOptions('-an'));
 
-genericEditHandler('/upscale-video', (cmd, req) => {
-    // scale is handled in getOutputOptions based on req.body.resolution
-});
+genericEditHandler('/upscale-video', (cmd) => {}); // Scale handled in filter chain
 
 genericEditHandler('/colorize-video', (cmd) => {
     cmd.videoFilter('eq=saturation=1.4:contrast=1.1');
@@ -663,5 +640,5 @@ genericEditHandler('/gerar-shorts', (cmd) => {
 });
 
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Backend Standardized to MP4/MOV on port ${PORT}`);
+    console.log(`🚀 Backend Robustified on port ${PORT}`);
 });
