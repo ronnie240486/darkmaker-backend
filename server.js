@@ -529,165 +529,74 @@ const getBaseOutputOptions = () => [
 ];
 
 /**
- * IA TURBO / MASTER RENDER
- * Fixed SIGKILL: Uses Concat Demuxer instead of Filter Graph for merging.
+ * MODO TURBO MASTER: Renderização de Alta Performance
+ * Resolve SIGKILL ao processar segmentos isoladamente e usar Concat Demuxer.
  */
 app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), async (req, res) => {
-    const visualFiles = req.files['visuals'];
-    const audioFiles = req.files['audios'] || [];
+    const visuals = req.files['visuals'];
+    const audios = req.files['audios'] || [];
+    if (!visuals) return res.status(400).send('No visuals provided');
 
-    if (!visualFiles || visualFiles.length === 0) return res.status(400).send('Visual files required.');
-
-    const format = req.body.format || 'mp4';
     const resolution = req.body.resolution || '1080p';
-    const resWidth = resolution === '4K' ? 3840 : 1920;
-    const resHeight = resolution === '4K' ? 2160 : 1080;
-    const outputFilename = `master_render_${Date.now()}.${format}`;
+    const resW = resolution === '4K' ? 3840 : 1920;
+    const resH = resolution === '4K' ? 2160 : 1080;
+    
+    const outputFilename = `turbo_master_${Date.now()}.mp4`;
     const outputPath = path.join(OUTPUT_DIR, outputFilename);
+    const segmentPaths = [];
 
     try {
-        const segmentPaths = [];
-        
-        // 1. Render and Normalize individual segments
-        for (let i = 0; i < visualFiles.length; i++) {
-            const visual = visualFiles[i];
-            const audio = audioFiles[i] || null;
-            const segmentPath = path.join(UPLOAD_DIR, `seg_${i}_${Date.now()}.mp4`);
-            const isImage = visual.mimetype.startsWith('image/') || /\.(jpg|jpeg|png|webp)$/i.test(visual.path);
-            
+        // 1. Normalização de cada segmento (Isolado para não estourar RAM)
+        for (let i = 0; i < visuals.length; i++) {
+            const vFile = visuals[i];
+            const aFile = audios[i];
+            const segPath = path.join(UPLOAD_DIR, `seg_${i}_${Date.now()}.mp4`);
+            const isImg = vFile.mimetype.startsWith('image');
+
             await new Promise((resolve, reject) => {
                 let cmd = ffmpeg();
+                if (isImg) cmd.input(vFile.path).inputOptions(['-loop 1']);
+                else cmd.input(vFile.path);
 
-                if (isImage) {
-                    cmd.input(visual.path).inputOptions(['-loop 1']);
-                } else {
-                    cmd.input(visual.path);
-                }
-
-                if (audio) {
-                    cmd.input(audio.path);
-                } else {
-                    cmd.input('anullsrc=r=44100:cl=stereo').inputFormat('lavfi');
-                }
-
-                // Strict normalization to allow stream-copy concat later
-                const videoFilters = [
-                    `scale=${resWidth}:${resHeight}:force_original_aspect_ratio=increase`,
-                    `crop=${resWidth}:${resHeight}`,
-                    `setsar=1`,
-                    `format=yuv420p`,
-                    `fps=30`
-                ];
-
-                const audioFilters = [
-                    `aresample=44100`,
-                    `pan=stereo|c0=c0|c1=c1`,
-                    `aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo`
-                ];
-
-                if (isImage && !audio) {
-                    cmd.duration(5);
-                }
+                if (aFile) cmd.input(aFile.path);
+                else cmd.input('anullsrc=r=44100:cl=stereo').inputFormat('lavfi');
 
                 cmd.complexFilter([
-                    { filter: videoFilters.join(','), inputs: '0:v', outputs: 'v_norm' },
-                    { filter: audioFilters.join(','), inputs: '1:a', outputs: 'a_norm' }
-                ]);
-
-                cmd.map('v_norm').map('a_norm');
-
-                cmd.outputOptions([...getBaseOutputOptions(), '-shortest'])
-                   .save(segmentPath)
-                   .on('end', () => { 
-                       segmentPaths.push(segmentPath); 
-                       resolve(); 
-                   })
-                   .on('error', (err) => { 
-                       console.error(`Segment ${i} Error:`, err); 
-                       reject(err); 
-                   });
+                    `[0:v]scale=${resW}:${resH}:force_original_aspect_ratio=increase,crop=${resW}:${resH},setsar=1,format=yuv420p[v]`,
+                    `[1:a]aresample=44100,pan=stereo|c0=c0|c1=c1,aformat=sample_fmts=fltp:sample_rates=44100[a]`
+                ])
+                .map('[v]').map('[a]')
+                .videoCodec('libx264').audioCodec('aac')
+                .outputOptions(['-preset superfast', '-crf 23', '-shortest'])
+                .save(segPath)
+                .on('end', () => { segmentPaths.push(segPath); resolve(); })
+                .on('error', reject);
             });
         }
 
-        if (segmentPaths.length === 0) throw new Error("No segments rendered.");
-
-        // 2. Efficiently merge using concat demuxer (prevents SIGKILL)
-        const listPath = path.join(UPLOAD_DIR, `list_${Date.now()}.txt`);
+        // 2. Concatenação Ultra-Rápida (Stream Copy)
+        const listFile = path.join(UPLOAD_DIR, `list_${Date.now()}.txt`);
         const listContent = segmentPaths.map(p => `file '${p.replace(/'/g, "'\\''")}'`).join('\n');
-        fs.writeFileSync(listPath, listContent);
+        fs.writeFileSync(listFile, listContent);
 
         await new Promise((resolve, reject) => {
-            ffmpeg()
-                .input(listPath)
-                .inputOptions(['-f concat', '-safe 0'])
-                .outputOptions(['-c copy']) // Very low CPU/Memory usage
+            ffmpeg().input(listFile).inputOptions(['-f concat', '-safe 0'])
+                .outputOptions(['-c copy'])
                 .save(outputPath)
                 .on('end', resolve)
                 .on('error', reject);
         });
 
         // Cleanup
-        fs.unlink(listPath, () => {});
+        fs.unlinkSync(listFile);
         segmentPaths.forEach(p => fs.unlink(p, () => {}));
-        
-        res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` });
 
-    } catch (error) {
-        console.error("Global Export Error:", error);
-        res.status(500).send(`Export Error: ${error.message}`);
+        res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` });
+    } catch (err) {
+        console.error("Render Error:", err);
+        res.status(500).send(err.message);
     }
 });
 
-/**
- * GENERIC PROCESSING ROUTES
- */
-const genericHandler = (route, optionsCallback) => {
-    app.post(route, upload.array('video'), async (req, res) => {
-        const files = req.files;
-        if (!files || files.length === 0) return res.status(400).send('Files required.');
-        
-        const outputFilename = `proc_${Date.now()}.mp4`;
-        const outputPath = path.join(OUTPUT_DIR, outputFilename);
-        let cmd = ffmpeg(files[0].path);
-
-        if (route === '/join' && files.length > 1) {
-            files.slice(1).forEach(f => cmd.input(f.path));
-            cmd.mergeToFile(outputPath, UPLOAD_DIR);
-        } else {
-            if (optionsCallback) optionsCallback(cmd, req);
-            cmd.outputOptions(getBaseOutputOptions())
-               .save(outputPath)
-               .on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` }))
-               .on('error', (err) => res.status(500).send(err.message));
-        }
-    });
-};
-
-genericHandler('/upscale', (cmd) => cmd.videoFilter('scale=3840:2160:flags=lanczos'));
-genericHandler('/colorize', (cmd) => cmd.videoFilter('eq=saturation=1.5:contrast=1.2'));
-genericHandler('/compress', (cmd) => cmd.outputOptions(['-crf', '28', '-preset', 'slow']));
-genericHandler('/shuffle', (cmd) => cmd.videoFilter('noise=alls=20:allf=t+u'));
-genericHandler('/cut', (cmd, req) => cmd.setStartTime(req.body.startTime || 0).duration(req.body.duration || 10));
-genericHandler('/join', null);
-genericHandler('/remove-audio', (cmd) => cmd.noAudio());
-genericHandler('/extract-audio', (cmd, req) => {
-    const out = path.join(OUTPUT_DIR, `audio_${Date.now()}.mp3`);
-    cmd.output(out).noVideo().on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${path.basename(out)}` }));
-});
-
-app.post('/process-audio', upload.array('audio'), (req, res) => {
-    const file = req.files[0];
-    const outputFilename = `audio_proc_${Date.now()}.mp3`;
-    const outputPath = path.join(OUTPUT_DIR, outputFilename);
-    ffmpeg(file.path).output(outputPath).on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` })).on('error', (err) => res.status(500).send(err.message)).run();
-});
-
-app.post('/process-image', upload.array('image'), (req, res) => {
-    const file = req.files[0];
-    const outputFilename = `img_proc_${Date.now()}.png`;
-    const outputPath = path.join(OUTPUT_DIR, outputFilename);
-    ffmpeg(file.path).output(outputPath).on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` })).on('error', (err) => res.status(500).send(err.message)).run();
-});
-
-app.get('/', (req, res) => res.send('AI Media Backend: Rendering Engine Active. 🚀'));
-app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Rendering Engine on port ${PORT}`));
+app.get('/', (req, res) => res.send('Turbo Renderer Active 🚀'));
+app.listen(PORT, '0.0.0.0', () => console.log(`Backend on ${PORT}`));
