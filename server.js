@@ -529,7 +529,6 @@ const getBaseOutputOptions = () => [
 ];
 
 /**
-/**
  * MODO TURBO MASTER: Estável e com Movimento
  */
 app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), async (req, res) => {
@@ -540,7 +539,7 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
     const resolution = req.body.resolution || '1080p';
     const resW = resolution === '4K' ? 3840 : 1920;
     const resH = resolution === '4K' ? 2160 : 1080;
-    const fps = 30; // Standard 30fps for compatibility
+    const fps = 30;
     
     const outputFilename = `master_${Date.now()}.mp4`;
     const outputPath = path.join(OUTPUT_DIR, outputFilename);
@@ -549,41 +548,51 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
     try {
         console.log(`[STABLE RENDER] Processing ${visuals.length} scenes @ ${resW}x${resH}...`);
 
-        // Processamento SEQUENCIAL para estabilidade
         for (let i = 0; i < visuals.length; i++) {
             const vFile = visuals[i];
             const aFile = audios[i];
             const segPath = path.join(UPLOAD_DIR, `seg_${i}_${Date.now()}.mp4`);
             const isImg = vFile.mimetype.startsWith('image');
+            const duration = 5; // Duração fixa para imagens sem áudio ou base para zoom
 
             await new Promise((resolve, reject) => {
                 let cmd = ffmpeg();
                 
-                // Input handling
+                // INPUTS
                 if (isImg) {
-                    // Images need looping to become a video stream
-                    cmd.input(vFile.path).inputOptions(['-loop 1', `-framerate ${fps}`]);
+                    // Loop image input
+                    cmd.input(vFile.path).inputOptions(['-loop 1', `-t ${duration}`]);
                 } else {
                     cmd.input(vFile.path);
                 }
 
-                // Audio handling
+                // AUDIO INPUT
                 if (aFile) cmd.input(aFile.path);
-                else cmd.input('anullsrc=r=44100:cl=stereo').inputFormat('lavfi');
+                else cmd.input('anullsrc=r=44100:cl=stereo').inputFormat('lavfi').inputOptions([`-t ${duration}`]);
 
-                // Robust Filter Chain
-                // 1. Scale/Crop first to ensure standard dimensions for all subsequent filters (fixes encoder errors)
-                // 2. Apply Zoompan on the standardized frame
-                const standardScale = `scale=${resW}:${resH}:force_original_aspect_ratio=increase,crop=${resW}:${resH},setsar=1`;
-                
+                // FILTERS
                 let vFilter = '';
+                
                 if (isImg) {
-                    // Center Zoom: z=zoom, x/y centered
-                    const zoomParams = `z='min(zoom+0.001,1.1)':d=${fps*10}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${resW}x${resH}:fps=${fps}`;
-                    vFilter = `${standardScale},${zoomParams},format=yuv420p`;
+                    // KEN BURNS EFFECT (ZOOMPAN)
+                    // 1. Scale to ResW * 1.5 to allow zooming in without blur. 
+                    //    Using -2 for width/height ensures EVEN numbers (Critical for ffmpeg).
+                    // 2. Apply Zoompan: 
+                    //    z='min(zoom+0.0015,1.5)' -> Zoom gradual até 1.5x
+                    //    d=${duration*fps} -> Duração total em frames
+                    //    s=${resW}x${resH} -> Saída final exata
+                    const zoomDuration = duration * fps;
+                    vFilter = `scale=-2:${resH*2},zoompan=z='min(zoom+0.0015,1.5)':d=${zoomDuration}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${resW}x${resH}:fps=${fps},setsar=1`;
                 } else {
-                    vFilter = `${standardScale},fps=${fps},format=yuv420p`;
+                    // VIDEO FITTING (Letterbox/Pillarbox)
+                    // 1. Scale to fit within box while keeping aspect ratio (force_original_aspect_ratio=decrease)
+                    // 2. Pad with black bars to fill the rest (pad=...)
+                    //    (ow-iw)/2 centers the video.
+                    vFilter = `scale=${resW}:${resH}:force_original_aspect_ratio=decrease,pad=${resW}:${resH}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=${fps}`;
                 }
+
+                // Final safety format ensures compatibility
+                vFilter += `,format=yuv420p`;
 
                 cmd.complexFilter([
                     `[0:v]${vFilter}[v]`,
@@ -592,40 +601,27 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
                 .map('[v]').map('[a]')
                 .videoCodec('libx264')
                 .audioCodec('aac')
-                
-                // Output Options
-                const outOptions = [
+                .outputOptions([
                     '-preset ultrafast', 
-                    '-tune zerolatency',
                     '-crf 28',
-                    '-threads 1',        // Low resource usage
+                    '-threads 1',
                     '-movflags +faststart',
-                    '-pix_fmt yuv420p'   // Force pixel format for compatibility
-                ];
-
-                // Duration Logic: Prevent infinite loops
-                if (aFile) {
-                    outOptions.push('-shortest'); // Cut to audio length
-                } else {
-                    // If no audio file provided:
-                    if (isImg) outOptions.push('-t 5'); // Images get 5s static/zoom duration
-                    else outOptions.push('-shortest');  // Video input + null audio -> cut to video length
-                }
-
-                cmd.outputOptions(outOptions)
+                    '-pix_fmt yuv420p',
+                    '-shortest' // Garante que o vídeo não fique mais longo que o áudio (ou vice versa)
+                ])
                 .save(segPath)
                 .on('end', () => { 
                     segmentPaths.push(segPath); 
                     resolve(); 
                 })
                 .on('error', (err) => {
-                    console.error(`Error processing segment ${i}:`, err.message);
+                    console.error(`Error scene ${i}:`, err.message);
                     reject(err);
                 });
             });
         }
 
-        // Concatenação
+        // CONCATENATION
         const listFile = path.join(UPLOAD_DIR, `list_${Date.now()}.txt`);
         const listContent = segmentPaths.map(p => `file '${p.replace(/'/g, "'\\''")}'`).join('\n');
         fs.writeFileSync(listFile, listContent);
@@ -638,7 +634,7 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
                 .on('error', reject);
         });
 
-        // Cleanup
+        // CLEANUP
         try {
             fs.unlink(listFile, () => {});
             segmentPaths.forEach(p => fs.unlink(p, () => {}));
@@ -646,7 +642,6 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
             audios.forEach(f => fs.unlink(f.path, () => {}));
         } catch(e) {}
 
-        console.log(`[DONE] Master video created: ${outputFilename}`);
         res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` });
 
     } catch (err) {
@@ -655,6 +650,5 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
     }
 });
 
-app.get('/', (req, res) => res.send('Turbo Engine Active'));
+app.get('/', (req, res) => res.send('Turbo Engine Active 2.0'));
 app.listen(PORT, '0.0.0.0', () => console.log(`Server running on ${PORT}`));
-
