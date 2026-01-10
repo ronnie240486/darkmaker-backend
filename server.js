@@ -529,28 +529,27 @@ const getBaseOutputOptions = () => [
 ];
 
 /**
- * MODO TURBO MASTER: Renderização de Alta Performance
- * Otimizado com processamento paralelo e presets mais rápidos para evitar timeouts (499).
+ * MODO TURBO MASTER: Renderização Otimizada para Velocidade
  */
 app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), async (req, res) => {
     const visuals = req.files['visuals'];
     const audios = req.files['audios'] || [];
     if (!visuals) return res.status(400).send('No visuals provided');
 
+    // Default to 1080p, but use 24fps for speed
     const resolution = req.body.resolution || '1080p';
     const resW = resolution === '4K' ? 3840 : 1920;
     const resH = resolution === '4K' ? 2160 : 1080;
+    const fps = 24; 
     
     const outputFilename = `turbo_master_${Date.now()}.mp4`;
     const outputPath = path.join(OUTPUT_DIR, outputFilename);
     
-    // Store paths by index to maintain sequence order during parallel processing
     const segmentPaths = new Array(visuals.length);
 
     try {
-        console.log(`Starting render for ${visuals.length} scenes. Resolution: ${resolution}`);
+        console.log(`[START] Rendering ${visuals.length} scenes @ ${resolution} ${fps}fps`);
 
-        // Função de processamento de segmento individual
         const processSegment = (i) => {
             const vFile = visuals[i];
             const aFile = audios[i];
@@ -559,35 +558,51 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
 
             return new Promise((resolve, reject) => {
                 let cmd = ffmpeg();
-                if (isImg) cmd.input(vFile.path).inputOptions(['-loop 1']);
-                else cmd.input(vFile.path);
+                
+                // Input options
+                if (isImg) {
+                    cmd.input(vFile.path).inputOptions(['-loop 1', `-framerate ${fps}`]);
+                } else {
+                    cmd.input(vFile.path);
+                }
 
                 if (aFile) cmd.input(aFile.path);
                 else cmd.input('anullsrc=r=44100:cl=stereo').inputFormat('lavfi');
 
-                // Using 'ultrafast' for intermediate segments to save massive time
+                // Optimized Filter Complex for Speed
+                // - scale with 'bilinear' (fastest)
+                // - setsar=1 to avoid aspect ratio issues
+                // - fps=24 to reduce frame count processing
                 cmd.complexFilter([
-                    `[0:v]scale=${resW}:${resH}:force_original_aspect_ratio=increase,crop=${resW}:${resH},setsar=1,format=yuv420p[v]`,
-                    `[1:a]aresample=44100,pan=stereo|c0=c0|c1=c1,aformat=sample_fmts=fltp:sample_rates=44100[a]`
+                    `[0:v]scale=${resW}:${resH}:force_original_aspect_ratio=increase,crop=${resW}:${resH},setsar=1,fps=${fps},format=yuv420p[v]`,
+                    `[1:a]aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo[a]`
                 ])
                 .map('[v]').map('[a]')
-                .videoCodec('libx264').audioCodec('aac')
-                .outputOptions(['-preset ultrafast', '-crf 28', '-shortest']) 
+                .videoCodec('libx264')
+                .audioCodec('aac')
+                .outputOptions([
+                    '-preset ultrafast', // Fastest encoding speed
+                    '-tune zerolatency', // Optimize for streaming/immediate use
+                    '-crf 28',           // Slightly lower quality for speed
+                    '-sws_flags bilinear', // Fastest scaling algorithm
+                    '-shortest',         // Cut to shortest stream (usually audio duration)
+                    '-movflags +faststart'
+                ]) 
                 .save(segPath)
                 .on('end', () => { 
                     segmentPaths[i] = segPath; 
                     resolve(); 
                 })
                 .on('error', (err) => {
-                    console.error(`Error segment ${i}:`, err);
+                    console.error(`[ERROR] Segment ${i}:`, err.message);
                     reject(err);
                 });
             });
         };
 
-        // Processamento Paralelo (Concurrency Control)
-        // Railway free tier often has limited CPU, so concurrency of 3 is a safe balance
-        const concurrency = 3;
+        // Increase concurrency carefully. 
+        // 3 is safe for limited RAM, but we can try 4 with 'ultrafast'.
+        const concurrency = 4; 
         const queue = [...Array(visuals.length).keys()];
         
         const worker = async () => {
@@ -601,19 +616,17 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
             }
         };
 
-        // Start workers
         await Promise.all(Array(concurrency).fill(null).map(() => worker()));
 
-        // 2. Concatenação (Stream Copy - Instantâneo)
+        // Concat
         const listFile = path.join(UPLOAD_DIR, `list_${Date.now()}.txt`);
-        // Filter out any undefined paths if a segment failed silently (safety check)
         const validPaths = segmentPaths.filter(p => p);
         const listContent = validPaths.map(p => `file '${p.replace(/'/g, "'\\''")}'`).join('\n');
         fs.writeFileSync(listFile, listContent);
 
         await new Promise((resolve, reject) => {
             ffmpeg().input(listFile).inputOptions(['-f concat', '-safe 0'])
-                .outputOptions(['-c copy'])
+                .outputOptions(['-c copy', '-movflags +faststart']) // Stream copy is instant
                 .save(outputPath)
                 .on('end', resolve)
                 .on('error', reject);
@@ -623,11 +636,11 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
         try {
             fs.unlinkSync(listFile);
             validPaths.forEach(p => fs.unlink(p, () => {}));
-            // Optional: clean uploaded source files to save space
             visuals.forEach(f => fs.unlink(f.path, () => {}));
             audios.forEach(f => fs.unlink(f.path, () => {}));
-        } catch(e) { console.warn("Cleanup warning:", e); }
+        } catch(e) { console.warn("Cleanup warning:", e.message); }
 
+        console.log(`[DONE] Render complete: ${outputFilename}`);
         res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` });
 
     } catch (err) {
@@ -637,8 +650,6 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
 });
 
 app.post('/:action', upload.fields([{ name: 'video' }, { name: 'audio' }, { name: 'image' }]), async (req, res) => {
-    // Handler genérico para outras ferramentas (mantido simples)
-    // Implementações específicas podem ser adicionadas aqui
     res.status(501).send("Generic processor not fully implemented in this demo server. Use /ia-turbo.");
 });
 
