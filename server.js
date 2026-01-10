@@ -514,10 +514,13 @@ const normalizeInput = (filePath) => {
 };
 
 // Helper: Standard Output Options for Final Render
+// We use fixed profile and level to ensure concat demuxer compatibility
 const getBaseOutputOptions = () => [
     '-c:v libx264',
-    '-preset fast',
-    '-crf 22',
+    '-profile:v main',
+    '-level:v 4.0',
+    '-preset superfast',
+    '-crf 23',
     '-pix_fmt yuv420p',
     '-c:a aac',
     '-b:a 128k',
@@ -527,7 +530,7 @@ const getBaseOutputOptions = () => [
 
 /**
  * IA TURBO / MASTER RENDER
- * Robust concatenation with strictly normalized segments
+ * Fixed SIGKILL: Uses Concat Demuxer instead of Filter Graph for merging.
  */
 app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), async (req, res) => {
     const visualFiles = req.files['visuals'];
@@ -545,6 +548,7 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
     try {
         const segmentPaths = [];
         
+        // 1. Render and Normalize individual segments
         for (let i = 0; i < visualFiles.length; i++) {
             const visual = visualFiles[i];
             const audio = audioFiles[i] || null;
@@ -563,15 +567,10 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
                 if (audio) {
                     cmd.input(audio.path);
                 } else {
-                    // Generate silent audio for segments without narration
                     cmd.input('anullsrc=r=44100:cl=stereo').inputFormat('lavfi');
                 }
 
-                // Complex filters to ensure absolute normalization:
-                // 1. Scale and crop video to exact target resolution
-                // 2. Normalize frame rate to 30fps
-                // 3. Normalize pixel format to yuv420p
-                // 4. Normalize audio to 44.1kHz Stereo
+                // Strict normalization to allow stream-copy concat later
                 const videoFilters = [
                     `scale=${resWidth}:${resHeight}:force_original_aspect_ratio=increase`,
                     `crop=${resWidth}:${resHeight}`,
@@ -586,13 +585,8 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
                     `aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo`
                 ];
 
-                if (isImage) {
-                    // For images, we can add a subtle Ken Burns effect if desired, 
-                    // but simple scaling is safer for stability.
-                    // If no audio, default to 5 seconds. If audio exists, use audio duration.
-                    if (!audio) {
-                        cmd.duration(5);
-                    }
+                if (isImage && !audio) {
+                    cmd.duration(5);
                 }
 
                 cmd.complexFilter([
@@ -604,9 +598,6 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
 
                 cmd.outputOptions([...getBaseOutputOptions(), '-shortest'])
                    .save(segmentPath)
-                   .on('start', (commandLine) => {
-                       console.log(`Processing segment ${i}: ${commandLine}`);
-                   })
                    .on('end', () => { 
                        segmentPaths.push(segmentPath); 
                        resolve(); 
@@ -618,34 +609,28 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
             });
         }
 
-        if (segmentPaths.length === 0) {
-            throw new Error("No segments were successfully rendered.");
-        }
+        if (segmentPaths.length === 0) throw new Error("No segments rendered.");
 
-        // Final Merge using Concat Filter
-        // Since all segments are now strictly normalized, this should be seamless
-        const finalCmd = ffmpeg();
-        segmentPaths.forEach(p => finalCmd.input(p));
+        // 2. Efficiently merge using concat demuxer (prevents SIGKILL)
+        const listPath = path.join(UPLOAD_DIR, `list_${Date.now()}.txt`);
+        const listContent = segmentPaths.map(p => `file '${p.replace(/'/g, "'\\''")}'`).join('\n');
+        fs.writeFileSync(listPath, listContent);
+
+        await new Promise((resolve, reject) => {
+            ffmpeg()
+                .input(listPath)
+                .inputOptions(['-f concat', '-safe 0'])
+                .outputOptions(['-c copy']) // Very low CPU/Memory usage
+                .save(outputPath)
+                .on('end', resolve)
+                .on('error', reject);
+        });
+
+        // Cleanup
+        fs.unlink(listPath, () => {});
+        segmentPaths.forEach(p => fs.unlink(p, () => {}));
         
-        const filterStr = segmentPaths.map((_, i) => `[${i}:v][${i}:a]`).join('') + `concat=n=${segmentPaths.length}:v=1:a=1[v][a]`;
-
-        finalCmd.complexFilter(filterStr)
-            .map('[v]').map('[a]')
-            .outputOptions(getBaseOutputOptions())
-            .save(outputPath)
-            .on('start', (commandLine) => {
-                console.log(`Final render started: ${commandLine}`);
-            })
-            .on('end', () => {
-                console.log("Final render success.");
-                // Cleanup segments
-                segmentPaths.forEach(p => fs.unlink(p, () => {}));
-                res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` });
-            })
-            .on('error', (err) => {
-                console.error("Final Merge Error:", err);
-                res.status(500).send(`Final rendering stage failed: ${err.message}`);
-            });
+        res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` });
 
     } catch (error) {
         console.error("Global Export Error:", error);
@@ -690,31 +675,19 @@ genericHandler('/extract-audio', (cmd, req) => {
     cmd.output(out).noVideo().on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${path.basename(out)}` }));
 });
 
-// Audio & Image Tools
 app.post('/process-audio', upload.array('audio'), (req, res) => {
     const file = req.files[0];
     const outputFilename = `audio_proc_${Date.now()}.mp3`;
     const outputPath = path.join(OUTPUT_DIR, outputFilename);
-    
-    ffmpeg(file.path)
-        .output(outputPath)
-        .on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` }))
-        .on('error', (err) => res.status(500).send(err.message))
-        .run();
+    ffmpeg(file.path).output(outputPath).on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` })).on('error', (err) => res.status(500).send(err.message)).run();
 });
 
 app.post('/process-image', upload.array('image'), (req, res) => {
     const file = req.files[0];
     const outputFilename = `img_proc_${Date.now()}.png`;
     const outputPath = path.join(OUTPUT_DIR, outputFilename);
-    
-    ffmpeg(file.path)
-        .output(outputPath)
-        .on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` }))
-        .on('error', (err) => res.status(500).send(err.message))
-        .run();
+    ffmpeg(file.path).output(outputPath).on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` })).on('error', (err) => res.status(500).send(err.message)).run();
 });
 
 app.get('/', (req, res) => res.send('AI Media Backend: Rendering Engine Active. 🚀'));
-
 app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Rendering Engine on port ${PORT}`));
