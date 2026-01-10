@@ -529,104 +529,110 @@ const getBaseOutputOptions = () => [
 ];
 
 /**
- * MODO TURBO MASTER: Renderização Otimizada para Velocidade
+/**
+ * MODO TURBO MASTER: Estável e com Movimento
  */
 app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), async (req, res) => {
     const visuals = req.files['visuals'];
     const audios = req.files['audios'] || [];
     if (!visuals) return res.status(400).send('No visuals provided');
 
-    // Default to 1080p, but use 24fps for speed
     const resolution = req.body.resolution || '1080p';
     const resW = resolution === '4K' ? 3840 : 1920;
     const resH = resolution === '4K' ? 2160 : 1080;
-    const fps = 24; 
+    const fps = 30; // Standard 30fps for compatibility
     
-    const outputFilename = `turbo_master_${Date.now()}.mp4`;
+    const outputFilename = `master_${Date.now()}.mp4`;
     const outputPath = path.join(OUTPUT_DIR, outputFilename);
-    
-    const segmentPaths = new Array(visuals.length);
+    const segmentPaths = [];
 
     try {
-        console.log(`[START] Rendering ${visuals.length} scenes @ ${resolution} ${fps}fps`);
+        console.log(`[STABLE RENDER] Processing ${visuals.length} scenes @ ${resW}x${resH}...`);
 
-        const processSegment = (i) => {
+        // Processamento SEQUENCIAL para estabilidade
+        for (let i = 0; i < visuals.length; i++) {
             const vFile = visuals[i];
             const aFile = audios[i];
             const segPath = path.join(UPLOAD_DIR, `seg_${i}_${Date.now()}.mp4`);
             const isImg = vFile.mimetype.startsWith('image');
 
-            return new Promise((resolve, reject) => {
+            await new Promise((resolve, reject) => {
                 let cmd = ffmpeg();
                 
-                // Input options
+                // Input handling
                 if (isImg) {
+                    // Images need looping to become a video stream
                     cmd.input(vFile.path).inputOptions(['-loop 1', `-framerate ${fps}`]);
                 } else {
                     cmd.input(vFile.path);
                 }
 
+                // Audio handling
                 if (aFile) cmd.input(aFile.path);
                 else cmd.input('anullsrc=r=44100:cl=stereo').inputFormat('lavfi');
 
-                // Optimized Filter Complex for Speed
-                // - scale with 'bilinear' (fastest)
-                // - setsar=1 to avoid aspect ratio issues
-                // - fps=24 to reduce frame count processing
+                // Robust Filter Chain
+                // 1. Scale/Crop first to ensure standard dimensions for all subsequent filters (fixes encoder errors)
+                // 2. Apply Zoompan on the standardized frame
+                const standardScale = `scale=${resW}:${resH}:force_original_aspect_ratio=increase,crop=${resW}:${resH},setsar=1`;
+                
+                let vFilter = '';
+                if (isImg) {
+                    // Center Zoom: z=zoom, x/y centered
+                    const zoomParams = `z='min(zoom+0.001,1.1)':d=${fps*10}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${resW}x${resH}:fps=${fps}`;
+                    vFilter = `${standardScale},${zoomParams},format=yuv420p`;
+                } else {
+                    vFilter = `${standardScale},fps=${fps},format=yuv420p`;
+                }
+
                 cmd.complexFilter([
-                    `[0:v]scale=${resW}:${resH}:force_original_aspect_ratio=increase,crop=${resW}:${resH},setsar=1,fps=${fps},format=yuv420p[v]`,
+                    `[0:v]${vFilter}[v]`,
                     `[1:a]aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo[a]`
                 ])
                 .map('[v]').map('[a]')
                 .videoCodec('libx264')
                 .audioCodec('aac')
-                .outputOptions([
-                    '-preset ultrafast', // Fastest encoding speed
-                    '-tune zerolatency', // Optimize for streaming/immediate use
-                    '-crf 28',           // Slightly lower quality for speed
-                    '-sws_flags bilinear', // Fastest scaling algorithm
-                    '-shortest',         // Cut to shortest stream (usually audio duration)
-                    '-movflags +faststart'
-                ]) 
+                
+                // Output Options
+                const outOptions = [
+                    '-preset ultrafast', 
+                    '-tune zerolatency',
+                    '-crf 28',
+                    '-threads 1',        // Low resource usage
+                    '-movflags +faststart',
+                    '-pix_fmt yuv420p'   // Force pixel format for compatibility
+                ];
+
+                // Duration Logic: Prevent infinite loops
+                if (aFile) {
+                    outOptions.push('-shortest'); // Cut to audio length
+                } else {
+                    // If no audio file provided:
+                    if (isImg) outOptions.push('-t 5'); // Images get 5s static/zoom duration
+                    else outOptions.push('-shortest');  // Video input + null audio -> cut to video length
+                }
+
+                cmd.outputOptions(outOptions)
                 .save(segPath)
                 .on('end', () => { 
-                    segmentPaths[i] = segPath; 
+                    segmentPaths.push(segPath); 
                     resolve(); 
                 })
                 .on('error', (err) => {
-                    console.error(`[ERROR] Segment ${i}:`, err.message);
+                    console.error(`Error processing segment ${i}:`, err.message);
                     reject(err);
                 });
             });
-        };
+        }
 
-        // Increase concurrency carefully. 
-        // 3 is safe for limited RAM, but we can try 4 with 'ultrafast'.
-        const concurrency = 4; 
-        const queue = [...Array(visuals.length).keys()];
-        
-        const worker = async () => {
-            while (queue.length > 0) {
-                const i = queue.shift();
-                try {
-                    await processSegment(i);
-                } catch (e) {
-                    throw e;
-                }
-            }
-        };
-
-        await Promise.all(Array(concurrency).fill(null).map(() => worker()));
-
-        // Concat
+        // Concatenação
         const listFile = path.join(UPLOAD_DIR, `list_${Date.now()}.txt`);
-        const validPaths = segmentPaths.filter(p => p);
-        const listContent = validPaths.map(p => `file '${p.replace(/'/g, "'\\''")}'`).join('\n');
+        const listContent = segmentPaths.map(p => `file '${p.replace(/'/g, "'\\''")}'`).join('\n');
         fs.writeFileSync(listFile, listContent);
 
         await new Promise((resolve, reject) => {
             ffmpeg().input(listFile).inputOptions(['-f concat', '-safe 0'])
-                .outputOptions(['-c copy', '-movflags +faststart']) // Stream copy is instant
+                .outputOptions(['-c copy', '-threads 1'])
                 .save(outputPath)
                 .on('end', resolve)
                 .on('error', reject);
@@ -634,24 +640,21 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
 
         // Cleanup
         try {
-            fs.unlinkSync(listFile);
-            validPaths.forEach(p => fs.unlink(p, () => {}));
+            fs.unlink(listFile, () => {});
+            segmentPaths.forEach(p => fs.unlink(p, () => {}));
             visuals.forEach(f => fs.unlink(f.path, () => {}));
             audios.forEach(f => fs.unlink(f.path, () => {}));
-        } catch(e) { console.warn("Cleanup warning:", e.message); }
+        } catch(e) {}
 
-        console.log(`[DONE] Render complete: ${outputFilename}`);
+        console.log(`[DONE] Master video created: ${outputFilename}`);
         res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` });
 
     } catch (err) {
-        console.error("Render Final Error:", err);
+        console.error("Mastering Error:", err);
         res.status(500).send(err.message);
     }
 });
 
-app.post('/:action', upload.fields([{ name: 'video' }, { name: 'audio' }, { name: 'image' }]), async (req, res) => {
-    res.status(501).send("Generic processor not fully implemented in this demo server. Use /ia-turbo.");
-});
+app.get('/', (req, res) => res.send('Turbo Engine Active'));
+app.listen(PORT, '0.0.0.0', () => console.log(`Server running on ${PORT}`));
 
-app.get('/', (req, res) => res.send('Turbo Renderer Active 🚀'));
-app.listen(PORT, '0.0.0.0', () => console.log(`Backend on ${PORT}`));
