@@ -530,7 +530,7 @@ const getBaseOutputOptions = () => [
 
 /**
  * MODO TURBO MASTER: Renderização de Alta Performance
- * Resolve SIGKILL ao processar segmentos isoladamente e usar Concat Demuxer.
+ * Otimizado com processamento paralelo e presets mais rápidos para evitar timeouts (499).
  */
 app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), async (req, res) => {
     const visuals = req.files['visuals'];
@@ -543,17 +543,21 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
     
     const outputFilename = `turbo_master_${Date.now()}.mp4`;
     const outputPath = path.join(OUTPUT_DIR, outputFilename);
-    const segmentPaths = [];
+    
+    // Store paths by index to maintain sequence order during parallel processing
+    const segmentPaths = new Array(visuals.length);
 
     try {
-        // 1. Normalização de cada segmento (Isolado para não estourar RAM)
-        for (let i = 0; i < visuals.length; i++) {
+        console.log(`Starting render for ${visuals.length} scenes. Resolution: ${resolution}`);
+
+        // Função de processamento de segmento individual
+        const processSegment = (i) => {
             const vFile = visuals[i];
             const aFile = audios[i];
             const segPath = path.join(UPLOAD_DIR, `seg_${i}_${Date.now()}.mp4`);
             const isImg = vFile.mimetype.startsWith('image');
 
-            await new Promise((resolve, reject) => {
+            return new Promise((resolve, reject) => {
                 let cmd = ffmpeg();
                 if (isImg) cmd.input(vFile.path).inputOptions(['-loop 1']);
                 else cmd.input(vFile.path);
@@ -561,22 +565,50 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
                 if (aFile) cmd.input(aFile.path);
                 else cmd.input('anullsrc=r=44100:cl=stereo').inputFormat('lavfi');
 
+                // Using 'ultrafast' for intermediate segments to save massive time
                 cmd.complexFilter([
                     `[0:v]scale=${resW}:${resH}:force_original_aspect_ratio=increase,crop=${resW}:${resH},setsar=1,format=yuv420p[v]`,
                     `[1:a]aresample=44100,pan=stereo|c0=c0|c1=c1,aformat=sample_fmts=fltp:sample_rates=44100[a]`
                 ])
                 .map('[v]').map('[a]')
                 .videoCodec('libx264').audioCodec('aac')
-                .outputOptions(['-preset superfast', '-crf 23', '-shortest'])
+                .outputOptions(['-preset ultrafast', '-crf 28', '-shortest']) 
                 .save(segPath)
-                .on('end', () => { segmentPaths.push(segPath); resolve(); })
-                .on('error', reject);
+                .on('end', () => { 
+                    segmentPaths[i] = segPath; 
+                    resolve(); 
+                })
+                .on('error', (err) => {
+                    console.error(`Error segment ${i}:`, err);
+                    reject(err);
+                });
             });
-        }
+        };
 
-        // 2. Concatenação Ultra-Rápida (Stream Copy)
+        // Processamento Paralelo (Concurrency Control)
+        // Railway free tier often has limited CPU, so concurrency of 3 is a safe balance
+        const concurrency = 3;
+        const queue = [...Array(visuals.length).keys()];
+        
+        const worker = async () => {
+            while (queue.length > 0) {
+                const i = queue.shift();
+                try {
+                    await processSegment(i);
+                } catch (e) {
+                    throw e;
+                }
+            }
+        };
+
+        // Start workers
+        await Promise.all(Array(concurrency).fill(null).map(() => worker()));
+
+        // 2. Concatenação (Stream Copy - Instantâneo)
         const listFile = path.join(UPLOAD_DIR, `list_${Date.now()}.txt`);
-        const listContent = segmentPaths.map(p => `file '${p.replace(/'/g, "'\\''")}'`).join('\n');
+        // Filter out any undefined paths if a segment failed silently (safety check)
+        const validPaths = segmentPaths.filter(p => p);
+        const listContent = validPaths.map(p => `file '${p.replace(/'/g, "'\\''")}'`).join('\n');
         fs.writeFileSync(listFile, listContent);
 
         await new Promise((resolve, reject) => {
@@ -588,14 +620,26 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
         });
 
         // Cleanup
-        fs.unlinkSync(listFile);
-        segmentPaths.forEach(p => fs.unlink(p, () => {}));
+        try {
+            fs.unlinkSync(listFile);
+            validPaths.forEach(p => fs.unlink(p, () => {}));
+            // Optional: clean uploaded source files to save space
+            visuals.forEach(f => fs.unlink(f.path, () => {}));
+            audios.forEach(f => fs.unlink(f.path, () => {}));
+        } catch(e) { console.warn("Cleanup warning:", e); }
 
         res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` });
+
     } catch (err) {
-        console.error("Render Error:", err);
+        console.error("Render Final Error:", err);
         res.status(500).send(err.message);
     }
+});
+
+app.post('/:action', upload.fields([{ name: 'video' }, { name: 'audio' }, { name: 'image' }]), async (req, res) => {
+    // Handler genérico para outras ferramentas (mantido simples)
+    // Implementações específicas podem ser adicionadas aqui
+    res.status(501).send("Generic processor not fully implemented in this demo server. Use /ia-turbo.");
 });
 
 app.get('/', (req, res) => res.send('Turbo Renderer Active 🚀'));
