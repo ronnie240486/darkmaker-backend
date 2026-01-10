@@ -24,7 +24,8 @@ try {
 // --- FONT CONFIGURATION ---
 const FONT_FILENAME = 'Roboto-Bold.ttf';
 const FONT_PATH = path.join(__dirname, FONT_FILENAME);
-const FONT_URL = "https://github.com/google/fonts/raw/main/ofl/roboto/Roboto-Bold.ttf";
+// Fix: Roboto is licensed under Apache 2.0, so it is in the 'apache' folder, not 'ofl'
+const FONT_URL = "https://github.com/google/fonts/raw/main/apache/roboto/Roboto-Bold.ttf";
 
 const downloadFont = async () => {
     const tempPath = path.join(__dirname, `${FONT_FILENAME}.tmp`);
@@ -42,8 +43,8 @@ const downloadFont = async () => {
             if (response.statusCode !== 200) {
                 fs.unlink(tempPath, () => {});
                 console.error(`❌ Font download failed: ${response.statusCode}`);
-                // Fallback
-                const fallbackUrl = "https://raw.githubusercontent.com/google/fonts/main/ofl/roboto/Roboto-Bold.ttf";
+                // Fallback URL (also corrected to apache/)
+                const fallbackUrl = "https://raw.githubusercontent.com/google/fonts/main/apache/roboto/Roboto-Bold.ttf";
                 const fileFallback = fs.createWriteStream(tempPath);
                 https.get(fallbackUrl, resFallback => {
                     if (resFallback.statusCode !== 200) {
