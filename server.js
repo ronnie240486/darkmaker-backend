@@ -24,7 +24,8 @@ try {
 // --- FONT CONFIGURATION ---
 const FONT_FILENAME = 'Roboto-Bold.ttf';
 const FONT_PATH = path.join(__dirname, FONT_FILENAME);
-const FONT_URL = "https://github.com/google/fonts/raw/main/apache/roboto/Roboto-Bold.ttf";
+// Corrected URL: moved from apache/ to ofl/ structure in google fonts repo
+const FONT_URL = "https://github.com/google/fonts/raw/main/ofl/roboto/Roboto-Bold.ttf";
 
 const downloadFont = async () => {
     const tempPath = path.join(__dirname, `${FONT_FILENAME}.tmp`);
@@ -43,7 +44,28 @@ const downloadFont = async () => {
             if (response.statusCode !== 200) {
                 fs.unlink(tempPath, () => {});
                 console.error(`❌ Font download failed: ${response.statusCode}`);
-                return resolve(); // Resolve to allow server start
+                // Try fallback URL if main fails (using raw.githubusercontent)
+                const fallbackUrl = "https://raw.githubusercontent.com/google/fonts/main/ofl/roboto/Roboto-Bold.ttf";
+                console.log("⬇️ Trying fallback URL...");
+                
+                const fileFallback = fs.createWriteStream(tempPath);
+                https.get(fallbackUrl, resFallback => {
+                    if (resFallback.statusCode !== 200) {
+                         fs.unlink(tempPath, () => {});
+                         console.error(`❌ Fallback failed too: ${resFallback.statusCode}`);
+                         return resolve();
+                    }
+                    resFallback.pipe(fileFallback);
+                    fileFallback.on('finish', () => {
+                        fileFallback.close(() => {
+                            if (fs.existsSync(FONT_PATH)) fs.unlinkSync(FONT_PATH);
+                            fs.renameSync(tempPath, FONT_PATH);
+                            console.log("✅ Font installed (Fallback).");
+                            resolve();
+                        });
+                    });
+                }).on('error', () => resolve());
+                return;
             }
             response.pipe(file);
             file.on('finish', () => {
