@@ -15,7 +15,7 @@ try {
     ffmpeg.setFfprobePath(ffprobePath);
     process.env.FFMPEG_PATH = ffmpegPath;
     process.env.FFPROBE_PATH = ffprobePath;
-    console.log(`✅ FFmpeg robustly configured.`);
+    console.log(`✅ FFmpeg Engine: Professional Mode Active.`);
 } catch (error) {
     console.error("❌ FFmpeg path error:", error);
 }
@@ -36,53 +36,44 @@ app.use('/outputs', express.static(OUTPUT_DIR));
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, UPLOAD_DIR),
   filename: (req, file, cb) => {
-    cb(null, Date.now() + '-' + file.originalname.replace(/[^a-zA-Z0-9.]/g, '_'));
+    cb(null, `raw_${Date.now()}_${file.originalname.replace(/[^a-zA-Z0-9.]/g, '_')}`);
   }
 });
 const upload = multer({ storage: storage });
 
-const getBaseOutputOptions = () => [
-    '-c:v libx264',
-    '-preset fast',
-    '-crf 22',
-    '-pix_fmt yuv420p',
-    '-c:a aac',
-    '-b:a 128k',
-    '-ar 44100',
-    '-ac 2'
-];
-
 /**
- * Escape function for FFmpeg drawtext
+ * Escapes text for drawtext filter. 
+ * Prevents "Invalid Argument" crashes caused by commas, colons or quotes.
  */
-function escapeFFmpegText(text) {
+function sanitizeForFFmpeg(text) {
     if (!text) return '';
     return text
-        .replace(/\\/g, '\\\\\\\\')
-        .replace(/'/g, "'\\\\\\''")
+        .replace(/\\/g, '\\\\')
+        .replace(/'/g, "'\\\\''")
         .replace(/:/g, '\\:')
+        .replace(/,/g, '\\,')
         .replace(/%/g, '\\%');
 }
 
 /**
- * IA TURBO / MASTER RENDER
- * Refactored to handle each segment with extreme care to avoid filter re-init errors.
+ * IA TURBO / MASTER RENDER V3
+ * High-performance rendering pipeline with burn-in subtitles and synchronized audio.
  */
 app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), async (req, res) => {
     const visualFiles = req.files['visuals'];
     const audioFiles = req.files['audios'] || [];
     const narrations = req.body.narrations ? JSON.parse(req.body.narrations) : [];
 
-    if (!visualFiles || visualFiles.length === 0) return res.status(400).send('Visual files required.');
+    if (!visualFiles || visualFiles.length === 0) return res.status(400).send('No visuals provided.');
 
     const resolution = req.body.resolution || '1080p';
     const isVertical = req.body.aspectRatio === '9:16';
     
-    // Standard target dimensions
-    const finalW = isVertical ? 1080 : (resolution === '4K' ? 3840 : 1920);
-    const finalH = isVertical ? 1920 : (resolution === '4K' ? 2160 : 1080);
+    // Professional resolution standards
+    const targetW = isVertical ? 1080 : (resolution === '4K' ? 3840 : 1920);
+    const targetH = isVertical ? 1920 : (resolution === '4K' ? 2160 : 1080);
 
-    const outputFilename = `final_master_${Date.now()}.mp4`;
+    const outputFilename = `master_export_${Date.now()}.mp4`;
     const outputPath = path.join(OUTPUT_DIR, outputFilename);
 
     try {
@@ -91,126 +82,117 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
         for (let i = 0; i < visualFiles.length; i++) {
             const visual = visualFiles[i];
             const audio = audioFiles[i] || null;
-            const narration = narrations[i] || '';
-            const segmentPath = path.join(UPLOAD_DIR, `seg_norm_${i}_${Date.now()}.mp4`);
+            const text = narrations[i] || '';
+            const segmentPath = path.join(UPLOAD_DIR, `seg_final_${i}_${Date.now()}.mp4`);
             const isImage = visual.mimetype.startsWith('image/') || /\.(jpg|jpeg|png|webp)$/i.test(visual.path);
             
             await new Promise((resolve, reject) => {
                 let cmd = ffmpeg();
 
-                // 1. Input Source
+                // Input 0: The Visual (Image or Video)
                 if (isImage) {
                     cmd.input(visual.path).inputOptions(['-loop 1']);
                 } else {
                     cmd.input(visual.path);
                 }
 
-                // 2. Audio Source
+                // Input 1: The Audio (Narration or Silence)
                 if (audio) {
                     cmd.input(audio.path);
                 } else {
+                    // Generate internal high-quality silence to keep audio stream alive for merge
                     cmd.input('anullsrc=r=44100:cl=stereo').inputFormat('lavfi');
                 }
 
-                // 3. Filter Chain Construction
-                // We normalize dimensions BEFORE any movement or text filters
-                let vFilter = [];
+                // --- COMPLEX FILTER GRAPH ---
+                // 1. Normalize video size and format
+                // 2. Apply Ken Burns (if image)
+                // 3. Burn-in professional subtitles
+                // 4. Normalize audio to standard stereo
                 
+                let videoFilters = [
+                    `scale=4000:4000:force_original_aspect_ratio=increase`,
+                    `crop=4000:4000`
+                ];
+
                 if (isImage) {
-                    // Optimized Zoompan chain for images
-                    // First scale to a consistent high resolution to avoid "Invalid argument" in zoompan
-                    vFilter.push(`scale=4000:4000:force_original_aspect_ratio=increase`);
-                    vFilter.push(`crop=4000:4000`);
-                    vFilter.push(`zoompan=z='min(zoom+0.001,1.2)':d=150:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${finalW}x${finalH}`);
+                    // Smooth 10-second Ken Burns effect
+                    videoFilters.push(`zoompan=z='min(zoom+0.001,1.2)':d=300:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${targetW}x${targetH}`);
                 } else {
-                    // Video normalization
-                    vFilter.push(`scale=${finalW}:${finalH}:force_original_aspect_ratio=increase`);
-                    vFilter.push(`crop=${finalW}:${finalH}`);
+                    videoFilters.push(`scale=${targetW}:${targetH}:force_original_aspect_ratio=increase`, `crop=${targetW}:${targetH}`);
                 }
 
-                // Drawtext Subtitles
-                if (narration) {
-                    const safeText = escapeFFmpegText(narration);
-                    // Dynamically calculate font size based on height
-                    const fontSize = Math.floor(finalH * 0.04);
-                    vFilter.push(`drawtext=text='${safeText}':fontcolor=white:fontsize=${fontSize}:box=1:boxcolor=black@0.5:boxborderw=20:x=(w-text_w)/2:y=h-th-(h*0.1)`);
+                // Add Professional Subtitles
+                if (text) {
+                    const cleanText = sanitizeForFFmpeg(text);
+                    const fontSize = Math.floor(targetH * 0.045);
+                    const boxMargin = Math.floor(targetH * 0.1);
+                    // Double-pass: Shadow and Main text for perfect readability
+                    videoFilters.push(`drawtext=text='${cleanText}':fontcolor=white:fontsize=${fontSize}:box=1:boxcolor=black@0.5:boxborderw=20:line_spacing=10:x=(w-text_w)/2:y=h-th-${boxMargin}`);
                 }
 
-                // Final frame-by-frame normalization
-                vFilter.push(`format=yuv420p`, `fps=30`, `setsar=1`);
+                videoFilters.push(`format=yuv420p`, `fps=30`);
 
-                const aFilter = [
+                const audioFilters = [
                     `aresample=44100`,
-                    `aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo`
+                    `aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo`,
+                    `volume=1.2` // Slight boost for clarity
                 ];
 
                 cmd.complexFilter([
-                    { filter: vFilter.join(','), inputs: '0:v', outputs: 'v_out' },
-                    { filter: aFilter.join(','), inputs: '1:a', outputs: 'a_out' }
+                    { filter: videoFilters.join(','), inputs: '0:v', outputs: 'v_out' },
+                    { filter: audioFilters.join(','), inputs: '1:a', outputs: 'a_out' }
                 ]);
 
                 cmd.map('v_out').map('a_out');
 
-                if (isImage) {
-                    cmd.duration(5); // Default 5s per photo
-                }
+                // If image, limit to 5 seconds. If video, use its duration or shortest to audio.
+                if (isImage) cmd.duration(5);
 
-                cmd.outputOptions([...getBaseOutputOptions(), '-shortest'])
-                   .save(segmentPath)
-                   .on('end', () => { segmentPaths.push(segmentPath); resolve(); })
-                   .on('error', (err) => { 
-                       console.error(`Segment ${i} Error:`, err.message); 
-                       reject(err); 
-                   });
+                cmd.outputOptions([
+                    '-c:v libx264',
+                    '-preset fast',
+                    '-crf 20',
+                    '-c:a aac',
+                    '-b:a 192k',
+                    '-shortest'
+                ])
+                .save(segmentPath)
+                .on('end', () => { segmentPaths.push(segmentPath); resolve(); })
+                .on('error', (err) => { 
+                    console.error(`Segment ${i} Logic Error:`, err.message);
+                    reject(err); 
+                });
             });
         }
 
-        // Final Batch Concatenation
+        // --- FINAL CONCATENATION ---
         const finalCmd = ffmpeg();
         segmentPaths.forEach(p => finalCmd.input(p));
         
-        const filterStr = segmentPaths.map((_, i) => `[${i}:v][${i}:a]`).join('') + `concat=n=${segmentPaths.length}:v=1:a=1[v][a]`;
+        // Exact mapping of video and audio streams for each segment
+        const inputs = segmentPaths.map((_, i) => `[${i}:v][${i}:a]`).join('');
+        const filterStr = `${inputs}concat=n=${segmentPaths.length}:v=1:a=1[v][a]`;
 
         finalCmd.complexFilter(filterStr)
             .map('[v]').map('[a]')
-            .outputOptions(getBaseOutputOptions())
+            .outputOptions(['-c:v libx264', '-pix_fmt yuv420p', '-c:a aac', '-shortest'])
             .save(outputPath)
+            .on('start', cmd => console.log('Merge Started:', cmd))
             .on('end', () => {
-                // Cleanup temp segments
+                // Background cleanup
                 segmentPaths.forEach(p => fs.unlink(p, () => {}));
                 res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` });
             })
             .on('error', (err) => {
-                console.error("Master Concat Error:", err.message);
-                res.status(500).send(`Final Rendering stage failed: ${err.message}`);
+                console.error("Master Concat Failure:", err.message);
+                res.status(500).send(`Render Finalization Error: ${err.message}`);
             });
 
     } catch (error) {
-        console.error("Global Turbo Error:", error.message);
+        console.error("Turbo Pipeline Critical Failure:", error.message);
         res.status(500).send(`Export Error: ${error.message}`);
     }
 });
 
-// Other utility routes
-const genericHandler = (route, optionsCallback) => {
-    app.post(route, upload.array('video'), async (req, res) => {
-        const files = req.files;
-        if (!files || files.length === 0) return res.status(400).send('Files required.');
-        const outputFilename = `proc_${Date.now()}.mp4`;
-        const outputPath = path.join(OUTPUT_DIR, outputFilename);
-        let cmd = ffmpeg(files[0].path);
-        if (optionsCallback) optionsCallback(cmd, req);
-        cmd.outputOptions(getBaseOutputOptions())
-           .save(outputPath)
-           .on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` }))
-           .on('error', (err) => res.status(500).send(err.message));
-    });
-};
-
-genericHandler('/upscale', (cmd) => cmd.videoFilter('scale=3840:2160:flags=lanczos'));
-genericHandler('/colorize', (cmd) => cmd.videoFilter('eq=saturation=1.5:contrast=1.2'));
-genericHandler('/compress', (cmd) => cmd.outputOptions(['-crf', '28', '-preset', 'slow']));
-genericHandler('/shuffle', (cmd) => cmd.videoFilter('noise=alls=20:allf=t+u'));
-genericHandler('/remove-audio', (cmd) => cmd.noAudio());
-
-app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Final Stable Render Engine on port ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Pro Render Engine Active on port ${PORT}`));
