@@ -5,6 +5,7 @@ const multer = require('multer');
 const ffmpeg = require('fluent-ffmpeg');
 const fs = require('fs');
 const path = require('path');
+const https = require('https');
 
 // --- FFMPEG CONFIGURATION ---
 let ffmpegPath, ffprobePath;
@@ -19,6 +20,27 @@ try {
 } catch (error) {
     console.error("❌ FFmpeg path error:", error);
 }
+
+// --- FONT CONFIGURATION ---
+const FONT_PATH = path.join(__dirname, 'Roboto-Bold.ttf');
+const FONT_URL = "https://github.com/google/fonts/raw/main/apache/roboto/Roboto-Bold.ttf";
+
+function ensureFontExists() {
+    if (!fs.existsSync(FONT_PATH)) {
+        console.log("Downloading default font for subtitles...");
+        const file = fs.createWriteStream(FONT_PATH);
+        https.get(FONT_URL, function(response) {
+            response.pipe(file);
+            file.on('finish', function() {
+                file.close(() => console.log("✅ Font downloaded successfully."));
+            });
+        }).on('error', function(err) {
+            fs.unlink(FONT_PATH, () => {}); // Delete the file async if error
+            console.error("❌ Error downloading font:", err.message);
+        });
+    }
+}
+ensureFontExists();
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -52,7 +74,9 @@ function sanitizeForFFmpeg(text) {
         .replace(/'/g, "'\\\\''")
         .replace(/:/g, '\\:')
         .replace(/,/g, '\\,')
-        .replace(/%/g, '\\%');
+        .replace(/%/g, '\\%')
+        .replace(/\n/g, ' ') // Flatten newlines to avoid complex filter parsing issues
+        .replace(/\r/g, '');
 }
 
 /**
@@ -79,6 +103,9 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
     try {
         const segmentPaths = [];
         
+        // Ensure font is ready (synchronous check fallback if download failed previously)
+        const fontPathUnix = FONT_PATH.replace(/\\/g, '/').replace(/:/g, '\\:');
+
         for (let i = 0; i < visualFiles.length; i++) {
             const visual = visualFiles[i];
             const audio = audioFiles[i] || null;
@@ -105,30 +132,27 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
                 }
 
                 // --- COMPLEX FILTER GRAPH ---
-                // 1. Normalize video size and format
-                // 2. Apply Ken Burns (if image)
-                // 3. Burn-in professional subtitles
-                // 4. Normalize audio to standard stereo
-                
-                let videoFilters = [
-                    `scale=4000:4000:force_original_aspect_ratio=increase`,
-                    `crop=4000:4000`
-                ];
+                let videoFilters = [];
 
                 if (isImage) {
-                    // Smooth 10-second Ken Burns effect
-                    videoFilters.push(`zoompan=z='min(zoom+0.001,1.2)':d=300:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${targetW}x${targetH}`);
+                    // Pre-scale images to a high base before zoompan to maintain quality
+                    videoFilters.push(`scale=4000:4000:force_original_aspect_ratio=increase`, `crop=4000:4000`);
+                    // Smooth 5-second Ken Burns effect
+                    videoFilters.push(`zoompan=z='min(zoom+0.001,1.2)':d=150:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${targetW}x${targetH}`);
                 } else {
                     videoFilters.push(`scale=${targetW}:${targetH}:force_original_aspect_ratio=increase`, `crop=${targetW}:${targetH}`);
                 }
 
                 // Add Professional Subtitles
-                if (text) {
+                if (text && fs.existsSync(FONT_PATH)) {
                     const cleanText = sanitizeForFFmpeg(text);
                     const fontSize = Math.floor(targetH * 0.045);
                     const boxMargin = Math.floor(targetH * 0.1);
-                    // Double-pass: Shadow and Main text for perfect readability
-                    videoFilters.push(`drawtext=text='${cleanText}':fontcolor=white:fontsize=${fontSize}:box=1:boxcolor=black@0.5:boxborderw=20:line_spacing=10:x=(w-text_w)/2:y=h-th-${boxMargin}`);
+                    
+                    // Uses fontfile parameter to explicitly point to the downloaded font
+                    videoFilters.push(`drawtext=fontfile='${fontPathUnix}':text='${cleanText}':fontcolor=white:fontsize=${fontSize}:box=1:boxcolor=black@0.5:boxborderw=20:line_spacing=10:x=(w-text_w)/2:y=h-th-${boxMargin}`);
+                } else if (text) {
+                    console.warn("⚠️ Warning: Skipping subtitles for segment " + i + " because font file is missing.");
                 }
 
                 videoFilters.push(`format=yuv420p`, `fps=30`);
@@ -136,7 +160,7 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
                 const audioFilters = [
                     `aresample=44100`,
                     `aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo`,
-                    `volume=1.2` // Slight boost for clarity
+                    `volume=1.2` 
                 ];
 
                 cmd.complexFilter([
@@ -146,8 +170,20 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
 
                 cmd.map('v_out').map('a_out');
 
-                // If image, limit to 5 seconds. If video, use its duration or shortest to audio.
-                if (isImage) cmd.duration(5);
+                // Critical: Explicitly set duration for image inputs based on audio or default
+                if (isImage) {
+                    // We don't know exact audio duration here without probing, so we rely on -shortest if audio exists.
+                    // However, zoompan duration (d=150 @ 30fps = 5s) determines video stream length.
+                    // To be safe, we set a high -t if audio is present, or 5s if not.
+                    if (audio) {
+                         // Let -shortest handle the cut when audio ends
+                         cmd.outputOptions(['-shortest']);
+                    } else {
+                         cmd.duration(5);
+                    }
+                } else {
+                    cmd.outputOptions(['-shortest']);
+                }
 
                 cmd.outputOptions([
                     '-c:v libx264',
@@ -155,7 +191,7 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
                     '-crf 20',
                     '-c:a aac',
                     '-b:a 192k',
-                    '-shortest'
+                    '-movflags +faststart'
                 ])
                 .save(segmentPath)
                 .on('end', () => { segmentPaths.push(segmentPath); resolve(); })
@@ -170,7 +206,6 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
         const finalCmd = ffmpeg();
         segmentPaths.forEach(p => finalCmd.input(p));
         
-        // Exact mapping of video and audio streams for each segment
         const inputs = segmentPaths.map((_, i) => `[${i}:v][${i}:a]`).join('');
         const filterStr = `${inputs}concat=n=${segmentPaths.length}:v=1:a=1[v][a]`;
 
@@ -182,6 +217,9 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
             .on('end', () => {
                 // Background cleanup
                 segmentPaths.forEach(p => fs.unlink(p, () => {}));
+                visualFiles.forEach(f => fs.unlink(f.path, () => {}));
+                audioFiles.forEach(f => fs.unlink(f.path, () => {}));
+                
                 res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` });
             })
             .on('error', (err) => {
