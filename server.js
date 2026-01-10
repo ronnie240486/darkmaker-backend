@@ -53,8 +53,21 @@ const getBaseOutputOptions = () => [
 ];
 
 /**
+ * Escape function for FFmpeg drawtext
+ * Essential to avoid "Invalid argument" when text contains special characters
+ */
+function escapeFFmpegText(text) {
+    if (!text) return '';
+    return text
+        .replace(/\\/g, '\\\\\\\\')
+        .replace(/'/g, "'\\\\\\''")
+        .replace(/:/g, '\\:')
+        .replace(/%/g, '\\%');
+}
+
+/**
  * IA TURBO / MASTER RENDER
- * Robust concatenation with strictly normalized segments, Ken Burns, and Subtitles
+ * Fixed complex filters to prevent "Invalid argument" and stream mismatch errors.
  */
 app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), async (req, res) => {
     const visualFiles = req.files['visuals'];
@@ -64,8 +77,13 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
     if (!visualFiles || visualFiles.length === 0) return res.status(400).send('Visual files required.');
 
     const resolution = req.body.resolution || '1080p';
-    const resWidth = resolution === '4K' ? 3840 : 1920;
-    const resHeight = resolution === '4K' ? 2160 : 1080;
+    const resWidth = resolution === '4K' ? 3840 : (req.body.aspectRatio === '9:16' ? 608 : 1920);
+    const resHeight = resolution === '4K' ? 2160 : (req.body.aspectRatio === '9:16' ? 1080 : 1080);
+    
+    // Adjusting for vertical if needed (standardized)
+    const finalW = req.body.aspectRatio === '9:16' ? 1080 : resWidth;
+    const finalH = req.body.aspectRatio === '9:16' ? 1920 : resHeight;
+
     const outputFilename = `final_master_${Date.now()}.mp4`;
     const outputPath = path.join(OUTPUT_DIR, outputFilename);
 
@@ -82,67 +100,75 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
             await new Promise((resolve, reject) => {
                 let cmd = ffmpeg();
 
+                // Input 0: Visual
                 if (isImage) {
                     cmd.input(visual.path).inputOptions(['-loop 1']);
                 } else {
                     cmd.input(visual.path);
                 }
 
+                // Input 1: Audio (Real or Null)
                 if (audio) {
                     cmd.input(audio.path);
                 } else {
                     cmd.input('anullsrc=r=44100:cl=stereo').inputFormat('lavfi');
                 }
 
-                // Complex filters: Normalization + Ken Burns + Subtitles
-                const videoFilters = [
-                    // Scaling & Padding
-                    `scale=${resWidth}:${resHeight}:force_original_aspect_ratio=increase`,
-                    `crop=${resWidth}:${resHeight}`,
-                    `format=yuv420p`,
-                    `fps=30`
+                // Strictly defined video filter chain
+                // 1. Scale/Crop to a working size (zoompan is sensitive)
+                // 2. Apply movement (if image)
+                // 3. Draw text (subtitle)
+                // 4. Final format/fps normalization
+                let vFilter = [
+                    `scale=2000:-1`, // Scale up slightly for better zoom quality
+                    `pad=2000:2000:(ow-iw)/2:(oh-ih)/2:black`, // Pad to square to avoid aspect issues in zoom
                 ];
 
-                // If it's an image, apply Ken Burns (Zoom In)
                 if (isImage) {
-                    videoFilters.push(`zoompan=z='min(zoom+0.0015,1.5)':d=125:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${resWidth}x${resHeight}`);
+                    // Ken Burns effect: Subtle zoom in
+                    vFilter.push(`zoompan=z='min(zoom+0.001,1.3)':d=150:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${finalW}x${finalH}`);
+                } else {
+                    vFilter.push(`scale=${finalW}:${finalH}:force_original_aspect_ratio=increase,crop=${finalW}:${finalH}`);
                 }
 
-                // Subtitle Overlay (Burning in text)
                 if (narration) {
-                    const cleanText = narration.replace(/'/g, '').replace(/:/g, '');
-                    videoFilters.push(`drawtext=text='${cleanText}':fontcolor=white:fontsize=48:box=1:boxcolor=black@0.5:boxborderw=15:x=(w-text_w)/2:y=h-th-60`);
+                    const safeText = escapeFFmpegText(narration);
+                    vFilter.push(`drawtext=text='${safeText}':fontcolor=white:fontsize=44:box=1:boxcolor=black@0.6:boxborderw=20:x=(w-text_w)/2:y=h-th-80`);
                 }
 
-                const audioFilters = [
+                vFilter.push(`format=yuv420p`, `fps=30`, `setsar=1`);
+
+                const aFilter = [
                     `aresample=44100`,
                     `aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo`
                 ];
 
                 cmd.complexFilter([
-                    { filter: videoFilters.join(','), inputs: '0:v', outputs: 'v_processed' },
-                    { filter: audioFilters.join(','), inputs: '1:a', outputs: 'a_processed' }
+                    { filter: vFilter.join(','), inputs: '0:v', outputs: 'vproc' },
+                    { filter: aFilter.join(','), inputs: '1:a', outputs: 'aproc' }
                 ]);
 
-                cmd.map('v_processed').map('a_processed');
+                cmd.map('vproc').map('aproc');
 
                 if (isImage) {
-                    // Set duration based on audio or default
+                    // Set segment duration. If audio exists, it will be trimmed to shortest below.
                     cmd.duration(5); 
                 }
 
                 cmd.outputOptions([...getBaseOutputOptions(), '-shortest'])
                    .save(segmentPath)
                    .on('end', () => { segmentPaths.push(segmentPath); resolve(); })
-                   .on('error', (err) => { console.error(err); reject(err); });
+                   .on('error', (err) => { 
+                       console.error(`Error in segment ${i}:`, err.message); 
+                       reject(err); 
+                   });
             });
         }
 
-        // Final Merge with crossfade transitions
+        // Final Concatenation
         const finalCmd = ffmpeg();
         segmentPaths.forEach(p => finalCmd.input(p));
         
-        // Simple concat for reliability, xfade transitions could be added here for PRO feel
         const filterStr = segmentPaths.map((_, i) => `[${i}:v][${i}:a]`).join('') + `concat=n=${segmentPaths.length}:v=1:a=1[v][a]`;
 
         finalCmd.complexFilter(filterStr)
@@ -154,17 +180,17 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
                 res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` });
             })
             .on('error', (err) => {
-                console.error(err);
+                console.error("Concat stage error:", err.message);
                 res.status(500).send(`Final Render Failed: ${err.message}`);
             });
 
     } catch (error) {
-        console.error(error);
+        console.error("Global processing error:", error.message);
         res.status(500).send(`Export Error: ${error.message}`);
     }
 });
 
-// Other routes remain standard
+// Helper for other video routes
 const genericHandler = (route, optionsCallback) => {
     app.post(route, upload.array('video'), async (req, res) => {
         const files = req.files;
