@@ -16,73 +16,10 @@ try {
     ffmpeg.setFfprobePath(ffprobePath);
     process.env.FFMPEG_PATH = ffmpegPath;
     process.env.FFPROBE_PATH = ffprobePath;
-    console.log(`✅ FFmpeg Engine: Professional Mode Active. Path: ${ffmpegPath}`);
+    console.log(`✅ FFmpeg Engine: Professional Mode Active.`);
 } catch (error) {
     console.error("❌ FFmpeg path error:", error);
 }
-
-// --- FONT CONFIGURATION ---
-const FONT_FILENAME = 'Roboto-Bold.ttf';
-const FONT_PATH = path.join(__dirname, FONT_FILENAME);
-// Fix: Roboto is licensed under Apache 2.0, so it is in the 'apache' folder, not 'ofl'
-const FONT_URL = "https://github.com/google/fonts/raw/main/apache/roboto/Roboto-Bold.ttf";
-
-const downloadFont = async () => {
-    const tempPath = path.join(__dirname, `${FONT_FILENAME}.tmp`);
-    
-    if (fs.existsSync(FONT_PATH) && fs.statSync(FONT_PATH).size > 1000) {
-        console.log("✅ Font verified.");
-        return;
-    }
-
-    console.log("⬇️ Downloading font...");
-    const file = fs.createWriteStream(tempPath);
-    
-    return new Promise((resolve, reject) => {
-        https.get(FONT_URL, response => {
-            if (response.statusCode !== 200) {
-                fs.unlink(tempPath, () => {});
-                console.error(`❌ Font download failed: ${response.statusCode}`);
-                // Fallback URL (also corrected to apache/)
-                const fallbackUrl = "https://raw.githubusercontent.com/google/fonts/main/apache/roboto/Roboto-Bold.ttf";
-                const fileFallback = fs.createWriteStream(tempPath);
-                https.get(fallbackUrl, resFallback => {
-                    if (resFallback.statusCode !== 200) {
-                         fs.unlink(tempPath, () => {});
-                         return resolve();
-                    }
-                    resFallback.pipe(fileFallback);
-                    fileFallback.on('finish', () => {
-                        fileFallback.close(() => {
-                            try {
-                                if (fs.existsSync(FONT_PATH)) fs.unlinkSync(FONT_PATH);
-                                fs.renameSync(tempPath, FONT_PATH);
-                                console.log("✅ Font installed (Fallback).");
-                            } catch(e) {}
-                            resolve();
-                        });
-                    });
-                }).on('error', () => resolve());
-                return;
-            }
-            response.pipe(file);
-            file.on('finish', () => {
-                file.close(() => {
-                    try {
-                        if (fs.existsSync(FONT_PATH)) fs.unlinkSync(FONT_PATH);
-                        fs.renameSync(tempPath, FONT_PATH);
-                        console.log("✅ Font installed.");
-                    } catch (e) { console.error(e); }
-                    resolve();
-                });
-            });
-        }).on('error', err => {
-            fs.unlink(tempPath, () => {});
-            resolve();
-        });
-    });
-};
-downloadFont();
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -92,7 +29,7 @@ const OUTPUT_DIR = path.join(__dirname, 'outputs');
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
 
-app.use(cors({ origin: '*' }));
+app.use(cors({ origin: '*', methods: ['GET', 'POST'], allowedHeaders: ['Content-Type', 'Authorization'] }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use('/outputs', express.static(OUTPUT_DIR));
@@ -100,183 +37,157 @@ app.use('/outputs', express.static(OUTPUT_DIR));
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, UPLOAD_DIR),
   filename: (req, file, cb) => {
-    const safeName = file.originalname.replace(/[^a-zA-Z0-9.]/g, '_');
-    cb(null, `raw_${Date.now()}_${safeName}`);
+    cb(null, `raw_${Date.now()}_${file.originalname.replace(/[^a-zA-Z0-9.]/g, '_')}`);
   }
 });
 const upload = multer({ storage: storage });
 
 function sanitizeForFFmpeg(text) {
-    if (!text) return '';
+    if (!text) return ' ';
     return text
         .replace(/\\/g, '\\\\')
         .replace(/'/g, "'\\\\''")
         .replace(/:/g, '\\:')
         .replace(/,/g, '\\,')
-        .replace(/%/g, '\\%')
-        .replace(/\n/g, ' ')
-        .replace(/\r/g, '');
+        .replace(/%/g, '\\%');
 }
 
 /**
- * IA TURBO / MASTER RENDER V3
+ * Downloads a file from a URL to a local path.
+ * Used to bypass browser CORS when assembling the video.
+ */
+function downloadFile(url, dest) {
+    return new Promise((resolve, reject) => {
+        const file = fs.createWriteStream(dest);
+        https.get(url, (response) => {
+            if (response.statusCode !== 200) {
+                reject(new Error(`Failed to download ${url}: ${response.statusCode}`));
+                return;
+            }
+            response.pipe(file);
+            file.on('finish', () => {
+                file.close();
+                resolve(dest);
+            });
+        }).on('error', (err) => {
+            fs.unlink(dest, () => {});
+            reject(err);
+        });
+    });
+}
+
+/**
+ * IA TURBO / MASTER RENDER V4
+ * Resilient rendering pipeline handling local files and remote URLs.
  */
 app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), async (req, res) => {
-    const visualFiles = req.files['visuals'];
+    const visualFiles = req.files['visuals'] || [];
     const audioFiles = req.files['audios'] || [];
     const narrations = req.body.narrations ? JSON.parse(req.body.narrations) : [];
+    const visualUrls = req.body.visualUrls ? JSON.parse(req.body.visualUrls) : [];
+    const audioUrls = req.body.audioUrls ? JSON.parse(req.body.audioUrls) : [];
 
-    if (!visualFiles || visualFiles.length === 0) return res.status(400).send('No visuals provided.');
+    // Total length is determined by the number of visual assets
+    const totalScenes = Math.max(visualFiles.length, visualUrls.length);
+    if (totalScenes === 0) return res.status(400).send('No visuals provided.');
 
     const resolution = req.body.resolution || '1080p';
     const isVertical = req.body.aspectRatio === '9:16';
-    
     const targetW = isVertical ? 1080 : (resolution === '4K' ? 3840 : 1920);
     const targetH = isVertical ? 1920 : (resolution === '4K' ? 2160 : 1080);
 
     const outputFilename = `master_export_${Date.now()}.mp4`;
     const outputPath = path.join(OUTPUT_DIR, outputFilename);
-
-    const fontAvailable = fs.existsSync(FONT_PATH) && fs.statSync(FONT_PATH).size > 1000;
-    // Proper escaping for Windows/Linux consistency in filter string
-    const fontPathUnix = FONT_PATH.replace(/\\/g, '/').replace(/:/g, '\\:');
+    const segmentPaths = [];
+    const tempFiles = [];
 
     try {
-        const segmentPaths = [];
-
-        for (let i = 0; i < visualFiles.length; i++) {
-            const visual = visualFiles[i];
-            const audio = audioFiles[i] || null;
+        for (let i = 0; i < totalScenes; i++) {
+            let visualPath = visualFiles[i]?.path;
+            const visualUrl = visualUrls[i];
+            const audioPath = audioFiles[i]?.path;
+            const audioUrl = audioUrls[i];
             const text = narrations[i] || '';
-            const segmentPath = path.join(UPLOAD_DIR, `seg_final_${i}_${Date.now()}.mp4`);
-            
-            if (!fs.existsSync(visual.path)) continue;
 
-            const isImage = visual.mimetype.startsWith('image/') || /\.(jpg|jpeg|png|webp)$/i.test(visual.originalname);
+            // If file is missing but URL is provided, download it locally
+            if (!visualPath && visualUrl) {
+                const dest = path.join(UPLOAD_DIR, `remote_v_${i}_${Date.now()}.mp4`);
+                await downloadFile(visualUrl, dest);
+                visualPath = dest;
+                tempFiles.push(dest);
+            }
+
+            if (!visualPath) continue;
+
+            const segmentPath = path.join(UPLOAD_DIR, `seg_v4_${i}_${Date.now()}.mp4`);
+            const isImage = /\.(jpg|jpeg|png|webp)$/i.test(visualPath) || (visualFiles[i] && visualFiles[i].mimetype.startsWith('image/'));
             
+            let currentAudioPath = audioPath;
+            if (!currentAudioPath && audioUrl) {
+                const dest = path.join(UPLOAD_DIR, `remote_a_${i}_${Date.now()}.wav`);
+                await downloadFile(audioUrl, dest);
+                currentAudioPath = dest;
+                tempFiles.push(dest);
+            }
+
             await new Promise((resolve, reject) => {
                 let cmd = ffmpeg();
+                if (isImage) cmd.input(visualPath).inputOptions(['-loop 1']);
+                else cmd.input(visualPath);
 
-                cmd.input(path.resolve(visual.path));
-                if (isImage) cmd.inputOptions(['-loop 1']);
-
-                if (audio && fs.existsSync(audio.path)) {
-                    cmd.input(path.resolve(audio.path));
-                } else {
-                    cmd.input('anullsrc=r=44100:cl=stereo').inputFormat('lavfi');
-                }
+                if (currentAudioPath) cmd.input(currentAudioPath);
+                else cmd.input('anullsrc=r=44100:cl=stereo').inputFormat('lavfi');
 
                 let videoFilters = [];
-                const scaleBase = isVertical ? 2880 : 3840;
-
                 if (isImage) {
-                    videoFilters.push(`scale=${scaleBase}:${scaleBase}:force_original_aspect_ratio=increase`);
-                    videoFilters.push(`crop=${scaleBase}:${scaleBase}`);
-                    // Increased zoompan duration (d=30*60=1800 frames = 60s) to accommodate long audio
-                    // 's' sets output resolution directly
-                    videoFilters.push(`zoompan=z='min(zoom+0.001,1.2)':d=1800:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${targetW}x${targetH}:fps=30`);
+                    videoFilters.push(`scale=4000:4000:force_original_aspect_ratio=increase`, `crop=4000:4000`);
+                    videoFilters.push(`zoompan=z='min(zoom+0.001,1.2)':d=150:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${targetW}x${targetH}`);
                 } else {
-                    videoFilters.push(`scale=${targetW}:${targetH}:force_original_aspect_ratio=increase`);
-                    videoFilters.push(`crop=${targetW}:${targetH}`);
+                    videoFilters.push(`scale=${targetW}:${targetH}:force_original_aspect_ratio=increase`, `crop=${targetW}:${targetH}`);
                 }
 
-                if (text && fontAvailable) {
+                if (text && text.trim().length > 0) {
                     const cleanText = sanitizeForFFmpeg(text);
                     const fontSize = Math.floor(targetH * 0.045);
                     const boxMargin = Math.floor(targetH * 0.1);
-                    videoFilters.push(`drawtext=fontfile='${fontPathUnix}':text='${cleanText}':fontcolor=white:fontsize=${fontSize}:box=1:boxcolor=black@0.5:boxborderw=20:line_spacing=10:x=(w-text_w)/2:y=h-th-${boxMargin}`);
+                    videoFilters.push(`drawtext=text='${cleanText}':fontcolor=white:fontsize=${fontSize}:box=1:boxcolor=black@0.5:boxborderw=20:line_spacing=10:x=(w-text_w)/2:y=h-th-${boxMargin}:fix_bounds=1`);
                 }
 
-                videoFilters.push(`format=yuv420p`);
-                videoFilters.push(`fps=30`);
-                // CRITICAL FIX: Force Sample Aspect Ratio to 1:1 to match between segments
-                videoFilters.push(`setsar=1`);
-
-                const audioFilters = [
-                    `aresample=44100`,
-                    `aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo`,
-                    `volume=1.2`
-                ];
+                videoFilters.push(`format=yuv420p`, `fps=30`);
 
                 cmd.complexFilter([
                     { filter: videoFilters.join(','), inputs: '0:v', outputs: 'v_out' },
-                    { filter: audioFilters.join(','), inputs: '1:a', outputs: 'a_out' }
-                ]);
-
-                cmd.map('v_out');
-                cmd.map('a_out');
-
-                // Output Options
-                // If isImage, we depend on -shortest (cutting at audio end)
-                // If no audio, default to 5s.
-                // Note: zoompan is set to 60s, so it won't run out before audio (unless audio > 60s)
-                if (isImage) {
-                    if (audio) {
-                        cmd.outputOptions(['-shortest']);
-                    } else {
-                        cmd.duration(5);
-                    }
-                } else {
-                    cmd.outputOptions(['-shortest']);
-                }
-
-                cmd.outputOptions([
-                    '-c:v libx264', '-preset ultrafast', '-crf 23', '-y',
-                    '-c:a aac', '-b:a 192k',
-                    '-movflags +faststart'
+                    { filter: 'aresample=44100,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,volume=1.2', inputs: '1:a', outputs: 'a_out' }
                 ])
+                .map('v_out').map('a_out');
+
+                if (isImage) cmd.duration(5);
+
+                cmd.outputOptions(['-c:v libx264', '-preset fast', '-crf 22', '-c:a aac', '-b:a 192k', '-shortest'])
                 .save(segmentPath)
-                .on('end', () => { 
-                    segmentPaths.push(segmentPath); 
-                    resolve(); 
-                })
-                .on('error', (err) => {
-                    console.error(`❌ Segment ${i} Error:`, err.message);
-                    // Fail segment generation to prevent bad concat
-                    reject(err);
-                });
+                .on('end', () => { segmentPaths.push(segmentPath); resolve(); })
+                .on('error', (err) => { console.error(`Seg ${i} Error:`, err.message); reject(err); });
             });
         }
 
-        if (segmentPaths.length === 0) {
-            throw new Error("No segments were successfully rendered.");
-        }
-
-        // --- CONCATENATION ---
         const finalCmd = ffmpeg();
-        
-        // Only input existing files
-        const validPaths = segmentPaths.filter(p => fs.existsSync(p));
-        validPaths.forEach(p => finalCmd.input(p));
-        
-        const inputs = validPaths.map((_, i) => `[${i}:v][${i}:a]`).join('');
-        // 'unsafe' concat allows different formats, but we unified them.
-        // We use the concat filter here.
-        const filterStr = `${inputs}concat=n=${validPaths.length}:v=1:a=1[v][a]`;
+        segmentPaths.forEach(p => finalCmd.input(p));
+        const filterStr = segmentPaths.map((_, i) => `[${i}:v][${i}:a]`).join('') + `concat=n=${segmentPaths.length}:v=1:a=1[v][a]`;
 
         finalCmd.complexFilter(filterStr)
             .map('[v]').map('[a]')
-            .outputOptions(['-c:v libx264', '-pix_fmt yuv420p', '-c:a aac', '-shortest', '-y'])
+            .outputOptions(['-c:v libx264', '-pix_fmt yuv420p', '-c:a aac', '-shortest'])
             .save(outputPath)
             .on('end', () => {
-                // Cleanup
-                try {
-                    segmentPaths.forEach(p => fs.unlink(p, () => {}));
-                    visualFiles.forEach(f => fs.unlink(f.path, () => {}));
-                    audioFiles.forEach(f => fs.unlink(f.path, () => {}));
-                } catch(e) {}
-                
                 res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` });
+                [...segmentPaths, ...tempFiles].forEach(p => fs.unlink(p, () => {}));
             })
-            .on('error', (err) => {
-                console.error("❌ Master Concat Error:", err.message);
-                res.status(500).send(`Render Finalization Error: ${err.message}`);
-            });
+            .on('error', (err) => res.status(500).send(`Render Finalization Error: ${err.message}`));
 
     } catch (error) {
-        console.error("❌ Pipeline Error:", error.message);
+        console.error("Turbo Failure:", error.message);
         res.status(500).send(`Export Error: ${error.message}`);
     }
 });
 
-app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Server running on port ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Pro Render Engine Active on port ${PORT}`));
