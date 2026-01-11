@@ -1,240 +1,226 @@
+import express from 'express';
+import cors from 'cors';
+import multer from 'multer';
+import ffmpeg from 'fluent-ffmpeg';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import ffmpegStatic from 'ffmpeg-static';
+import ffprobeStatic from 'ffprobe-static';
 
-const express = require('express');
-const cors = require('cors');
-const multer = require('multer');
-const ffmpeg = require('fluent-ffmpeg');
-const fs = require('fs');
-const path = require('path');
-const https = require('https');
+// Setup de Caminhos para ES Modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
-// --- FFMPEG CONFIGURATION ---
-let ffmpegPath, ffprobePath;
-try {
-    ffmpegPath = require('@ffmpeg-installer/ffmpeg').path;
-    ffprobePath = require('@ffprobe-installer/ffprobe').path;
-    ffmpeg.setFfmpegPath(ffmpegPath);
-    ffmpeg.setFfprobePath(ffprobePath);
-    process.env.FFMPEG_PATH = ffmpegPath;
-    process.env.FFPROBE_PATH = ffprobePath;
-    console.log(`✅ Motor FFmpeg: Modo Profissional Ativo. Caminho: ${ffmpegPath}`);
-} catch (error) {
-    console.error("❌ Erro no caminho do FFmpeg:", error);
-}
+// Configuração Robusta do FFmpeg
+ffmpeg.setFfmpegPath(ffmpegStatic);
+ffmpeg.setFfprobePath(ffprobeStatic.path);
 
-// --- FONT CONFIGURATION ---
-const FONT_FILENAME = 'Roboto-Bold.ttf';
-const FONT_PATH = path.join(__dirname, FONT_FILENAME);
-const FONT_URLS = [
-    "https://github.com/googlefonts/roboto/raw/main/src/hinted/Roboto-Bold.ttf",
-    "https://raw.githubusercontent.com/google/fonts/main/ofl/roboto/static/Roboto-Bold.ttf"
-];
-
-const downloadFile = (url, dest) => {
-    return new Promise((resolve, reject) => {
-        const file = fs.createWriteStream(dest);
-        https.get(url, response => {
-            if (response.statusCode === 302 || response.statusCode === 301) {
-                downloadFile(response.headers.location, dest).then(resolve).catch(reject);
-                return;
-            }
-            if (response.statusCode !== 200) {
-                file.close(() => { fs.unlink(dest, () => {}); reject(new Error(`Status ${response.statusCode}`)); });
-                return;
-            }
-            response.pipe(file);
-            file.on('finish', () => {
-                file.close(() => {
-                    if (fs.existsSync(dest) && fs.statSync(dest).size > 1000) resolve(true);
-                    else { fs.unlink(dest, () => {}); reject(new Error('Arquivo muito pequeno')); }
-                });
-            });
-        }).on('error', err => { fs.unlink(dest, () => {}); reject(err); });
-    });
-};
-
-const downloadFont = async () => {
-    if (fs.existsSync(FONT_PATH) && fs.statSync(FONT_PATH).size > 1000) return;
-    for (const url of FONT_URLS) {
-        try { 
-            await downloadFile(url, FONT_PATH); 
-            console.log("✅ Fonte instalada."); 
-            return; 
-        } catch (e) { 
-            console.warn(`⚠️ Falha ao espelhar a fonte: ${e.message}`); 
-        }
-    }
-    console.warn("⚠️ As legendas serão desativadas (Falha no download da fonte).");
-};
-downloadFont();
+console.log(`🚀 FFmpeg Path: ${ffmpegStatic}`);
+console.log(`🚀 FFprobe Path: ${ffprobeStatic.path}`);
 
 const app = express();
-const PORT = 8080; // Porta definida como solicitado
+const PORT = 3001;
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
 const OUTPUT_DIR = path.join(__dirname, 'outputs');
+const TEMP_DIR = path.join(__dirname, 'temp');
 
-if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+// Garantir diretórios
+[UPLOAD_DIR, OUTPUT_DIR, TEMP_DIR].forEach(dir => {
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+});
 
 app.use(cors({ origin: '*' }));
 app.use(express.json({ limit: '500mb' }));
 app.use(express.urlencoded({ extended: true, limit: '500mb' }));
 app.use('/outputs', express.static(OUTPUT_DIR));
 
-/**
- * Rota de Health Check para o Frontend detectar conexão
- */
-app.get('/health', (req, res) => {
-    res.json({ status: 'online', engine: 'ffmpeg', port: PORT });
-});
-
-const upload = multer({
+const upload = multer({ 
     storage: multer.diskStorage({
         destination: UPLOAD_DIR,
-        filename: (req, file, cb) => cb(null, `raw_${Date.now()}_${file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_')}`)
+        filename: (req, file, cb) => cb(null, `raw_${Date.now()}_${Math.random().toString(36).substr(2, 9)}_${file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_')}`)
     }),
-    limits: { fileSize: 500 * 1024 * 1024 } // limite de 500 MB
+    limits: { fileSize: 1024 * 1024 * 1024 } // 1GB limit
 });
 
-function sanitizeForFFmpeg(text) {
-    if (!text) return '';
-    return text.replace(/\\/g, '\\\\').replace(/'/g, "'\\\\''").replace(/:/g, '\\:').replace(/,/g, '\\,').replace(/%/g, '\\%').replace(/\n/g, ' ').replace(/\r/g, '');
-}
-
-// Função auxiliar para extrair o índice do nome do arquivo (v_0_scene.mp4 -> 0)
+// Helper para extrair índice do nome do arquivo (ex: v_0_scene.mp4 -> 0)
 const getIndex = (filename) => {
-    const match = filename.match(/[a-z]_(\d+)/i);
+    const match = filename.match(/[a-z]_(\d+)_/);
     return match ? parseInt(match[1]) : 9999;
 };
 
-app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), async (req, res) => {
-    console.log("🎬 Iniciar tarefa de renderização IA Turbo");
-    
-    const visualFiles = (req.files['visuals'] || []).sort((a, b) => getIndex(a.originalname) - getIndex(b.originalname));
-    const audioFiles = (req.files['audios'] || []).sort((a, b) => getIndex(a.originalname) - getIndex(b.originalname));
-    const narrations = req.body.narrations ? JSON.parse(req.body.narrations) : [];
+// Função para processar UM segmento individualmente
+const processSegment = (visualPath, audioPath, text, index, isVertical) => {
+    return new Promise((resolve, reject) => {
+        const outputPath = path.join(TEMP_DIR, `segment_${index}_${Date.now()}.mp4`);
+        const width = isVertical ? 1080 : 1920;
+        const height = isVertical ? 1920 : 1080;
+        
+        // Determinar se é imagem
+        const isImage = visualPath.match(/\.(jpg|jpeg|png|webp)$/i);
+        
+        let cmd = ffmpeg();
 
-    console.log(`Recibidos ${visualFiles.length} Visuals y ${audioFiles.length} Audios`);
-
-    if (!visualFiles || visualFiles.length === 0) return res.status(400).send('No visuals provided.');
-
-    const isVertical = req.body.aspectRatio === '9:16';
-    const targetW = isVertical ? 1080 : 1920;
-    const targetH = isVertical ? 1920 : 1080;
-    const outputFilename = `master_${Date.now()}.mp4`;
-    const outputPath = path.join(OUTPUT_DIR, outputFilename);
-    const fontAvailable = fs.existsSync(FONT_PATH) && fs.statSync(FONT_PATH).size > 1000;
-    const fontPathFilter = fontAvailable ? FONT_PATH.replace(/\\/g, '/').replace(/:/g, '\\:') : '';
-
-    try {
-        const segmentPaths = [];
-
-        for (let i = 0; i < visualFiles.length; i++) {
-            const visual = visualFiles[i];
-            const audio = audioFiles[i]; 
-            const text = narrations[i] || '';
-            const segmentPath = path.join(UPLOAD_DIR, `seg_${i}_${Date.now()}.mp4`);
-            
-            console.log(`🔹 Processando Seg ${i}: Visual=${visual.originalname}`);
-
-            const isImage = visual.mimetype.startsWith('image/') || /\.(jpg|jpeg|png|webp)$/i.test(visual.originalname);
-            
-            await new Promise((resolve, reject) => {
-                let cmd = ffmpeg();
-
-                cmd.input(path.resolve(visual.path));
-                if (isImage) {
-                    cmd.inputOptions(['-loop 1', '-t 15']); 
-                }
-
-                if (audio && fs.existsSync(audio.path)) {
-                    cmd.input(path.resolve(audio.path));
-                } else {
-                    cmd.input('anullsrc=r=44100:cl=stereo').inputFormat('lavfi').inputOptions(['-t 5']);
-                }
-
-                let videoFilters = [];
-                const scaleBase = isVertical ? 2160 : 3840; 
-                
-                if (isImage) {
-                    videoFilters.push(`scale=${scaleBase}:-1`); 
-                    videoFilters.push(`crop=${scaleBase}:${scaleBase}`);
-                    videoFilters.push(`zoompan=z='min(zoom+0.001,1.2)':d=450:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${targetW}x${targetH}:fps=30`);
-                } else {
-                    videoFilters.push(`scale=${targetW}:${targetH}:force_original_aspect_ratio=increase`);
-                    videoFilters.push(`crop=${targetW}:${targetH}`);
-                }
-
-                videoFilters.push('setsar=1');
-
-                if (text && fontAvailable) {
-                    const cleanText = sanitizeForFFmpeg(text);
-                    const fontSize = Math.floor(targetH * 0.045);
-                    const boxMargin = Math.floor(targetH * 0.1);
-                    const escapedFontPath = fontPathFilter.replace(/'/g, "\\'");
-                    videoFilters.push(`drawtext=fontfile='${escapedFontPath}':text='${cleanText}':fontcolor=white:fontsize=${fontSize}:box=1:boxcolor=black@0.5:boxborderw=20:line_spacing=10:x=(w-text_w)/2:y=h-th-${boxMargin}`);
-                }
-
-                videoFilters.push('format=yuv420p'); 
-
-                cmd.complexFilter([
-                    { filter: videoFilters.join(','), inputs: '0:v', outputs: 'v_out' },
-                    { filter: 'aresample=44100', inputs: '1:a', outputs: 'a_out' }
-                ]);
-
-                cmd.map('v_out');
-                cmd.map('a_out');
-                cmd.outputOptions(['-shortest']); 
-
-                cmd.outputOptions([
-                    '-c:v libx264', '-preset ultrafast', '-crf 28', 
-                    '-c:a aac', '-b:a 128k', 
-                    '-y'
-                ])
-                .timeout(60) 
-                .save(segmentPath)
-                .on('end', () => { 
-                    segmentPaths.push(segmentPath); 
-                    resolve(); 
-                })
-                .on('error', (err) => {
-                    console.error(`❌ Erro Seg ${i}:`, err.message);
-                    reject(err);
-                });
-            });
+        // Input Visual
+        cmd.input(visualPath);
+        if (isImage) {
+            cmd.inputOptions(['-loop 1']);
         }
 
-        console.log("🔗 Concatenando...");
-        const finalCmd = ffmpeg();
-        segmentPaths.forEach(p => finalCmd.input(p));
+        // Input Audio (ou silêncio se não houver)
+        if (audioPath && fs.existsSync(audioPath)) {
+            cmd.input(audioPath);
+        } else {
+            cmd.input('anullsrc=r=44100:cl=stereo').inputFormat('lavfi');
+        }
+
+        // Filtros de Vídeo Complexos
+        const filters = [];
+
+        // 1. Escala e Crop para preencher a tela (Cover)
+        filters.push(`scale=${width}:${height}:force_original_aspect_ratio=increase`);
+        filters.push(`crop=${width}:${height}`);
+        filters.push(`setsar=1`); // Pixel quadrado obrigatório
+
+        // 2. Texto (Simples, sem fonte externa para evitar erros)
+        // Usando fonte padrão do sistema do FFmpeg
+        if (text) {
+            // Sanitização básica do texto para o filtro drawtext
+            const sanitizedText = text.replace(/:/g, '\\:').replace(/'/g, '').replace(/\n/g, ' ');
+            const fontSize = Math.floor(height * 0.05);
+            const yPos = height - Math.floor(height * 0.15);
+            
+            // Drawtext com background box para legibilidade
+            filters.push(`drawtext=text='${sanitizedText}':fontcolor=white:fontsize=${fontSize}:box=1:boxcolor=black@0.6:boxborderw=10:x=(w-text_w)/2:y=${yPos}`);
+        }
+
+        // Configuração do Pipeline
+        cmd.complexFilter([
+            // Processamento de Vídeo
+            {
+                filter: filters.join(','),
+                inputs: '0:v',
+                outputs: 'v_processed'
+            },
+            // Garante duração correta baseada no áudio ou tempo fixo para imagem
+            // Se for imagem e tem áudio, o áudio dita a duração (via -shortest)
+            // Se for vídeo, mantemos o vídeo
+        ]);
+
+        // Mapeamento
+        cmd.outputOptions([
+            '-map [v_processed]',
+            '-map 1:a?', // Mapeia áudio se existir (input 1)
+            '-c:v libx264',
+            '-preset ultrafast', // Rápido para evitar timeout
+            '-pix_fmt yuv420p', // Compatibilidade máxima
+            '-r 30', // Framerate fixo 30fps
+            '-c:a aac',
+            '-ar 44100',
+            '-ac 2',
+            '-shortest' // Corta o vídeo quando o áudio acaba (importante para imagens + tts)
+        ]);
+
+        // Para imagens sem áudio ou com áudio gerado, forçamos um tempo mínimo se o áudio for muito curto ou falhar
+        if (isImage && (!audioPath || !fs.existsSync(audioPath))) {
+             cmd.duration(5); // Duração padrão se não houver áudio
+        }
+
+        cmd.save(outputPath)
+           .on('end', () => resolve(outputPath))
+           .on('error', (err) => {
+               console.error(`❌ Erro no segmento ${index}:`, err);
+               reject(err);
+           });
+    });
+};
+
+app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), async (req, res) => {
+    console.log("🎬 Iniciando Renderização Turbo (Pipeline Segmentado)...");
+    
+    try {
+        const visualFiles = (req.files['visuals'] || []).sort((a, b) => getIndex(a.originalname) - getIndex(b.originalname));
+        const audioFiles = (req.files['audios'] || []).sort((a, b) => getIndex(a.originalname) - getIndex(b.originalname));
         
-        const inputs = segmentPaths.map((_, i) => `[${i}:v][${i}:a]`).join('');
+        let narrations = [];
+        try {
+            narrations = req.body.narrations ? JSON.parse(req.body.narrations) : [];
+        } catch (e) { console.log("Sem narrations ou erro de parse"); }
+
+        if (visualFiles.length === 0) throw new Error("Nenhum arquivo visual recebido.");
+
+        const isVertical = req.body.aspectRatio === '9:16';
+        const segmentPaths = [];
+
+        // FASE 1: Processar cada segmento individualmente (Normalização)
+        console.log(`🔄 Processando ${visualFiles.length} segmentos...`);
         
-        finalCmd.complexFilter(`${inputs}concat=n=${segmentPaths.length}:v=1:a=1[v][a]`)
-            .map('[v]').map('[a]')
-            .outputOptions(['-c:v libx264', '-preset ultrafast', '-c:a aac', '-y'])
-            .timeout(120) 
-            .save(outputPath)
-            .on('end', () => {
-                console.log("✅ Render Completo");
-                setTimeout(() => {
-                    try {
-                        segmentPaths.forEach(p => fs.unlink(p, () => {}));
-                        visualFiles.forEach(f => fs.unlink(f.path, () => {}));
-                        audioFiles.forEach(f => fs.unlink(f.path, () => {}));
-                    } catch(e) {}
-                }, 10000);
-                
-                res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` });
-            })
-            .on('error', (err) => {
-                console.error("❌ Erro no Concat:", err.message);
-                res.status(500).send(err.message);
-            });
+        for (let i = 0; i < visualFiles.length; i++) {
+            const visual = visualFiles[i];
+            // Encontra áudio correspondente pelo índice ou ordem
+            const audio = audioFiles.find(a => getIndex(a.originalname) === getIndex(visual.originalname)) || audioFiles[i];
+            const text = narrations[i] || "";
+
+            console.log(`   Processed segment ${i}: ${visual.originalname}`);
+            const segPath = await processSegment(visual.path, audio ? audio.path : null, text, i, isVertical);
+            segmentPaths.push(segPath);
+        }
+
+        // FASE 2: Concatenar segmentos normalizados
+        console.log("🔗 Concatenando segmentos...");
+        const finalOutputName = `master_${Date.now()}.mp4`;
+        const finalOutputPath = path.join(OUTPUT_DIR, finalOutputName);
+        
+        // Criar arquivo de lista para concat demuxer
+        const listPath = path.join(TEMP_DIR, `list_${Date.now()}.txt`);
+        const fileListContent = segmentPaths.map(p => `file '${p.replace(/\\/g, '/')}'`).join('\n');
+        fs.writeFileSync(listPath, fileListContent);
+
+        await new Promise((resolve, reject) => {
+            ffmpeg()
+                .input(listPath)
+                .inputOptions(['-f concat', '-safe 0'])
+                .outputOptions(['-c copy']) // Copia streams sem re-codificar (muito rápido)
+                .save(finalOutputPath)
+                .on('end', resolve)
+                .on('error', reject);
+        });
+
+        console.log("✅ Renderização Concluída!");
+        
+        // Limpeza (opcional, pode ser movida para cronjob)
+        setTimeout(() => {
+            try {
+                [...segmentPaths, listPath].forEach(p => { if(fs.existsSync(p)) fs.unlinkSync(p); });
+                visualFiles.forEach(f => fs.unlinkSync(f.path));
+                audioFiles.forEach(f => fs.unlinkSync(f.path));
+            } catch(e) { console.error("Erro na limpeza:", e); }
+        }, 30000);
+
+        const protocol = req.headers['x-forwarded-proto'] || req.protocol;
+        const host = req.get('host');
+        res.json({ url: `${protocol}://${host}/outputs/${finalOutputName}` });
 
     } catch (error) {
-        console.error("❌ Job falhou:", error.message);
-        res.status(500).send(error.message);
+        console.error("❌ ERRO FATAL NO SERVIDOR:", error);
+        res.status(500).json({ error: error.message });
     }
 });
 
-app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Servidor rodando na porta ${PORT}`));
+// Endpoint genérico para outras ferramentas
+app.post('/:action', upload.any(), (req, res) => {
+    // Placeholder para manter compatibilidade com frontend antigo
+    // A lógica principal está no /ia-turbo agora
+    res.status(501).json({ error: "Endpoint legado. Use IA Turbo para exportação." });
+});
+
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`
+    ==================================================
+    🎥 DARKMAKER RENDER ENGINE V2 (ROBUST)
+    ✅ Server running on port ${PORT}
+    ✅ FFmpeg Static Loaded
+    ✅ Output dir: ${OUTPUT_DIR}
+    ==================================================
+    `);
+});
