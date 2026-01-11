@@ -1,31 +1,24 @@
 
-import express from 'express';
-import cors from 'cors';
-import multer from 'multer';
-import ffmpeg from 'fluent-ffmpeg';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
-
-// Fix for __dirname in ESM
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const express = require('express');
+const cors = require('cors');
+const multer = require('multer');
+const ffmpeg = require('fluent-ffmpeg');
+const fs = require('fs');
+const path = require('path');
 
 // --- CONFIGURAÇÃO DO FFMPEG ---
 let ffmpegPath, ffprobePath;
 try {
-    const ffmpegInstaller = await import('@ffmpeg-installer/ffmpeg');
-    const ffprobeInstaller = await import('@ffprobe-installer/ffprobe');
-    
-    ffmpegPath = ffmpegInstaller.default?.path || ffmpegInstaller.path;
-    ffprobePath = ffprobeInstaller.default?.path || ffprobeInstaller.path;
+    // Tenta carregar os instaladores automáticos
+    ffmpegPath = require('@ffmpeg-installer/ffmpeg').path;
+    ffprobePath = require('@ffprobe-installer/ffprobe').path;
     
     if (ffmpegPath) ffmpeg.setFfmpegPath(ffmpegPath);
     if (ffprobePath) ffmpeg.setFfprobePath(ffprobePath);
     
-    console.log(`✅ MASTER ENGINE v5.4 (ESM) - AUDIO SYNC ACTIVATED`);
+    console.log(`✅ MASTER ENGINE v5.5 (CJS) - AUDIO SYNC & MULTI-ROUTING`);
 } catch (error) {
-    console.warn("⚠️ Aviso FFmpeg:", error.message);
+    console.warn("⚠️ Aviso FFmpeg: Verifique se os binários estão no PATH. Erro:", error.message);
 }
 
 const app = express();
@@ -62,7 +55,7 @@ function escapeForDrawtext(text) {
 }
 
 /**
- * MOTOR DE PROCESSAMENTO DE CENA (VÍDEO + ÁUDIO)
+ * MOTOR DE PROCESSAMENTO DE CENA
  */
 const processScene = async (visual, audio, text, index, w, h, isImg, UPLOAD_DIR) => {
     const segPath = path.join(UPLOAD_DIR, `seg_${index}_${Date.now()}.mp4`);
@@ -73,7 +66,7 @@ const processScene = async (visual, audio, text, index, w, h, isImg, UPLOAD_DIR)
         if (isImg) cmd.input(visual.path).inputOptions(['-loop 1']);
         else cmd.input(visual.path);
 
-        // Garante que SEMPRE haja áudio (mesmo que seja silêncio) para evitar erro de concatenação
+        // Input de Áudio (Narração ou Silêncio)
         if (audio && fs.existsSync(audio.path)) {
             cmd.input(audio.path);
         } else {
@@ -132,11 +125,10 @@ const processScene = async (visual, audio, text, index, w, h, isImg, UPLOAD_DIR)
 };
 
 /**
- * ROTAS DE ÁUDIO
+ * ROTAS
  */
 app.post('/process-audio', upload.array('audio'), async (req, res) => {
     const files = req.files || [];
-    if (files.length === 0) return res.status(400).send('Sem áudio.');
     const outputPath = path.join(OUTPUT_DIR, `audio_${Date.now()}.mp3`);
     try {
         let cmd = ffmpeg();
@@ -154,16 +146,13 @@ app.post('/process-audio', upload.array('audio'), async (req, res) => {
     } catch (e) { res.status(500).send(e.message); }
 });
 
-/**
- * ROTAS DE VÍDEO (TURBO E MAGIC)
- */
 app.post(['/ia-turbo', '/magic-workflow'], upload.fields([{ name: 'visuals' }, { name: 'audios' }]), async (req, res) => {
     const visualFiles = req.files['visuals'] || [];
     const audioFiles = req.files['audios'] || [];
     const narrations = req.body.narrations ? JSON.parse(req.body.narrations) : [];
     const aspectRatio = req.body.aspectRatio || '16:9';
 
-    if (visualFiles.length === 0) return res.status(400).send('Sem mídia.');
+    if (visualFiles.length === 0) return res.status(400).send('Mídia não encontrada.');
 
     const isVertical = aspectRatio === '9:16';
     const w = isVertical ? 1080 : 1920;
@@ -173,7 +162,6 @@ app.post(['/ia-turbo', '/magic-workflow'], upload.fields([{ name: 'visuals' }, {
     const segments = [];
 
     try {
-        console.log(`🎬 Masterizando vídeo com áudio sincronizado...`);
         for (let i = 0; i < visualFiles.length; i++) {
             const seg = await processScene(
                 visualFiles[i], 
@@ -193,14 +181,7 @@ app.post(['/ia-turbo', '/magic-workflow'], upload.fields([{ name: 'visuals' }, {
         
         concatCmd.complexFilter(filterStr)
             .map('[v]').map('[a]')
-            .outputOptions([
-                '-c:v libx264',
-                '-preset medium',
-                '-crf 22',
-                '-c:a aac',
-                '-b:a 192k',
-                '-movflags +faststart'
-            ])
+            .outputOptions(['-c:v libx264', '-preset medium', '-crf 22', '-c:a aac', '-b:a 192k', '-movflags +faststart'])
             .save(finalOutput)
             .on('end', () => {
                 segments.forEach(s => fs.unlink(s, () => {}));
@@ -211,4 +192,4 @@ app.post(['/ia-turbo', '/magic-workflow'], upload.fields([{ name: 'visuals' }, {
     } catch (e) { res.status(500).send(e.message); }
 });
 
-app.listen(PORT, '0.0.0.0', () => console.log(`🚀 MASTER ENGINE v5.4 ONLINE NA PORTA ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => console.log(`🚀 MASTER ENGINE v5.5 ONLINE NA PORTA ${PORT}`));
