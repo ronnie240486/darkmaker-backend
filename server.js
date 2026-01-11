@@ -25,11 +25,11 @@ try {
 const FONT_FILENAME = 'Roboto-Bold.ttf';
 const FONT_PATH = path.join(__dirname, FONT_FILENAME);
 
-// Multiple candidates to ensure download succeeds
+// Updated URLs to include 'static/' which is the correct path for Roboto in the repo
 const FONT_URLS = [
-    "https://raw.githubusercontent.com/google/fonts/main/apache/roboto/Roboto-Bold.ttf",
-    "https://raw.githubusercontent.com/google/fonts/main/ofl/roboto/Roboto-Bold.ttf",
-    "https://github.com/google/fonts/raw/main/apache/roboto/Roboto-Bold.ttf"
+    "https://raw.githubusercontent.com/google/fonts/main/apache/roboto/static/Roboto-Bold.ttf",
+    "https://github.com/google/fonts/raw/main/apache/roboto/static/Roboto-Bold.ttf",
+    "https://raw.githubusercontent.com/google/fonts/main/apache/roboto/Roboto-Bold.ttf"
 ];
 
 const downloadFile = (url, dest) => {
@@ -81,7 +81,7 @@ const downloadFont = async () => {
 downloadFont();
 
 const app = express();
-// Changed default port to 3001 to avoid conflict with Vite (8080)
+// Changed default port to 3001 to avoid conflict with Vite (8080) and match proxy
 const PORT = process.env.PORT || 3001;
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
 const OUTPUT_DIR = path.join(__dirname, 'outputs');
