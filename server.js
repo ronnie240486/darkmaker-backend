@@ -4,18 +4,46 @@ const multer = require('multer');
 const ffmpeg = require('fluent-ffmpeg');
 const fs = require('fs');
 const path = require('path');
-const ffmpegStatic = require('ffmpeg-static');
-const ffprobeStatic = require('ffprobe-static');
+
+// Try to load static binaries, fallback to system paths if not found
+let ffmpegPath = 'ffmpeg';
+let ffprobePath = 'ffprobe';
+
+try {
+    const staticFfmpeg = require('ffmpeg-static');
+    if (staticFfmpeg) {
+        ffmpegPath = staticFfmpeg;
+        console.log(`✅ ffmpeg-static found: ${ffmpegPath}`);
+    }
+} catch (e) {
+    console.warn("⚠️ ffmpeg-static module not found, falling back to system 'ffmpeg'");
+}
+
+try {
+    const staticFfprobe = require('ffprobe-static');
+    if (staticFfprobe && staticFfprobe.path) {
+        ffprobePath = staticFfprobe.path;
+        console.log(`✅ ffprobe-static found: ${ffprobePath}`);
+    }
+} catch (e) {
+    console.warn("⚠️ ffprobe-static module not found, falling back to system 'ffprobe'");
+}
 
 // Configuração Robusta do FFmpeg
-ffmpeg.setFfmpegPath(ffmpegStatic);
-ffmpeg.setFfprobePath(ffprobeStatic.path);
+// Apenas define o path se encontrarmos o binário ou estivermos tentando o sistema
+try {
+    ffmpeg.setFfmpegPath(ffmpegPath);
+    ffmpeg.setFfprobePath(ffprobePath);
+} catch (err) {
+    console.error("Erro ao configurar caminhos do FFmpeg:", err);
+}
 
-console.log(`🚀 FFmpeg Path: ${ffmpegStatic}`);
-console.log(`🚀 FFprobe Path: ${ffprobeStatic.path}`);
+// Debug paths
+console.log(`🚀 FFmpeg Path configured: ${ffmpegPath}`);
+console.log(`🚀 FFprobe Path configured: ${ffprobePath}`);
 
 const app = express();
-const PORT = 3001;
+const PORT = process.env.PORT || 3001;
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
 const OUTPUT_DIR = path.join(__dirname, 'outputs');
 const TEMP_DIR = path.join(__dirname, 'temp');
@@ -93,7 +121,13 @@ const processSegment = (visualPath, audioPath, text, index, isVertical) => {
             const yPos = height - Math.floor(height * 0.15);
             
             // Drawtext com background box para legibilidade
-            filters.push(`drawtext=text='${sanitizedText}':fontcolor=white:fontsize=${fontSize}:box=1:boxcolor=black@0.6:boxborderw=10:x=(w-text_w)/2:y=${yPos}`);
+            // Nota: drawtext requer que o ffmpeg tenha suporte a libfreetype. 
+            // Se falhar, o bloco try/catch no processamento captura.
+            try {
+                filters.push(`drawtext=text='${sanitizedText}':fontcolor=white:fontsize=${fontSize}:box=1:boxcolor=black@0.6:boxborderw=10:x=(w-text_w)/2:y=${yPos}`);
+            } catch(e) {
+                console.warn("Erro ao configurar drawtext (talvez falte suporte a fontes):", e);
+            }
         }
 
         // Configuração do Pipeline
@@ -217,8 +251,7 @@ app.listen(PORT, '0.0.0.0', () => {
     ==================================================
     🎥 DARKMAKER RENDER ENGINE V3 (MOTION + ZOOM)
     ✅ Server running on port ${PORT}
-    ✅ FFmpeg Static Loaded
-    ✅ Motion Effects Enabled
+    ✅ FFmpeg Configuration: ${ffmpegPath === 'ffmpeg' ? 'System Default' : 'Static Binary'}
     ==================================================
     `);
 });
