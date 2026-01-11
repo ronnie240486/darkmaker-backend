@@ -49,7 +49,6 @@ app.get('/health', (req, res) => res.json({ status: 'online' }));
 
 const upload = multer({ dest: UPLOAD_DIR });
 
-// Improved escaping for FFmpeg filters
 function sanitize(text) {
     if (!text) return '';
     return text
@@ -62,7 +61,7 @@ function sanitize(text) {
 }
 
 app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }, { name: 'bgMusic' }]), async (req, res) => {
-    console.log("🚀 Iniciando Masterização Completa...");
+    console.log("🚀 Iniciando Masterização Robusta...");
     
     const visualFiles = req.files['visuals'] || [];
     const audioFiles = req.files['audios'] || [];
@@ -72,30 +71,28 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }, { 
     const targetW = isVertical ? 1080 : 1920;
     const targetH = isVertical ? 1920 : 1080;
 
-    const outputFilename = `master_hd_${Date.now()}.mp4`;
+    const outputFilename = `master_${Date.now()}.mp4`;
     const outputPath = path.join(OUTPUT_DIR, outputFilename);
-
     const segments = [];
 
     try {
-        // 1. Processar cada cena individualmente
         for (let i = 0; i < visualFiles.length; i++) {
             const visual = visualFiles[i];
             const audio = audioFiles[i];
             const text = narrations[i] || '';
-            const segPath = path.join(UPLOAD_DIR, `s_${i}_${Date.now()}.mp4`);
+            const segPath = path.join(UPLOAD_DIR, `seg_${i}_${Date.now()}.mp4`);
             const isImg = /\.(jpg|jpeg|png|webp|gif)$/i.test(visual.originalname);
 
-            console.log(`🎬 Processando Cena ${i + 1}/${visualFiles.length}...`);
+            console.log(`🎬 Processando Cena ${i + 1}: ${isImg ? 'IMAGEM' : 'VÍDEO'}`);
 
             await new Promise((resolve, reject) => {
                 let cmd = ffmpeg(visual.path);
                 
                 if (isImg) {
+                    // Loop de 6 segundos para imagens
                     cmd.inputOptions(['-loop 1', '-t 6']);
                 }
 
-                // Input de áudio (narração ou silêncio)
                 if (audio) {
                     cmd.input(audio.path);
                 } else {
@@ -104,100 +101,79 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }, { 
 
                 let vFilters = [];
                 if (isImg) {
-                    // Optimized Ken Burns
-                    vFilters.push(`scale=4000:-1,zoompan=z='min(zoom+0.0015,1.5)':d=180:s=${targetW}x${targetH}:fps=30`);
+                    // Ken Burns Effect otimizado para evitar erro de escala
+                    vFilters.push(`scale=iw*2:-1,zoompan=z='min(zoom+0.0015,1.5)':d=180:s=${targetW}x${targetH}:fps=30`);
                 } else {
                     vFilters.push(`scale=${targetW}:${targetH}:force_original_aspect_ratio=increase,crop=${targetW}:${targetH},setsar=1`);
                 }
 
-                // Add text overlay if font exists
                 if (text && fs.existsSync(FONT_PATH)) {
-                    const fontSize = Math.floor(targetH * 0.045);
-                    const yPos = Math.floor(targetH * 0.82);
+                    const fontSize = Math.floor(targetH * 0.04);
+                    const yPos = Math.floor(targetH * 0.85);
                     const cleanText = sanitize(text);
-                    vFilters.push(`drawtext=fontfile='${FONT_PATH.replace(/\\/g, '/')}:text='${cleanText}':fontcolor=white:fontsize=${fontSize}:box=1:boxcolor=black@0.6:boxborderw=20:x=(w-text_w)/2:y=${yPos}`);
+                    vFilters.push(`drawtext=fontfile='${FONT_PATH.replace(/\\/g, '/')}:text='${cleanText}':fontcolor=white:fontsize=${fontSize}:box=1:boxcolor=black@0.5:boxborderw=15:x=(w-text_w)/2:y=${yPos}`);
                 }
 
                 vFilters.push('format=yuv420p');
 
                 cmd.complexFilter([
                     { filter: vFilters.join(','), inputs: '0:v', outputs: 'v_out' },
-                    { filter: 'aresample=44100', inputs: '1:a', outputs: 'a_out' }
+                    // Sincroniza áudio: se for menor que o vídeo, completa com silêncio
+                    { filter: 'aresample=44100,apad', inputs: '1:a', outputs: 'a_out' }
                 ])
                 .map('v_out')
                 .map('a_out')
                 .outputOptions([
                     '-c:v libx264',
-                    '-preset ultrafast',
-                    '-crf 23',
-                    '-shortest',
-                    '-r 30'
+                    '-preset fast',
+                    '-crf 22',
+                    '-r 30',
+                    '-t 6' // Força duração constante por cena para estabilidade
                 ])
                 .save(segPath)
                 .on('end', () => { segments.push(segPath); resolve(); })
                 .on('error', (err) => {
-                    console.error(`❌ Erro na cena ${i}:`, err.message);
+                    console.error(`❌ Erro Cena ${i}:`, err.message);
                     reject(err);
                 });
             });
         }
 
-        if (segments.length === 0) {
-            throw new Error("Nenhum segmento foi gerado com sucesso.");
-        }
+        if (segments.length === 0) throw new Error("Falha ao gerar segmentos.");
 
-        // 2. Concatenar e Mixar Trilha Sonora
-        console.log("🔗 Concatenando segmentos e mixando trilha...");
+        console.log("🔗 Unindo cenas...");
         let finalCmd = ffmpeg();
         segments.forEach(s => finalCmd.input(s));
+        if (bgMusicFile) finalCmd.input(bgMusicFile.path);
+
+        const concatStr = segments.map((_, i) => `[${i}:v][${i}:a]`).join('');
+        let filterStr = `${concatStr}concat=n=${segments.length}:v=1:a=1[vv][aa];`;
 
         if (bgMusicFile) {
-            finalCmd.input(bgMusicFile.path);
-        }
-
-        const concatInputs = segments.map((_, i) => `[${i}:v][${i}:a]`).join('');
-        let complexFilter = `${concatInputs}concat=n=${segments.length}:v=1:a=1[v_raw][a_narration];`;
-
-        if (bgMusicFile) {
-            // Mix narração (0:1) with background music (N:0)
-            complexFilter += `[a_narration]volume=1.2[a1];[${segments.length}:a]volume=0.15,dynaudnorm[a2];[a1][a2]amix=inputs=2:duration=first[a_final]`;
+            filterStr += `[aa]volume=1.5[a1];[${segments.length}:a]volume=0.1,dynaudnorm[a2];[a1][a2]amix=inputs=2:duration=first[afinal]`;
         } else {
-            complexFilter += `[a_narration]copy[a_final]`;
+            filterStr += `[aa]copy[afinal]`;
         }
 
-        finalCmd.complexFilter(complexFilter)
-            .map('[v_raw]')
-            .map('[a_final]')
-            .outputOptions([
-                '-c:v libx264',
-                '-preset fast',
-                '-crf 20',
-                '-c:a aac',
-                '-b:a 192k',
-                '-y',
-                '-movflags +faststart'
-            ])
+        finalCmd.complexFilter(filterStr)
+            .map('[vv]')
+            .map('[afinal]')
+            .outputOptions(['-c:v libx264', '-preset medium', '-crf 18', '-c:a aac', '-y'])
             .save(outputPath)
             .on('end', () => {
-                console.log("✅ Renderização Final Concluída!");
+                console.log("✅ Concluído!");
                 res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` });
                 
-                // Cleanup temp files after some time
+                // Cleanup tardio
                 setTimeout(() => {
-                    segments.forEach(s => { if(fs.existsSync(s)) fs.unlinkSync(s); });
-                    [...visualFiles, ...audioFiles].forEach(f => { if(f && fs.existsSync(f.path)) fs.unlinkSync(f.path); });
-                    if(bgMusicFile && fs.existsSync(bgMusicFile.path)) fs.unlinkSync(bgMusicFile.path);
-                }, 60000);
+                    segments.forEach(s => fs.existsSync(s) && fs.unlinkSync(s));
+                }, 30000);
             })
-            .on('error', (err) => {
-                console.error("❌ Erro na renderização final:", err.message);
-                res.status(500).send("Erro na renderização final: " + err.message);
-            });
+            .on('error', (err) => res.status(500).send(err.message));
 
     } catch (e) {
-        console.error("❌ Erro fatal no processamento:", e.message);
-        res.status(500).send("Erro fatal: " + e.message);
+        res.status(500).send(e.message);
     }
 });
 
-app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Motor Master Pro na porta ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Motor Master Pro na porta ${PORT}`));
