@@ -1,270 +1,203 @@
+
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
 const ffmpeg = require('fluent-ffmpeg');
 const fs = require('fs');
 const path = require('path');
+const https = require('https');
 
-// Try to load static binaries, fallback to system paths if not found
-let ffmpegPath = 'ffmpeg';
-let ffprobePath = 'ffprobe';
-
+// --- CONFIGURAÇÃO DE BINÁRIOS ---
+let ffmpegPath, ffprobePath;
 try {
-    const staticFfmpeg = require('ffmpeg-static');
-    if (staticFfmpeg) {
-        ffmpegPath = staticFfmpeg;
-        console.log(`✅ ffmpeg-static found: ${ffmpegPath}`);
-    }
-} catch (e) {
-    console.warn("⚠️ ffmpeg-static module not found, falling back to system 'ffmpeg'");
-}
-
-try {
-    const staticFfprobe = require('ffprobe-static');
-    if (staticFfprobe && staticFfprobe.path) {
-        ffprobePath = staticFfprobe.path;
-        console.log(`✅ ffprobe-static found: ${ffprobePath}`);
-    }
-} catch (e) {
-    console.warn("⚠️ ffprobe-static module not found, falling back to system 'ffprobe'");
-}
-
-// Configuração Robusta do FFmpeg
-// Apenas define o path se encontrarmos o binário ou estivermos tentando o sistema
-try {
+    ffmpegPath = require('@ffmpeg-installer/ffmpeg').path;
+    ffprobePath = require('@ffprobe-installer/ffprobe').path;
     ffmpeg.setFfmpegPath(ffmpegPath);
     ffmpeg.setFfprobePath(ffprobePath);
-} catch (err) {
-    console.error("Erro ao configurar caminhos do FFmpeg:", err);
+} catch (error) {
+    console.warn("⚠️ Usando binários do sistema para FFmpeg.");
 }
 
-// Debug paths
-console.log(`🚀 FFmpeg Path configured: ${ffmpegPath}`);
-console.log(`🚀 FFprobe Path configured: ${ffprobePath}`);
-
-const app = express();
-const PORT = process.env.PORT || 3001;
-const UPLOAD_DIR = path.join(__dirname, 'uploads');
-const OUTPUT_DIR = path.join(__dirname, 'outputs');
-const TEMP_DIR = path.join(__dirname, 'temp');
-const DIST_DIR = path.join(__dirname, 'dist');
-
-// Garantir diretórios
-[UPLOAD_DIR, OUTPUT_DIR, TEMP_DIR].forEach(dir => {
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-});
-
-app.use(cors({ origin: '*' }));
-app.use(express.json({ limit: '500mb' }));
-app.use(express.urlencoded({ extended: true, limit: '500mb' }));
-
-// Serve static files (Outputs & Frontend)
-app.use('/outputs', express.static(OUTPUT_DIR));
-app.use(express.static(DIST_DIR));
-
-const upload = multer({ 
-    storage: multer.diskStorage({
-        destination: UPLOAD_DIR,
-        filename: (req, file, cb) => cb(null, `raw_${Date.now()}_${Math.random().toString(36).substr(2, 9)}_${file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_')}`)
-    }),
-    limits: { fileSize: 1024 * 1024 * 1024 } // 1GB limit
-});
-
-// Helper para extrair índice do nome do arquivo (ex: v_0_scene.mp4 -> 0)
-const getIndex = (filename) => {
-    const match = filename.match(/[a-z]_(\d+)_/);
-    return match ? parseInt(match[1]) : 9999;
-};
-
-// Função para processar UM segmento individualmente
-const processSegment = (visualPath, audioPath, text, index, isVertical) => {
-    return new Promise((resolve, reject) => {
-        const outputPath = path.join(TEMP_DIR, `segment_${index}_${Date.now()}.mp4`);
-        const width = isVertical ? 1080 : 1920;
-        const height = isVertical ? 1920 : 1080;
-        
-        // Determinar se é imagem
-        const isImage = visualPath.match(/\.(jpg|jpeg|png|webp)$/i);
-        
-        let cmd = ffmpeg();
-
-        // Input Visual
-        cmd.input(visualPath);
-        if (isImage) {
-            cmd.inputOptions(['-loop 1']);
+// --- CONFIGURAÇÃO DE FONTE ---
+const FONT_FILENAME = 'Roboto-Bold.ttf';
+const FONT_PATH = path.join(__dirname, FONT_FILENAME);
+const downloadFont = async () => {
+    if (fs.existsSync(FONT_PATH)) return;
+    const url = "https://github.com/googlefonts/roboto/raw/main/src/hinted/Roboto-Bold.ttf";
+    const file = fs.createWriteStream(FONT_PATH);
+    https.get(url, res => {
+        if (res.statusCode === 200) {
+            res.pipe(file);
         }
-
-        // Input Audio (ou silêncio se não houver)
-        if (audioPath && fs.existsSync(audioPath)) {
-            cmd.input(audioPath);
-        } else {
-            // Gera 5 segundos de silêncio se não tiver áudio
-            cmd.input('anullsrc=r=44100:cl=stereo').inputFormat('lavfi').inputOptions(['-t 5']);
-        }
-
-        // Filtros de Vídeo Complexos
-        const filters = [];
-
-        if (isImage) {
-            // === EFEITO KEN BURNS (Zoom/Pan) ===
-            filters.push(`scale=8000:-1`); // Upscale inicial massivo para evitar pixelização no zoom
-            filters.push(`zoompan=z='min(zoom+0.0010,1.5)':d=700:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${width}x${height}`);
-        } else {
-            // Se for vídeo, apenas escala e crop
-            filters.push(`scale=${width}:${height}:force_original_aspect_ratio=increase`);
-            filters.push(`crop=${width}:${height}`);
-        }
-
-        filters.push(`setsar=1`); // Pixel quadrado obrigatório
-
-        // 2. Texto (Legendas Queimadas)
-        if (text) {
-            // Sanitização básica do texto para o filtro drawtext
-            const sanitizedText = text.replace(/:/g, '\\:').replace(/'/g, '').replace(/\n/g, ' ');
-            const fontSize = Math.floor(height * 0.045);
-            const yPos = height - Math.floor(height * 0.15);
-            
-            // Drawtext com background box para legibilidade
-            // Nota: drawtext requer que o ffmpeg tenha suporte a libfreetype. 
-            // Se falhar, o bloco try/catch no processamento captura.
-            try {
-                filters.push(`drawtext=text='${sanitizedText}':fontcolor=white:fontsize=${fontSize}:box=1:boxcolor=black@0.6:boxborderw=10:x=(w-text_w)/2:y=${yPos}`);
-            } catch(e) {
-                console.warn("Erro ao configurar drawtext (talvez falte suporte a fontes):", e);
-            }
-        }
-
-        // Configuração do Pipeline
-        cmd.complexFilter([
-            // Processamento de Vídeo
-            {
-                filter: filters.join(','),
-                inputs: '0:v',
-                outputs: 'v_processed'
-            }
-        ]);
-
-        // Mapeamento
-        const outputOptions = [
-            '-map [v_processed]',
-            '-map 1:a?', // Mapeia áudio se existir (input 1)
-            '-c:v libx264',
-            '-preset ultrafast', // Rápido para evitar timeout
-            '-pix_fmt yuv420p', // Compatibilidade máxima
-            '-r 30', // Framerate fixo 30fps
-            '-c:a aac',
-            '-ar 44100',
-            '-ac 2'
-        ];
-
-        // Se tiver áudio real, corta o vídeo quando o áudio acaba.
-        // Se não tiver (silêncio gerado), usa a duração do silêncio.
-        outputOptions.push('-shortest');
-
-        cmd.outputOptions(outputOptions);
-
-        cmd.save(outputPath)
-           .on('end', () => resolve(outputPath))
-           .on('error', (err) => {
-               console.error(`❌ Erro no segmento ${index}:`, err);
-               reject(err);
-           });
     });
 };
+downloadFont();
 
-app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), async (req, res) => {
-    console.log("🎬 Iniciando Renderização Turbo com Movimentos...");
+const app = express();
+const PORT = 8080;
+const UPLOAD_DIR = path.join(__dirname, 'uploads');
+const OUTPUT_DIR = path.join(__dirname, 'outputs');
+
+if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+
+app.use(cors());
+app.use(express.json({ limit: '500mb' }));
+app.use('/outputs', express.static(OUTPUT_DIR));
+
+app.get('/health', (req, res) => res.json({ status: 'online' }));
+
+const upload = multer({ dest: UPLOAD_DIR });
+
+// Improved escaping for FFmpeg filters
+function sanitize(text) {
+    if (!text) return '';
+    return text
+        .replace(/\\/g, '\\\\\\\\')
+        .replace(/'/g, "'\\''")
+        .replace(/:/g, '\\:')
+        .replace(/,/g, '\\,')
+        .replace(/;/g, '\\;')
+        .replace(/%/g, '\\%');
+}
+
+app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }, { name: 'bgMusic' }]), async (req, res) => {
+    console.log("🚀 Iniciando Masterização Completa...");
     
+    const visualFiles = req.files['visuals'] || [];
+    const audioFiles = req.files['audios'] || [];
+    const bgMusicFile = req.files['bgMusic'] ? req.files['bgMusic'][0] : null;
+    const narrations = req.body.narrations ? JSON.parse(req.body.narrations) : [];
+    const isVertical = req.body.aspectRatio === '9:16';
+    const targetW = isVertical ? 1080 : 1920;
+    const targetH = isVertical ? 1920 : 1080;
+
+    const outputFilename = `master_hd_${Date.now()}.mp4`;
+    const outputPath = path.join(OUTPUT_DIR, outputFilename);
+
+    const segments = [];
+
     try {
-        const visualFiles = (req.files['visuals'] || []).sort((a, b) => getIndex(a.originalname) - getIndex(b.originalname));
-        const audioFiles = (req.files['audios'] || []).sort((a, b) => getIndex(a.originalname) - getIndex(b.originalname));
-        
-        let narrations = [];
-        try {
-            narrations = req.body.narrations ? JSON.parse(req.body.narrations) : [];
-        } catch (e) { console.log("Sem narrations ou erro de parse"); }
-
-        if (visualFiles.length === 0) throw new Error("Nenhum arquivo visual recebido.");
-
-        const isVertical = req.body.aspectRatio === '9:16';
-        const segmentPaths = [];
-
-        // FASE 1: Processar cada segmento individualmente (Normalização + Efeitos)
-        console.log(`🔄 Processando ${visualFiles.length} segmentos (Aplicando Zoom/Pan e Legendas)...`);
-        
+        // 1. Processar cada cena individualmente
         for (let i = 0; i < visualFiles.length; i++) {
             const visual = visualFiles[i];
-            // Encontra áudio correspondente pelo índice ou ordem
-            const audio = audioFiles.find(a => getIndex(a.originalname) === getIndex(visual.originalname)) || audioFiles[i];
-            const text = narrations[i] || "";
+            const audio = audioFiles[i];
+            const text = narrations[i] || '';
+            const segPath = path.join(UPLOAD_DIR, `s_${i}_${Date.now()}.mp4`);
+            const isImg = /\.(jpg|jpeg|png|webp|gif)$/i.test(visual.originalname);
 
-            console.log(`   Processed segment ${i}: ${visual.originalname}`);
-            try {
-                const segPath = await processSegment(visual.path, audio ? audio.path : null, text, i, isVertical);
-                segmentPaths.push(segPath);
-            } catch (err) {
-                console.error(`Falha ao processar segmento ${i}, pulando...`, err);
-            }
+            console.log(`🎬 Processando Cena ${i + 1}/${visualFiles.length}...`);
+
+            await new Promise((resolve, reject) => {
+                let cmd = ffmpeg(visual.path);
+                
+                if (isImg) {
+                    cmd.inputOptions(['-loop 1', '-t 6']);
+                }
+
+                // Input de áudio (narração ou silêncio)
+                if (audio) {
+                    cmd.input(audio.path);
+                } else {
+                    cmd.input('anullsrc=r=44100:cl=stereo').inputFormat('lavfi').inputOptions(['-t 6']);
+                }
+
+                let vFilters = [];
+                if (isImg) {
+                    // Optimized Ken Burns
+                    vFilters.push(`scale=4000:-1,zoompan=z='min(zoom+0.0015,1.5)':d=180:s=${targetW}x${targetH}:fps=30`);
+                } else {
+                    vFilters.push(`scale=${targetW}:${targetH}:force_original_aspect_ratio=increase,crop=${targetW}:${targetH},setsar=1`);
+                }
+
+                // Add text overlay if font exists
+                if (text && fs.existsSync(FONT_PATH)) {
+                    const fontSize = Math.floor(targetH * 0.045);
+                    const yPos = Math.floor(targetH * 0.82);
+                    const cleanText = sanitize(text);
+                    vFilters.push(`drawtext=fontfile='${FONT_PATH.replace(/\\/g, '/')}:text='${cleanText}':fontcolor=white:fontsize=${fontSize}:box=1:boxcolor=black@0.6:boxborderw=20:x=(w-text_w)/2:y=${yPos}`);
+                }
+
+                vFilters.push('format=yuv420p');
+
+                cmd.complexFilter([
+                    { filter: vFilters.join(','), inputs: '0:v', outputs: 'v_out' },
+                    { filter: 'aresample=44100', inputs: '1:a', outputs: 'a_out' }
+                ])
+                .map('v_out')
+                .map('a_out')
+                .outputOptions([
+                    '-c:v libx264',
+                    '-preset ultrafast',
+                    '-crf 23',
+                    '-shortest',
+                    '-r 30'
+                ])
+                .save(segPath)
+                .on('end', () => { segments.push(segPath); resolve(); })
+                .on('error', (err) => {
+                    console.error(`❌ Erro na cena ${i}:`, err.message);
+                    reject(err);
+                });
+            });
         }
 
-        if (segmentPaths.length === 0) throw new Error("Falha ao processar segmentos.");
+        if (segments.length === 0) {
+            throw new Error("Nenhum segmento foi gerado com sucesso.");
+        }
 
-        // FASE 2: Concatenar segmentos normalizados
-        console.log("🔗 Concatenando segmentos...");
-        const finalOutputName = `master_${Date.now()}.mp4`;
-        const finalOutputPath = path.join(OUTPUT_DIR, finalOutputName);
-        
-        // Criar arquivo de lista para concat demuxer
-        const listPath = path.join(TEMP_DIR, `list_${Date.now()}.txt`);
-        const fileListContent = segmentPaths.map(p => `file '${p.replace(/\\/g, '/')}'`).join('\n');
-        fs.writeFileSync(listPath, fileListContent);
+        // 2. Concatenar e Mixar Trilha Sonora
+        console.log("🔗 Concatenando segmentos e mixando trilha...");
+        let finalCmd = ffmpeg();
+        segments.forEach(s => finalCmd.input(s));
 
-        await new Promise((resolve, reject) => {
-            ffmpeg()
-                .input(listPath)
-                .inputOptions(['-f concat', '-safe 0'])
-                .outputOptions(['-c copy']) // Copia streams sem re-codificar (muito rápido e sem perdas)
-                .save(finalOutputPath)
-                .on('end', resolve)
-                .on('error', reject);
-        });
+        if (bgMusicFile) {
+            finalCmd.input(bgMusicFile.path);
+        }
 
-        console.log("✅ Renderização Concluída!");
-        
-        // Limpeza (opcional, pode ser movida para cronjob)
-        setTimeout(() => {
-            try {
-                [...segmentPaths, listPath].forEach(p => { if(fs.existsSync(p)) fs.unlinkSync(p); });
-                visualFiles.forEach(f => fs.unlinkSync(f.path));
-                audioFiles.forEach(f => fs.unlinkSync(f.path));
-            } catch(e) { console.error("Erro na limpeza:", e); }
-        }, 30000);
+        const concatInputs = segments.map((_, i) => `[${i}:v][${i}:a]`).join('');
+        let complexFilter = `${concatInputs}concat=n=${segments.length}:v=1:a=1[v_raw][a_narration];`;
 
-        const protocol = req.headers['x-forwarded-proto'] || req.protocol;
-        const host = req.get('host');
-        res.json({ url: `${protocol}://${host}/outputs/${finalOutputName}` });
+        if (bgMusicFile) {
+            // Mix narração (0:1) with background music (N:0)
+            complexFilter += `[a_narration]volume=1.2[a1];[${segments.length}:a]volume=0.15,dynaudnorm[a2];[a1][a2]amix=inputs=2:duration=first[a_final]`;
+        } else {
+            complexFilter += `[a_narration]copy[a_final]`;
+        }
 
-    } catch (error) {
-        console.error("❌ ERRO FATAL NO SERVIDOR:", error);
-        res.status(500).json({ error: error.message });
+        finalCmd.complexFilter(complexFilter)
+            .map('[v_raw]')
+            .map('[a_final]')
+            .outputOptions([
+                '-c:v libx264',
+                '-preset fast',
+                '-crf 20',
+                '-c:a aac',
+                '-b:a 192k',
+                '-y',
+                '-movflags +faststart'
+            ])
+            .save(outputPath)
+            .on('end', () => {
+                console.log("✅ Renderização Final Concluída!");
+                res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` });
+                
+                // Cleanup temp files after some time
+                setTimeout(() => {
+                    segments.forEach(s => { if(fs.existsSync(s)) fs.unlinkSync(s); });
+                    [...visualFiles, ...audioFiles].forEach(f => { if(f && fs.existsSync(f.path)) fs.unlinkSync(f.path); });
+                    if(bgMusicFile && fs.existsSync(bgMusicFile.path)) fs.unlinkSync(bgMusicFile.path);
+                }, 60000);
+            })
+            .on('error', (err) => {
+                console.error("❌ Erro na renderização final:", err.message);
+                res.status(500).send("Erro na renderização final: " + err.message);
+            });
+
+    } catch (e) {
+        console.error("❌ Erro fatal no processamento:", e.message);
+        res.status(500).send("Erro fatal: " + e.message);
     }
 });
 
-// Handle SPA routing - Must be last
-app.get('*', (req, res) => {
-    if (fs.existsSync(path.join(DIST_DIR, 'index.html'))) {
-        res.sendFile(path.join(DIST_DIR, 'index.html'));
-    } else {
-        res.status(404).send('Frontend not built or not found. Run `npm run build`.');
-    }
-});
-
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`
-    ==================================================
-    🎥 DARKMAKER RENDER ENGINE V3 (MOTION + ZOOM)
-    ✅ Server running on port ${PORT}
-    ✅ FFmpeg Configuration: ${ffmpegPath === 'ffmpeg' ? 'System Default' : 'Static Binary'}
-    ==================================================
-    `);
-});
+app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Motor Master Pro na porta ${PORT}`));
