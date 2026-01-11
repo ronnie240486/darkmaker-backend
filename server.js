@@ -15,7 +15,7 @@ try {
     ffmpeg.setFfprobePath(ffprobePath);
     process.env.FFMPEG_PATH = ffmpegPath;
     process.env.FFPROBE_PATH = ffprobePath;
-    console.log(`✅ FFmpeg Engine: Professional Mode Active.`);
+    console.log(`✅ FFmpeg Pro Engine v3.2 Active.`);
 } catch (error) {
     console.error("❌ FFmpeg path error:", error);
 }
@@ -42,14 +42,11 @@ const storage = multer.diskStorage({
 const upload = multer({ storage: storage });
 
 /**
- * Escapes text for drawtext filter with robust multi-level escaping.
- * FFmpeg's filtergraph parser requires escaping special characters like colons, commas, and single quotes.
+ * Escapes text for drawtext filter with extreme robustness.
  */
 function sanitizeForFFmpeg(text) {
     if (!text || text.trim() === '') return ' ';
-    // 1. Escape backslashes first
-    // 2. Escape single quotes for the text parameter
-    // 3. Escape colons, commas, semicolons for the filter parser
+    // FFmpeg drawtext requires triple/quadruple escaping for some characters in complex filters
     return text
         .replace(/\\/g, '\\\\\\\\')
         .replace(/'/g, "'\\\\\\''")
@@ -61,9 +58,7 @@ function sanitizeForFFmpeg(text) {
 }
 
 /**
- * IA TURBO / MASTER RENDER V3.1
- * High-performance rendering pipeline with burn-in subtitles and synchronized audio.
- * Fixed: Robustness against "Invalid argument" and "Error reinitializing filters".
+ * IA TURBO / MASTER RENDER V3.2
  */
 app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), async (req, res) => {
     const visualFiles = req.files['visuals'];
@@ -75,11 +70,10 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
     const resolution = req.body.resolution || '1080p';
     const isVertical = req.body.aspectRatio === '9:16';
     
-    // Professional resolution standards
     let targetW = isVertical ? 1080 : (resolution === '4K' ? 3840 : 1920);
     let targetH = isVertical ? 1920 : (resolution === '4K' ? 2160 : 1080);
 
-    // Ensure dimensions are strictly divisible by 2 for libx264 compatibility
+    // Strict requirements for libx264: even dimensions
     targetW = Math.floor(targetW / 2) * 2;
     targetH = Math.floor(targetH / 2) * 2;
 
@@ -91,41 +85,42 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
         
         for (let i = 0; i < visualFiles.length; i++) {
             const visual = visualFiles[i];
-            const audio = audioFiles[i] || null;
-            const text = narrations[i] || '';
+            const narrationAudio = audioFiles[i] || null;
+            const textLegend = narrations[i] || '';
             const segmentPath = path.join(UPLOAD_DIR, `seg_final_${i}_${Date.now()}.mp4`);
             const isImage = visual.mimetype.startsWith('image/') || /\.(jpg|jpeg|png|webp)$/i.test(visual.path);
             
             await new Promise((resolve, reject) => {
                 let cmd = ffmpeg();
 
-                // Input 0: The Visual (Image or Video)
+                // Input 0: Visual
                 if (isImage) {
                     cmd.input(visual.path).inputOptions(['-loop 1']);
                 } else {
                     cmd.input(visual.path);
                 }
 
-                // Input 1: The Audio (Narration or Silence)
-                if (audio) {
-                    cmd.input(audio.path);
+                // Input 1: Audio logic
+                // If narration audio provided, use it. 
+                // If not, and it's a video, use the video's own audio.
+                // Otherwise, use silence.
+                if (narrationAudio) {
+                    cmd.input(narrationAudio.path);
+                } else if (!isImage) {
+                    // Try to re-use input 0 audio
+                    cmd.input(visual.path); 
                 } else {
-                    // Generate stereo silence if no audio is provided
                     cmd.input('anullsrc=r=44100:cl=stereo').inputFormat('lavfi');
                 }
 
                 let videoFilters = [];
 
                 if (isImage) {
-                    // Normalize aspect ratio and size before zoompan to prevent "Invalid argument"
                     const aspect = targetW / targetH;
                     let baseW = 3840;
                     let baseH = Math.floor(3840 / aspect);
-                    if (aspect < 1) { // Vertical
-                        baseW = Math.floor(3840 * aspect);
-                        baseH = 3840;
-                    }
-                    // Force even base dimensions
+                    if (aspect < 1) { baseW = Math.floor(3840 * aspect); baseH = 3840; }
+                    
                     baseW = Math.floor(baseW / 2) * 2;
                     baseH = Math.floor(baseH / 2) * 2;
 
@@ -133,9 +128,8 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
                         `scale=${baseW}:${baseH}:force_original_aspect_ratio=increase`,
                         `crop=${baseW}:${baseH}`,
                         `setsar=1/1`,
-                        // zoompan is sensitive to coordinates; use trunc() to ensure integers
-                        // d=1 results in 1 output frame per input frame. fps=30 defines the speed.
-                        `zoompan=z='min(zoom+0.001,1.5)':x='trunc(iw/2-(iw/zoom/2))':y='trunc(ih/2-(ih/zoom/2))':s=${targetW}x${targetH}:d=1:fps=30`
+                        // Zoompan with integer coordinates (trunc)
+                        `zoompan=z='min(zoom+0.0012,1.5)':x='trunc(iw/2-(iw/zoom/2))':y='trunc(ih/2-(ih/zoom/2))':s=${targetW}x${targetH}:d=1:fps=30`
                     );
                 } else {
                     videoFilters.push(
@@ -145,30 +139,20 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
                     );
                 }
 
-                // Add Professional Subtitles
-                if (text && text.trim() !== '') {
-                    const cleanText = sanitizeForFFmpeg(text);
+                // Subtitles (Legendas)
+                if (textLegend && textLegend.trim() !== '') {
+                    const cleanText = sanitizeForFFmpeg(textLegend);
                     const fontSize = Math.floor(targetH * 0.045);
                     const boxMargin = Math.floor(targetH * 0.15);
                     
-                    // Attempt to use system fonts for stability
-                    const fontCandidates = [
-                        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-                        "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
-                        "C\\:/Windows/Fonts/arialbd.ttf"
-                    ];
+                    // Fallback font detection
+                    const fonts = ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf", "arialbd.ttf"];
                     let fontFile = "";
-                    for (const candidate of fontCandidates) {
-                        if (fs.existsSync(candidate.replace(/\\/g, ""))) {
-                            fontFile = `:fontfile='${candidate}'`;
-                            break;
-                        }
-                    }
+                    for (const f of fonts) if (fs.existsSync(f)) { fontFile = `:fontfile='${f}'`; break; }
 
                     videoFilters.push(`drawtext=text='${cleanText}'${fontFile}:fontcolor=white:fontsize=${fontSize}:box=1:boxcolor=black@0.6:boxborderw=15:x=(w-text_w)/2:y=h-th-${boxMargin}`);
                 }
 
-                // Final frame standardization to prevent concatenation errors
                 videoFilters.push(`format=yuv420p`, `fps=30`);
 
                 const audioFilters = [
@@ -184,10 +168,8 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
 
                 cmd.map('v_out').map('a_out');
 
-                // Segment duration: Images fixed 5s, Videos limited by shortest stream
-                if (isImage) {
-                    cmd.duration(5);
-                }
+                // Segment time limit
+                if (isImage) cmd.duration(5);
 
                 cmd.outputOptions([
                     '-c:v libx264',
@@ -198,18 +180,15 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
                     '-shortest'
                 ])
                 .save(segmentPath)
-                .on('end', () => { 
-                    segmentPaths.push(segmentPath); 
-                    resolve(); 
-                })
+                .on('end', () => { segmentPaths.push(segmentPath); resolve(); })
                 .on('error', (err) => { 
-                    console.error(`❌ Segment ${i} failed:`, err.message);
+                    console.error(`❌ Segment ${i} render failed:`, err.message);
                     reject(err); 
                 });
             });
         }
 
-        // --- FINAL CONCATENATION ---
+        // --- CONCATENATE ALL SEGMENTS ---
         if (segmentPaths.length === 0) throw new Error("No segments were successfully rendered.");
 
         const finalCmd = ffmpeg();
@@ -229,7 +208,6 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
             ])
             .save(outputPath)
             .on('end', () => {
-                // Cleanup temporary segments
                 segmentPaths.forEach(p => fs.unlink(p, () => {}));
                 res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` });
             })
@@ -244,4 +222,4 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
     }
 });
 
-app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Master Render Engine v3.1 Online on port ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Master Render Engine v3.2 Active on port ${PORT}`));
