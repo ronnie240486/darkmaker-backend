@@ -103,6 +103,8 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
     const audioFiles = (req.files['audios'] || []).sort((a, b) => getIndex(a.originalname) - getIndex(b.originalname));
     const narrations = req.body.narrations ? JSON.parse(req.body.narrations) : [];
 
+    console.log(`Received ${visualFiles.length} Visuals and ${audioFiles.length} Audios`);
+
     if (!visualFiles || visualFiles.length === 0) return res.status(400).send('No visuals provided.');
 
     const isVertical = req.body.aspectRatio === '9:16';
@@ -118,11 +120,11 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
 
         for (let i = 0; i < visualFiles.length; i++) {
             const visual = visualFiles[i];
-            const audio = audioFiles[i]; // Now guaranteed to match index i
+            const audio = audioFiles[i]; // Now guaranteed to match index i by strict sorting
             const text = narrations[i] || '';
             const segmentPath = path.join(UPLOAD_DIR, `seg_${i}_${Date.now()}.mp4`);
             
-            console.log(`🔹 Processing Seg ${i}: Visual=${visual.originalname} Audio=${audio ? audio.originalname : 'None'}`);
+            console.log(`🔹 Processing Seg ${i}: Visual=${visual.originalname}`);
 
             const isImage = visual.mimetype.startsWith('image/') || /\.(jpg|jpeg|png|webp)$/i.test(visual.originalname);
             
@@ -139,24 +141,28 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
                 // Input 1: Audio
                 if (audio && fs.existsSync(audio.path)) {
                     cmd.input(path.resolve(audio.path));
-                    // If audio is the silent placeholder (usually small but constructed with silence), we force it to act as audio
                 } else {
-                    // Fallback to lavfi only if no file at all, though frontend should prevent this
+                    // This fallback should rarely be hit if client generates valid silent wavs
                     cmd.input('anullsrc=r=44100:cl=stereo').inputFormat('lavfi').inputOptions(['-t 5']);
                 }
 
                 let videoFilters = [];
-                // Scale calculations (even dimensions required)
-                const scaleBase = isVertical ? 2880 : 3840;
-
+                // Standardize dimensions for stability
+                const scaleBase = isVertical ? 2160 : 3840; 
+                
+                // FORCE YUV420P and SETSAR 1 to prevent concatenation pixel format errors
                 if (isImage) {
-                    videoFilters.push(`scale=${scaleBase}:${scaleBase}:force_original_aspect_ratio=increase`);
+                    // Pre-scale before Zoompan to avoid huge memory usage on high-res images
+                    videoFilters.push(`scale=${scaleBase}:-1`); 
                     videoFilters.push(`crop=${scaleBase}:${scaleBase}`);
                     videoFilters.push(`zoompan=z='min(zoom+0.001,1.2)':d=450:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${targetW}x${targetH}:fps=30`);
                 } else {
                     videoFilters.push(`scale=${targetW}:${targetH}:force_original_aspect_ratio=increase`);
                     videoFilters.push(`crop=${targetW}:${targetH}`);
                 }
+
+                // Force pixel aspect ratio to 1
+                videoFilters.push('setsar=1');
 
                 if (text && fontAvailable) {
                     const cleanText = sanitizeForFFmpeg(text);
@@ -166,7 +172,7 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
                     videoFilters.push(`drawtext=fontfile='${escapedFontPath}':text='${cleanText}':fontcolor=white:fontsize=${fontSize}:box=1:boxcolor=black@0.5:boxborderw=20:line_spacing=10:x=(w-text_w)/2:y=h-th-${boxMargin}`);
                 }
 
-                videoFilters.push('format=yuv420p'); // Ensure compatibility
+                videoFilters.push('format=yuv420p'); 
 
                 cmd.complexFilter([
                     { filter: videoFilters.join(','), inputs: '0:v', outputs: 'v_out' },
@@ -176,7 +182,7 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
                 cmd.map('v_out');
                 cmd.map('a_out');
                 
-                // Truncate to shortest stream (usually audio, or hard limit on image)
+                // Truncate video to audio length
                 cmd.outputOptions(['-shortest']); 
 
                 cmd.outputOptions([
@@ -184,7 +190,7 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
                     '-c:a aac', '-b:a 128k', 
                     '-y'
                 ])
-                .timeout(60) // Safety timeout: 60s per segment
+                .timeout(60) // 60s per segment limit
                 .save(segmentPath)
                 .on('end', () => { 
                     segmentPaths.push(segmentPath); 
@@ -206,7 +212,7 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
         finalCmd.complexFilter(`${inputs}concat=n=${segmentPaths.length}:v=1:a=1[v][a]`)
             .map('[v]').map('[a]')
             .outputOptions(['-c:v libx264', '-preset ultrafast', '-c:a aac', '-y'])
-            .timeout(120) // Safety timeout for master render
+            .timeout(120) // 2 min timeout for master render
             .save(outputPath)
             .on('end', () => {
                 console.log("✅ Render Complete");
@@ -217,7 +223,7 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
                         visualFiles.forEach(f => fs.unlink(f.path, () => {}));
                         audioFiles.forEach(f => fs.unlink(f.path, () => {}));
                     } catch(e) {}
-                }, 5000);
+                }, 10000);
                 
                 res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` });
             })
