@@ -129,15 +129,19 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
             await new Promise((resolve, reject) => {
                 let cmd = ffmpeg();
 
+                // Input 0: Visual
                 cmd.input(path.resolve(visual.path));
                 if (isImage) {
                     // Critical: Explicit duration to prevent infinite loops
                     cmd.inputOptions(['-loop 1', '-t 15']); 
                 }
 
+                // Input 1: Audio
                 if (audio && fs.existsSync(audio.path)) {
                     cmd.input(path.resolve(audio.path));
+                    // If audio is the silent placeholder (usually small but constructed with silence), we force it to act as audio
                 } else {
+                    // Fallback to lavfi only if no file at all, though frontend should prevent this
                     cmd.input('anullsrc=r=44100:cl=stereo').inputFormat('lavfi').inputOptions(['-t 5']);
                 }
 
@@ -180,6 +184,7 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
                     '-c:a aac', '-b:a 128k', 
                     '-y'
                 ])
+                .timeout(60) // Safety timeout: 60s per segment
                 .save(segmentPath)
                 .on('end', () => { 
                     segmentPaths.push(segmentPath); 
@@ -201,6 +206,7 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
         finalCmd.complexFilter(`${inputs}concat=n=${segmentPaths.length}:v=1:a=1[v][a]`)
             .map('[v]').map('[a]')
             .outputOptions(['-c:v libx264', '-preset ultrafast', '-c:a aac', '-y'])
+            .timeout(120) // Safety timeout for master render
             .save(outputPath)
             .on('end', () => {
                 console.log("✅ Render Complete");
