@@ -47,14 +47,16 @@ const upload = multer({ storage: storage });
  */
 function sanitizeForFFmpeg(text) {
     if (!text || text.trim() === '') return ' ';
+    // FFmpeg drawtext escaping rules are tricky. 
+    // Within complex filters, we need to escape single quotes, colons, and backslashes.
     return text
-        .replace(/\\/g, "\\\\\\\\")
-        .replace(/'/g, "'\\\\\\''")
-        .replace(/:/g, "\\\\:")
-        .replace(/,/g, "\\\\,")
-        .replace(/%/g, "\\\\%")
-        .replace(/\[/g, "\\\\[")
-        .replace(/\]/g, "\\\\]");
+        .replace(/\\/g, "\\\\")
+        .replace(/'/g, "'\\''")
+        .replace(/:/g, "\\:")
+        .replace(/,/g, "\\,")
+        .replace(/%/g, "\\%")
+        .replace(/\[/g, "\\[")
+        .replace(/\]/g, "\\]");
 }
 
 /**
@@ -72,8 +74,12 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
     const isVertical = req.body.aspectRatio === '9:16';
     
     // Professional resolution standards
-    const targetW = isVertical ? 1080 : (resolution === '4K' ? 3840 : 1920);
-    const targetH = isVertical ? 1920 : (resolution === '4K' ? 2160 : 1080);
+    let targetW = isVertical ? 1080 : (resolution === '4K' ? 3840 : 1920);
+    let targetH = isVertical ? 1920 : (resolution === '4K' ? 2160 : 1080);
+
+    // Ensure dimensions are divisible by 2 for libx264
+    targetW = Math.floor(targetW / 2) * 2;
+    targetH = Math.floor(targetH / 2) * 2;
 
     const outputFilename = `master_export_${Date.now()}.mp4`;
     const outputPath = path.join(OUTPUT_DIR, outputFilename);
@@ -108,8 +114,8 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
                 let videoFilters = [];
 
                 if (isImage) {
-                    // Zoompan requires careful aspect ratio handling to avoid stretching.
-                    // We crop the high-res base to the target aspect ratio first.
+                    // Optimized Zoompan for looped images
+                    // Using 'on' (output frame number) for continuous zoom
                     const aspect = targetW / targetH;
                     let cropW = 4000;
                     let cropH = Math.floor(4000 / aspect);
@@ -118,10 +124,16 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
                         cropH = 4000;
                     }
                     
+                    // Force even dimensions for crop to avoid issues
+                    cropW = Math.floor(cropW / 2) * 2;
+                    cropH = Math.floor(cropH / 2) * 2;
+
                     videoFilters.push(
                         `scale=4000:4000:force_original_aspect_ratio=increase`,
                         `crop=${cropW}:${cropH}`,
-                        `zoompan=z='min(zoom+0.001,1.2)':d=300:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${targetW}x${targetH}:fps=30`
+                        // d=1 means output 1 frame per input frame. fps=30 ensures the logic matches our target.
+                        // zoom starts at 1 and increases. x/y are centered using floor to avoid float errors.
+                        `zoompan=z='min(1+on*0.001,1.5)':x='floor(iw/2-(iw/zoom/2))':y='floor(ih/2-(ih/zoom/2))':s=${targetW}x${targetH}:d=1:fps=30`
                     );
                 } else {
                     videoFilters.push(
@@ -136,14 +148,14 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
                     const fontSize = Math.floor(targetH * 0.04);
                     const boxMargin = Math.floor(targetH * 0.12);
                     
-                    // Note: 'fontfile' is often needed in server environments. 
-                    // We try a common path or let FFmpeg find a default.
+                    // Try to find a system font, otherwise fallback to default
                     const commonFont = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf";
                     const fontParam = fs.existsSync(commonFont) ? `:fontfile='${commonFont}'` : "";
 
                     videoFilters.push(`drawtext=text='${cleanText}'${fontParam}:fontcolor=white:fontsize=${fontSize}:box=1:boxcolor=black@0.6:boxborderw=15:x=(w-text_w)/2:y=h-th-${boxMargin}`);
                 }
 
+                // Final stability filters
                 videoFilters.push(`format=yuv420p`, `fps=30`);
 
                 const audioFilters = [
@@ -159,8 +171,10 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
 
                 cmd.map('v_out').map('a_out');
 
-                // Limit duration: Images 5s, Videos follow audio or original
-                if (isImage) cmd.duration(5);
+                // Limit duration: Images default 5s, Videos follow audio or original
+                if (isImage) {
+                    cmd.duration(5);
+                }
 
                 cmd.outputOptions([
                     '-c:v libx264',
