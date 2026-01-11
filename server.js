@@ -25,11 +25,10 @@ try {
 const FONT_FILENAME = 'Roboto-Bold.ttf';
 const FONT_PATH = path.join(__dirname, FONT_FILENAME);
 
-// Updated URLs to include 'static/' which is the correct path for Roboto in the repo
+// Correct URLs for Roboto Bold (OFL version)
 const FONT_URLS = [
-    "https://raw.githubusercontent.com/google/fonts/main/apache/roboto/static/Roboto-Bold.ttf",
-    "https://github.com/google/fonts/raw/main/apache/roboto/static/Roboto-Bold.ttf",
-    "https://raw.githubusercontent.com/google/fonts/main/apache/roboto/Roboto-Bold.ttf"
+    "https://raw.githubusercontent.com/google/fonts/main/ofl/roboto/static/Roboto-Bold.ttf",
+    "https://github.com/google/fonts/raw/main/ofl/roboto/static/Roboto-Bold.ttf"
 ];
 
 const downloadFile = (url, dest) => {
@@ -37,13 +36,24 @@ const downloadFile = (url, dest) => {
         const file = fs.createWriteStream(dest);
         https.get(url, response => {
             if (response.statusCode !== 200) {
-                fs.unlink(dest, () => {});
-                reject(new Error(`Status ${response.statusCode}`));
+                file.close(() => {
+                    fs.unlink(dest, () => {}); // Delete partial/empty file
+                    reject(new Error(`Status ${response.statusCode}`));
+                });
                 return;
             }
             response.pipe(file);
             file.on('finish', () => {
-                file.close(() => resolve(true));
+                file.close(() => {
+                    // Double check size to ensure it's not a text error page
+                    const stats = fs.statSync(dest);
+                    if (stats.size < 1000) {
+                        fs.unlink(dest, () => {});
+                        reject(new Error('Downloaded file too small (likely invalid)'));
+                    } else {
+                        resolve(true);
+                    }
+                });
             });
         }).on('error', err => {
             fs.unlink(dest, () => {});
@@ -55,6 +65,7 @@ const downloadFile = (url, dest) => {
 const downloadFont = async () => {
     const tempPath = path.join(__dirname, `${FONT_FILENAME}.tmp`);
     
+    // Check if valid font already exists
     if (fs.existsSync(FONT_PATH) && fs.statSync(FONT_PATH).size > 1000) {
         console.log("✅ Font verified present.");
         return;
@@ -66,8 +77,11 @@ const downloadFont = async () => {
         try {
             console.log(`Trying ${url}...`);
             await downloadFile(url, tempPath);
+            
+            // If successful, move temp to final
             if (fs.existsSync(FONT_PATH)) fs.unlinkSync(FONT_PATH);
             fs.renameSync(tempPath, FONT_PATH);
+            
             console.log("✅ Font installed successfully.");
             return;
         } catch (e) {
@@ -81,8 +95,10 @@ const downloadFont = async () => {
 downloadFont();
 
 const app = express();
-// Changed default port to 3001 to avoid conflict with Vite (8080) and match proxy
-const PORT = process.env.PORT || 3001;
+// FORCE PORT 3001 to avoid conflict with Vite (which defaults to 8080 or is set to 8080)
+// This prevents "Failed to fetch" caused by backend stealing the frontend port
+const PORT = 3001; 
+
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
 const OUTPUT_DIR = path.join(__dirname, 'outputs');
 
@@ -140,11 +156,8 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
     // Improved path escaping for Windows/Unix compatibility in FFmpeg filter strings
     let fontPathFilter = '';
     if (fontAvailable) {
+        // Absolute path with forward slashes for FFmpeg compatibility
         fontPathFilter = FONT_PATH.replace(/\\/g, '/').replace(/:/g, '\\:');
-        // Handle spaces in path if any
-        if (fontPathFilter.includes(' ')) {
-            fontPathFilter = `'${fontPathFilter}'`;
-        }
     }
 
     try {
@@ -190,8 +203,11 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
                     const cleanText = sanitizeForFFmpeg(text);
                     const fontSize = Math.floor(targetH * 0.045);
                     const boxMargin = Math.floor(targetH * 0.1);
-                    // Use fontPathFilter which is already escaped
-                    videoFilters.push(`drawtext=fontfile='${fontPathFilter}':text='${cleanText}':fontcolor=white:fontsize=${fontSize}:box=1:boxcolor=black@0.5:boxborderw=20:line_spacing=10:x=(w-text_w)/2:y=h-th-${boxMargin}`);
+                    
+                    // Escaping single quotes in the path for the filter string
+                    const escapedFontPath = fontPathFilter.replace(/'/g, "\\'");
+                    
+                    videoFilters.push(`drawtext=fontfile='${escapedFontPath}':text='${cleanText}':fontcolor=white:fontsize=${fontSize}:box=1:boxcolor=black@0.5:boxborderw=20:line_spacing=10:x=(w-text_w)/2:y=h-th-${boxMargin}`);
                 }
 
                 videoFilters.push(`format=yuv420p`);
