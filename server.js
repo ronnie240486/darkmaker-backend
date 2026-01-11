@@ -16,15 +16,14 @@ try {
     ffmpeg.setFfprobePath(ffprobePath);
     process.env.FFMPEG_PATH = ffmpegPath;
     process.env.FFPROBE_PATH = ffprobePath;
-    console.log(`✅ FFmpeg Engine: Professional Mode Active. Path: ${ffmpegPath}`);
+    console.log(`✅ Motor FFmpeg: Modo Profissional Ativo. Caminho: ${ffmpegPath}`);
 } catch (error) {
-    console.error("❌ FFmpeg path error:", error);
+    console.error("❌ Erro no caminho do FFmpeg:", error);
 }
 
 // --- FONT CONFIGURATION ---
 const FONT_FILENAME = 'Roboto-Bold.ttf';
 const FONT_PATH = path.join(__dirname, FONT_FILENAME);
-
 const FONT_URLS = [
     "https://github.com/googlefonts/roboto/raw/main/src/hinted/Roboto-Bold.ttf",
     "https://raw.githubusercontent.com/google/fonts/main/ofl/roboto/static/Roboto-Bold.ttf"
@@ -46,7 +45,7 @@ const downloadFile = (url, dest) => {
             file.on('finish', () => {
                 file.close(() => {
                     if (fs.existsSync(dest) && fs.statSync(dest).size > 1000) resolve(true);
-                    else { fs.unlink(dest, () => {}); reject(new Error('File too small')); }
+                    else { fs.unlink(dest, () => {}); reject(new Error('Arquivo muito pequeno')); }
                 });
             });
         }).on('error', err => { fs.unlink(dest, () => {}); reject(err); });
@@ -56,15 +55,20 @@ const downloadFile = (url, dest) => {
 const downloadFont = async () => {
     if (fs.existsSync(FONT_PATH) && fs.statSync(FONT_PATH).size > 1000) return;
     for (const url of FONT_URLS) {
-        try { await downloadFile(url, FONT_PATH); console.log("✅ Font installed."); return; } 
-        catch (e) { console.warn(`⚠️ Font mirror failed: ${e.message}`); }
+        try { 
+            await downloadFile(url, FONT_PATH); 
+            console.log("✅ Fonte instalada."); 
+            return; 
+        } catch (e) { 
+            console.warn(`⚠️ Falha ao espelhar a fonte: ${e.message}`); 
+        }
     }
-    console.warn("⚠️ Subtitles will be disabled (Font download failed).");
+    console.warn("⚠️ As legendas serão desativadas (Falha no download da fonte).");
 };
 downloadFont();
 
 const app = express();
-const PORT = 3001;
+const PORT = 8080; // Porta definida como solicitado
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
 const OUTPUT_DIR = path.join(__dirname, 'outputs');
 
@@ -76,12 +80,19 @@ app.use(express.json({ limit: '500mb' }));
 app.use(express.urlencoded({ extended: true, limit: '500mb' }));
 app.use('/outputs', express.static(OUTPUT_DIR));
 
-const upload = multer({ 
+/**
+ * Rota de Health Check para o Frontend detectar conexão
+ */
+app.get('/health', (req, res) => {
+    res.json({ status: 'online', engine: 'ffmpeg', port: PORT });
+});
+
+const upload = multer({
     storage: multer.diskStorage({
         destination: UPLOAD_DIR,
         filename: (req, file, cb) => cb(null, `raw_${Date.now()}_${file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_')}`)
     }),
-    limits: { fileSize: 500 * 1024 * 1024 } // 500MB limit
+    limits: { fileSize: 500 * 1024 * 1024 } // limite de 500 MB
 });
 
 function sanitizeForFFmpeg(text) {
@@ -89,21 +100,20 @@ function sanitizeForFFmpeg(text) {
     return text.replace(/\\/g, '\\\\').replace(/'/g, "'\\\\''").replace(/:/g, '\\:').replace(/,/g, '\\,').replace(/%/g, '\\%').replace(/\n/g, ' ').replace(/\r/g, '');
 }
 
-// Helper to extract index from filename (v_0_scene.mp4 -> 0)
+// Função auxiliar para extrair o índice do nome do arquivo (v_0_scene.mp4 -> 0)
 const getIndex = (filename) => {
-    const match = filename.match(/[a-z]_(\d+)_/);
+    const match = filename.match(/[a-z]_(\d+)/i);
     return match ? parseInt(match[1]) : 9999;
 };
 
 app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), async (req, res) => {
-    console.log("🎬 Start IA Turbo Render Job");
+    console.log("🎬 Iniciar tarefa de renderização IA Turbo");
     
-    // SORT FILES BY INDEX TO ENSURE SYNC
     const visualFiles = (req.files['visuals'] || []).sort((a, b) => getIndex(a.originalname) - getIndex(b.originalname));
     const audioFiles = (req.files['audios'] || []).sort((a, b) => getIndex(a.originalname) - getIndex(b.originalname));
     const narrations = req.body.narrations ? JSON.parse(req.body.narrations) : [];
 
-    console.log(`Received ${visualFiles.length} Visuals and ${audioFiles.length} Audios`);
+    console.log(`Recibidos ${visualFiles.length} Visuals y ${audioFiles.length} Audios`);
 
     if (!visualFiles || visualFiles.length === 0) return res.status(400).send('No visuals provided.');
 
@@ -120,39 +130,32 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
 
         for (let i = 0; i < visualFiles.length; i++) {
             const visual = visualFiles[i];
-            const audio = audioFiles[i]; // Now guaranteed to match index i by strict sorting
+            const audio = audioFiles[i]; 
             const text = narrations[i] || '';
             const segmentPath = path.join(UPLOAD_DIR, `seg_${i}_${Date.now()}.mp4`);
             
-            console.log(`🔹 Processing Seg ${i}: Visual=${visual.originalname}`);
+            console.log(`🔹 Processando Seg ${i}: Visual=${visual.originalname}`);
 
             const isImage = visual.mimetype.startsWith('image/') || /\.(jpg|jpeg|png|webp)$/i.test(visual.originalname);
             
             await new Promise((resolve, reject) => {
                 let cmd = ffmpeg();
 
-                // Input 0: Visual
                 cmd.input(path.resolve(visual.path));
                 if (isImage) {
-                    // Critical: Explicit duration to prevent infinite loops
                     cmd.inputOptions(['-loop 1', '-t 15']); 
                 }
 
-                // Input 1: Audio
                 if (audio && fs.existsSync(audio.path)) {
                     cmd.input(path.resolve(audio.path));
                 } else {
-                    // This fallback should rarely be hit if client generates valid silent wavs
                     cmd.input('anullsrc=r=44100:cl=stereo').inputFormat('lavfi').inputOptions(['-t 5']);
                 }
 
                 let videoFilters = [];
-                // Standardize dimensions for stability
                 const scaleBase = isVertical ? 2160 : 3840; 
                 
-                // FORCE YUV420P and SETSAR 1 to prevent concatenation pixel format errors
                 if (isImage) {
-                    // Pre-scale before Zoompan to avoid huge memory usage on high-res images
                     videoFilters.push(`scale=${scaleBase}:-1`); 
                     videoFilters.push(`crop=${scaleBase}:${scaleBase}`);
                     videoFilters.push(`zoompan=z='min(zoom+0.001,1.2)':d=450:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${targetW}x${targetH}:fps=30`);
@@ -161,7 +164,6 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
                     videoFilters.push(`crop=${targetW}:${targetH}`);
                 }
 
-                // Force pixel aspect ratio to 1
                 videoFilters.push('setsar=1');
 
                 if (text && fontAvailable) {
@@ -181,8 +183,6 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
 
                 cmd.map('v_out');
                 cmd.map('a_out');
-                
-                // Truncate video to audio length
                 cmd.outputOptions(['-shortest']); 
 
                 cmd.outputOptions([
@@ -190,20 +190,20 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
                     '-c:a aac', '-b:a 128k', 
                     '-y'
                 ])
-                .timeout(60) // 60s per segment limit
+                .timeout(60) 
                 .save(segmentPath)
                 .on('end', () => { 
                     segmentPaths.push(segmentPath); 
                     resolve(); 
                 })
                 .on('error', (err) => {
-                    console.error(`❌ Error Seg ${i}:`, err.message);
+                    console.error(`❌ Erro Seg ${i}:`, err.message);
                     reject(err);
                 });
             });
         }
 
-        console.log("🔗 Concatenating...");
+        console.log("🔗 Concatenando...");
         const finalCmd = ffmpeg();
         segmentPaths.forEach(p => finalCmd.input(p));
         
@@ -212,11 +212,10 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
         finalCmd.complexFilter(`${inputs}concat=n=${segmentPaths.length}:v=1:a=1[v][a]`)
             .map('[v]').map('[a]')
             .outputOptions(['-c:v libx264', '-preset ultrafast', '-c:a aac', '-y'])
-            .timeout(120) // 2 min timeout for master render
+            .timeout(120) 
             .save(outputPath)
             .on('end', () => {
-                console.log("✅ Render Complete");
-                // Lazy cleanup
+                console.log("✅ Render Completo");
                 setTimeout(() => {
                     try {
                         segmentPaths.forEach(p => fs.unlink(p, () => {}));
@@ -228,14 +227,14 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
                 res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` });
             })
             .on('error', (err) => {
-                console.error("❌ Concat Error:", err.message);
+                console.error("❌ Erro no Concat:", err.message);
                 res.status(500).send(err.message);
             });
 
     } catch (error) {
-        console.error("❌ Job Failed:", error.message);
+        console.error("❌ Job falhou:", error.message);
         res.status(500).send(error.message);
     }
 });
 
-app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Server running on port ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Servidor rodando na porta ${PORT}`));
