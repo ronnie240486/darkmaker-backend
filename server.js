@@ -25,19 +25,25 @@ try {
 const FONT_FILENAME = 'Roboto-Bold.ttf';
 const FONT_PATH = path.join(__dirname, FONT_FILENAME);
 
-// Correct URLs for Roboto Bold (OFL version)
+// Updated URLs using the official roboto repo and reliable mirrors
 const FONT_URLS = [
+    "https://github.com/googlefonts/roboto/raw/main/src/hinted/Roboto-Bold.ttf",
     "https://raw.githubusercontent.com/google/fonts/main/ofl/roboto/static/Roboto-Bold.ttf",
-    "https://github.com/google/fonts/raw/main/ofl/roboto/static/Roboto-Bold.ttf"
+    "https://raw.githubusercontent.com/StellarCN/roboto-font/master/Roboto-Bold.ttf"
 ];
 
 const downloadFile = (url, dest) => {
     return new Promise((resolve, reject) => {
         const file = fs.createWriteStream(dest);
         https.get(url, response => {
+            if (response.statusCode === 302 || response.statusCode === 301) {
+                // Handle redirects if necessary (simple version)
+                downloadFile(response.headers.location, dest).then(resolve).catch(reject);
+                return;
+            }
             if (response.statusCode !== 200) {
                 file.close(() => {
-                    fs.unlink(dest, () => {}); // Delete partial/empty file
+                    fs.unlink(dest, () => {}); 
                     reject(new Error(`Status ${response.statusCode}`));
                 });
                 return;
@@ -45,7 +51,6 @@ const downloadFile = (url, dest) => {
             response.pipe(file);
             file.on('finish', () => {
                 file.close(() => {
-                    // Double check size to ensure it's not a text error page
                     const stats = fs.statSync(dest);
                     if (stats.size < 1000) {
                         fs.unlink(dest, () => {});
@@ -65,7 +70,6 @@ const downloadFile = (url, dest) => {
 const downloadFont = async () => {
     const tempPath = path.join(__dirname, `${FONT_FILENAME}.tmp`);
     
-    // Check if valid font already exists
     if (fs.existsSync(FONT_PATH) && fs.statSync(FONT_PATH).size > 1000) {
         console.log("✅ Font verified present.");
         return;
@@ -78,7 +82,6 @@ const downloadFont = async () => {
             console.log(`Trying ${url}...`);
             await downloadFile(url, tempPath);
             
-            // If successful, move temp to final
             if (fs.existsSync(FONT_PATH)) fs.unlinkSync(FONT_PATH);
             fs.renameSync(tempPath, FONT_PATH);
             
@@ -95,8 +98,7 @@ const downloadFont = async () => {
 downloadFont();
 
 const app = express();
-// FORCE PORT 3001 to avoid conflict with Vite (which defaults to 8080 or is set to 8080)
-// This prevents "Failed to fetch" caused by backend stealing the frontend port
+// FORCE PORT 3001
 const PORT = 3001; 
 
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
@@ -153,10 +155,8 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
     // CRITICAL CHECK: Verify font existence before using it in filters
     const fontAvailable = fs.existsSync(FONT_PATH) && fs.statSync(FONT_PATH).size > 1000;
     
-    // Improved path escaping for Windows/Unix compatibility in FFmpeg filter strings
     let fontPathFilter = '';
     if (fontAvailable) {
-        // Absolute path with forward slashes for FFmpeg compatibility
         fontPathFilter = FONT_PATH.replace(/\\/g, '/').replace(/:/g, '\\:');
     }
 
@@ -191,22 +191,17 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
                 if (isImage) {
                     videoFilters.push(`scale=${scaleBase}:${scaleBase}:force_original_aspect_ratio=increase`);
                     videoFilters.push(`crop=${scaleBase}:${scaleBase}`);
-                    // Ensure output is scaled to target resolution at the end of zoompan
                     videoFilters.push(`zoompan=z='min(zoom+0.001,1.2)':d=1800:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${targetW}x${targetH}:fps=30`);
                 } else {
                     videoFilters.push(`scale=${targetW}:${targetH}:force_original_aspect_ratio=increase`);
                     videoFilters.push(`crop=${targetW}:${targetH}`);
                 }
 
-                // Only add drawtext if font is confirmed available to avoid "No such file" crash
                 if (text && fontAvailable) {
                     const cleanText = sanitizeForFFmpeg(text);
                     const fontSize = Math.floor(targetH * 0.045);
                     const boxMargin = Math.floor(targetH * 0.1);
-                    
-                    // Escaping single quotes in the path for the filter string
                     const escapedFontPath = fontPathFilter.replace(/'/g, "\\'");
-                    
                     videoFilters.push(`drawtext=fontfile='${escapedFontPath}':text='${cleanText}':fontcolor=white:fontsize=${fontSize}:box=1:boxcolor=black@0.5:boxborderw=20:line_spacing=10:x=(w-text_w)/2:y=h-th-${boxMargin}`);
                 }
 
@@ -259,9 +254,7 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
             throw new Error("No segments were successfully rendered.");
         }
 
-        // --- CONCATENATION ---
         const finalCmd = ffmpeg();
-        
         const validPaths = segmentPaths.filter(p => fs.existsSync(p));
         validPaths.forEach(p => finalCmd.input(p));
         
