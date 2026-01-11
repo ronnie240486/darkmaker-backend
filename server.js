@@ -15,7 +15,7 @@ try {
     ffmpeg.setFfprobePath(ffprobePath);
     process.env.FFMPEG_PATH = ffmpegPath;
     process.env.FFPROBE_PATH = ffprobePath;
-    console.log(`✅ MOTOR TURBO MASTER v5.1 - MAGIC WORKFLOW & IA TURBO ATIVOS`);
+    console.log(`✅ MASTER ENGINE v5.2 - AUDIO SYNC & MULTI-ROUTING`);
 } catch (error) {
     console.error("❌ Erro Crítico FFmpeg:", error);
 }
@@ -54,7 +54,7 @@ function escapeForDrawtext(text) {
 }
 
 /**
- * MOTOR DE PROCESSAMENTO DE CENA ÚNICA
+ * MOTOR DE PROCESSAMENTO DE CENA (VÍDEO + ÁUDIO)
  */
 const processScene = async (visual, audio, text, index, w, h, isImg, UPLOAD_DIR) => {
     const segPath = path.join(UPLOAD_DIR, `seg_${index}_${Date.now()}.mp4`);
@@ -62,12 +62,16 @@ const processScene = async (visual, audio, text, index, w, h, isImg, UPLOAD_DIR)
     return new Promise((resolve, reject) => {
         let cmd = ffmpeg();
 
+        // Input 0: Visual
         if (isImg) cmd.input(visual.path).inputOptions(['-loop 1']);
         else cmd.input(visual.path);
 
-        if (audio) {
+        // Input 1: Áudio (Narração ou Silêncio Gerado)
+        if (audio && fs.existsSync(audio.path)) {
             cmd.input(audio.path);
         } else {
+            // CRITICAL: Gera um rastro de áudio vazio se não houver narração
+            // Isso evita erro de concatenação posterior (vídeo sem áudio + vídeo com áudio)
             cmd.input('anullsrc=channel_layout=stereo:sample_rate=44100').inputFormat('lavfi');
         }
 
@@ -83,8 +87,8 @@ const processScene = async (visual, audio, text, index, w, h, isImg, UPLOAD_DIR)
 
         if (text) {
             const cleanText = escapeForDrawtext(text);
-            const fSize = Math.floor(h * 0.035);
-            vFilters.push(`drawtext=text='${cleanText}':fontcolor=white:fontsize=${fSize}:box=1:boxcolor=black@0.6:boxborderw=15:x=(w-text_w)/2:y=h-(h*0.18):line_spacing=10`);
+            const fSize = Math.floor(h * 0.04);
+            vFilters.push(`drawtext=text='${cleanText}':fontcolor=white:fontsize=${fSize}:box=1:boxcolor=black@0.6:boxborderw=20:x=(w-text_w)/2:y=h-(h*0.2):line_spacing=15`);
         }
 
         vFilters.push(`fade=t=in:st=0:d=0.5`, `fade=t=out:st=4.5:d=0.5`);
@@ -93,7 +97,7 @@ const processScene = async (visual, audio, text, index, w, h, isImg, UPLOAD_DIR)
         let aFilters = [
             'aresample=44100',
             'aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo',
-            'volume=1.8',
+            'volume=1.5',
             'afade=t=in:st=0:d=0.3',
             'afade=t=out:st=4.7:d=0.3'
         ];
@@ -104,20 +108,99 @@ const processScene = async (visual, audio, text, index, w, h, isImg, UPLOAD_DIR)
         ]);
 
         cmd.map('v_processed').map('a_processed');
-        cmd.duration(5);
+        cmd.duration(5); // Padroniza todas as cenas em 5 segundos
 
-        cmd.outputOptions(['-c:v libx264', '-preset ultrafast', '-c:a aac', '-shortest'])
-            .save(segPath)
-            .on('end', () => resolve(segPath))
-            .on('error', (err) => reject(err));
+        cmd.outputOptions([
+            '-c:v libx264',
+            '-preset ultrafast',
+            '-c:a aac',
+            '-b:a 192k',
+            '-shortest'
+        ])
+        .save(segPath)
+        .on('end', () => resolve(segPath))
+        .on('error', (err) => {
+            console.error(`Erro na cena ${index}:`, err);
+            reject(err);
+        });
     });
 };
 
 /**
- * LÓGICA DE CONCATENAÇÃO MESTRE
+ * ROTA: PROCESSAMENTO DE ÁUDIO (JOIN / CLEAN / STEMS)
  */
-const concatSegments = async (segments, finalOutput) => {
-    return new Promise((resolve, reject) => {
+app.post('/process-audio', upload.array('audio'), async (req, res) => {
+    const files = req.files || [];
+    const action = req.body.action || 'join';
+
+    if (files.length === 0) return res.status(400).send('Nenhum arquivo de áudio enviado.');
+
+    const outputPath = path.join(OUTPUT_DIR, `audio_${Date.now()}.mp3`);
+    
+    try {
+        let cmd = ffmpeg();
+        files.forEach(f => cmd.input(f.path));
+
+        if (files.length > 1) {
+            cmd.mergeToFile(outputPath, UPLOAD_DIR)
+                .on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${path.basename(outputPath)}` }))
+                .on('error', (err) => res.status(500).send(err.message));
+        } else {
+            // Processamento Simples (Volume / Bass / Clean)
+            cmd.audioFilters(['volume=1.2', 'highpass=f=200', 'lowpass=f=3000'])
+                .save(outputPath)
+                .on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${path.basename(outputPath)}` }))
+                .on('error', (err) => res.status(500).send(err.message));
+        }
+    } catch (e) {
+        res.status(500).send(e.message);
+    }
+});
+
+/**
+ * ROTA: PROCESSAMENTO DE IMAGEM
+ */
+app.post('/process-image', upload.array('image'), async (req, res) => {
+    const files = req.files || [];
+    if (files.length === 0) return res.status(400).send('Nenhuma imagem enviada.');
+    
+    // Simplesmente retorna a primeira imagem por enquanto (placeholder para IA de imagem)
+    res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${path.basename(files[0].path)}` });
+});
+
+/**
+ * ROTAS DE VÍDEO (TURBO E MAGIC)
+ */
+app.post(['/ia-turbo', '/magic-workflow'], upload.fields([{ name: 'visuals' }, { name: 'audios' }]), async (req, res) => {
+    const visualFiles = req.files['visuals'] || [];
+    const audioFiles = req.files['audios'] || [];
+    const narrations = req.body.narrations ? JSON.parse(req.body.narrations) : [];
+    const aspectRatio = req.body.aspectRatio || '16:9';
+
+    if (visualFiles.length === 0) return res.status(400).send('Sem mídia para processar.');
+
+    const isVertical = aspectRatio === '9:16';
+    const w = isVertical ? 1080 : 1920;
+    const h = isVertical ? 1920 : 1080;
+
+    const finalOutput = path.join(OUTPUT_DIR, `master_${Date.now()}.mp4`);
+    const segments = [];
+
+    try {
+        console.log(`🎬 Masterizando ${visualFiles.length} cenas...`);
+        for (let i = 0; i < visualFiles.length; i++) {
+            const seg = await processScene(
+                visualFiles[i], 
+                audioFiles[i] || null, 
+                narrations[i] || null, 
+                i, w, h, 
+                visualFiles[i].mimetype.startsWith('image/'), 
+                UPLOAD_DIR
+            );
+            segments.push(seg);
+        }
+
+        // CONCATENAÇÃO FINAL
         const concatCmd = ffmpeg();
         segments.forEach(s => concatCmd.input(s));
 
@@ -125,70 +208,27 @@ const concatSegments = async (segments, finalOutput) => {
         
         concatCmd.complexFilter(filterStr)
             .map('[v]').map('[a]')
-            .outputOptions(['-c:v libx264', '-preset medium', '-crf 22', '-c:a aac', '-movflags +faststart'])
+            .outputOptions([
+                '-c:v libx264',
+                '-preset medium',
+                '-crf 22',
+                '-c:a aac',
+                '-b:a 192k',
+                '-movflags +faststart'
+            ])
             .save(finalOutput)
-            .on('end', () => resolve())
-            .on('error', (err) => reject(err));
-    });
-};
+            .on('end', () => {
+                console.log(`✅ Vídeo Gerado: ${finalOutput}`);
+                segments.forEach(s => fs.unlink(s, () => {}));
+                res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${path.basename(finalOutput)}` });
+            })
+            .on('error', (err) => {
+                console.error("Erro Final:", err);
+                res.status(500).send(err.message);
+            });
 
-/**
- * ROTA: MAGIC WORKFLOW
- * Otimizada para o fluxo de "1 Tópico = 1 Vídeo"
- */
-app.post('/magic-workflow', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), async (req, res) => {
-    const visualFiles = req.files['visuals'] || [];
-    const audioFiles = req.files['audios'] || [];
-    const narrations = req.body.narrations ? JSON.parse(req.body.narrations) : [];
-    
-    if (visualFiles.length === 0) return res.status(400).send('Sem mídia para o Workflow.');
-
-    const w = 1920, h = 1080; // Padrão paisagem para Workflow
-    const finalOutput = path.join(OUTPUT_DIR, `magic_${Date.now()}.mp4`);
-    const segments = [];
-
-    try {
-        console.log(`✨ Executando Magic Workflow: ${visualFiles.length} cenas...`);
-        for (let i = 0; i < visualFiles.length; i++) {
-            const seg = await processScene(visualFiles[i], audioFiles[i], narrations[i], i, w, h, visualFiles[i].mimetype.startsWith('image/'), UPLOAD_DIR);
-            segments.push(seg);
-        }
-        await concatSegments(segments, finalOutput);
-        segments.forEach(s => fs.unlink(s, () => {}));
-        res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${path.basename(finalOutput)}` });
     } catch (e) {
+        console.error("Falha no Motor:", e);
         res.status(500).send(e.message);
     }
 });
-
-/**
- * ROTA: IA TURBO
- */
-app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), async (req, res) => {
-    const visualFiles = req.files['visuals'] || [];
-    const audioFiles = req.files['audios'] || [];
-    const narrations = req.body.narrations ? JSON.parse(req.body.narrations) : [];
-    const aspectRatio = req.body.aspectRatio || '16:9';
-
-    const isVertical = aspectRatio === '9:16';
-    const w = isVertical ? 1080 : 1920;
-    const h = isVertical ? 1920 : 1080;
-
-    const finalOutput = path.join(OUTPUT_DIR, `turbo_${Date.now()}.mp4`);
-    const segments = [];
-
-    try {
-        console.log(`🚀 Executando IA Turbo Render...`);
-        for (let i = 0; i < visualFiles.length; i++) {
-            const seg = await processScene(visualFiles[i], audioFiles[i], narrations[i], i, w, h, visualFiles[i].mimetype.startsWith('image/'), UPLOAD_DIR);
-            segments.push(seg);
-        }
-        await concatSegments(segments, finalOutput);
-        segments.forEach(s => fs.unlink(s, () => {}));
-        res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${path.basename(finalOutput)}` });
-    } catch (e) {
-        res.status(500).send(e.message);
-    }
-});
-
-app.listen(PORT, '0.0.0.0', () => console.log(`🚀 MASTER ENGINE v5.1 ONLINE NA PORTA ${PORT}`));
