@@ -1,16 +1,11 @@
-import express from 'express';
-import cors from 'cors';
-import multer from 'multer';
-import ffmpeg from 'fluent-ffmpeg';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import ffmpegStatic from 'ffmpeg-static';
-import ffprobeStatic from 'ffprobe-static';
-
-// Setup de Caminhos para ES Modules
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const express = require('express');
+const cors = require('cors');
+const multer = require('multer');
+const ffmpeg = require('fluent-ffmpeg');
+const fs = require('fs');
+const path = require('path');
+const ffmpegStatic = require('ffmpeg-static');
+const ffprobeStatic = require('ffprobe-static');
 
 // Configuração Robusta do FFmpeg
 ffmpeg.setFfmpegPath(ffmpegStatic);
@@ -80,9 +75,6 @@ const processSegment = (visualPath, audioPath, text, index, isVertical) => {
 
         if (isImage) {
             // === EFEITO KEN BURNS (Zoom/Pan) ===
-            // Zoom suave para dar vida à imagem estática
-            // zoompan requer input em alta resolução antes do scale final
-            // Exemplo: zoom inicia em 1.0 e vai até 1.15 ao longo de ~10 segundos (250 frames)
             filters.push(`scale=8000:-1`); // Upscale inicial massivo para evitar pixelização no zoom
             filters.push(`zoompan=z='min(zoom+0.0010,1.5)':d=700:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${width}x${height}`);
         } else {
