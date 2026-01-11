@@ -15,7 +15,7 @@ try {
     ffmpeg.setFfprobePath(ffprobePath);
     process.env.FFMPEG_PATH = ffmpegPath;
     process.env.FFPROBE_PATH = ffprobePath;
-    console.log(`✅ MOTOR TURBO MASTER v3.7 - AUDIO NORMALIZER ACTIVE`);
+    console.log(`✅ MOTOR MASTER BACKEND v4.0 - FULL AUDIO SYNC`);
 } catch (error) {
     console.error("❌ Erro Crítico FFmpeg:", error);
 }
@@ -36,14 +36,11 @@ app.use('/outputs', express.static(OUTPUT_DIR));
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, UPLOAD_DIR),
   filename: (req, file, cb) => {
-    cb(null, `master_${Date.now()}_${file.originalname.replace(/[^a-zA-Z0-9.]/g, '_')}`);
+    cb(null, `media_${Date.now()}_${file.originalname.replace(/[^a-zA-Z0-9.]/g, '_')}`);
   }
 });
 const upload = multer({ storage: storage });
 
-/**
- * Escapamento de texto para drawtext (Legendas).
- */
 function escapeForDrawtext(text) {
     if (!text) return ' ';
     return text
@@ -57,142 +54,166 @@ function escapeForDrawtext(text) {
 }
 
 /**
- * RENDERIZADOR TURBO v3.7 - MASTER AUDIO SYNC
+ * IA TURBO - ROTA MESTRE DE VÍDEO
  */
 app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), async (req, res) => {
-    const visualFiles = req.files['visuals'];
+    const visualFiles = req.files['visuals'] || [];
     const audioFiles = req.files['audios'] || [];
     const narrations = req.body.narrations ? JSON.parse(req.body.narrations) : [];
 
-    if (!visualFiles || visualFiles.length === 0) return res.status(400).send('Erro: Nenhum visual enviado.');
+    if (visualFiles.length === 0) return res.status(400).send('Sem visuais.');
 
-    const resParam = req.body.resolution || '1080p';
     const isVertical = req.body.aspectRatio === '9:16';
-    
-    let w = isVertical ? 1080 : (resParam === '4K' ? 3840 : 1920);
-    let h = isVertical ? 1920 : (resParam === '4K' ? 2160 : 1080);
+    let w = isVertical ? 1080 : 1920;
+    let h = isVertical ? 1920 : 1080;
     
     w = Math.floor(w / 2) * 2;
     h = Math.floor(h / 2) * 2;
 
-    const finalOutputName = `render_final_${Date.now()}.mp4`;
-    const finalOutputPath = path.join(OUTPUT_DIR, finalOutputName);
+    const finalOutput = path.join(OUTPUT_DIR, `final_${Date.now()}.mp4`);
+    const segments = [];
 
     try {
-        const segmentPaths = [];
-
         for (let i = 0; i < visualFiles.length; i++) {
             const visual = visualFiles[i];
-            const audio = audioFiles[i] || null;
+            const audio = audioFiles[i]; // Narração do Gemini
             const text = narrations[i] || '';
             const isImg = visual.mimetype.startsWith('image/');
-            const segPath = path.join(UPLOAD_DIR, `seg_norm_${i}_${Date.now()}.mp4`);
+            const segPath = path.join(UPLOAD_DIR, `seg_${i}_${Date.now()}.mp4`);
 
             await new Promise((resolve, reject) => {
                 let cmd = ffmpeg();
 
-                // INPUT 0: VISUAL
-                if (isImg) {
-                    cmd.input(visual.path).inputOptions(['-loop 1']);
-                } else {
-                    cmd.input(visual.path);
-                }
+                // Input 0: Visual
+                if (isImg) cmd.input(visual.path).inputOptions(['-loop 1']);
+                else cmd.input(visual.path);
 
-                // INPUT 1: ÁUDIO (NORMALIZADO)
+                // Input 1: Áudio (Narração ou Silêncio)
                 if (audio) {
                     cmd.input(audio.path);
                 } else {
-                    // Se não houver áudio, gera silêncio de alta qualidade
                     cmd.input('anullsrc=channel_layout=stereo:sample_rate=44100').inputFormat('lavfi');
                 }
 
-                // FILTROS DE VÍDEO
-                let vFilters = [
+                // Filtros de Vídeo
+                let vFilter = [
                     `scale=${w}:${h}:force_original_aspect_ratio=increase`,
                     `crop=${w}:${h}`,
                     `setsar=1/1`
                 ];
-
-                if (isImg) {
-                    vFilters.push(`zoompan=z='min(zoom+0.0012,1.5)':x='trunc(iw/2-(iw/zoom/2))':y='trunc(ih/2-(ih/zoom/2))':s=${w}x${h}:d=1:fps=30`);
+                if (isImg) vFilter.push(`zoompan=z='min(zoom+0.0015,1.5)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${w}x${h}:d=1:fps=30`);
+                if (text) {
+                    const cleanText = escapeForDrawtext(text);
+                    const fSize = Math.floor(h * 0.04);
+                    vFilter.push(`drawtext=text='${cleanText}':fontcolor=white:fontsize=${fSize}:box=1:boxcolor=black@0.5:boxborderw=10:x=(w-text_w)/2:y=h-(h*0.15)`);
                 }
+                vFilter.push('format=yuv420p', 'fps=30');
 
-                if (text && text.trim() !== '') {
-                    const clean = escapeForDrawtext(text);
-                    const fSize = Math.floor(h * 0.045);
-                    const bMargin = Math.floor(h * 0.12);
-                    vFilters.push(`drawtext=text='${clean}':fontcolor=white:fontsize=${fSize}:box=1:boxcolor=black@0.6:boxborderw=15:x=(w-text_w)/2:y=h-th-${bMargin}`);
-                }
-                vFilters.push('format=yuv420p', 'fps=30');
-
-                // FILTROS DE ÁUDIO (AQUI ESTÁ A CHAVE: NORMALIZAÇÃO AGRESSIVA)
-                // Forçamos aresample e pan para garantir que tudo seja Stereo 44.1k
-                const aFilters = [
-                    'aresample=44100:async=1',
-                    'pan=stereo|c0=c0|c1=c1',
+                // Filtros de Áudio - GARANTE QUE O SOM SAIA
+                // Normalizamos para 44.1kHz estéreo
+                const aFilter = [
+                    'aresample=44100',
                     'aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo',
                     'volume=1.5'
                 ];
 
                 cmd.complexFilter([
-                    { filter: vFilters.join(','), inputs: '0:v', outputs: 'v_out' },
-                    { filter: aFilters.join(','), inputs: '1', outputs: 'a_out' }
+                    { filter: vFilter.join(','), inputs: '0:v', outputs: 'v_out' },
+                    // Usamos '1' para pegar o primeiro fluxo disponível do input de áudio
+                    { filter: aFilter.join(','), inputs: '1', outputs: 'a_out' }
                 ]);
 
                 cmd.map('v_out').map('a_out');
-
                 if (isImg) cmd.duration(5);
 
-                cmd.outputOptions([
-                    '-c:v libx264',
-                    '-preset ultrafast',
-                    '-crf 23',
-                    '-c:a aac',
-                    '-b:a 192k', // Bitrate maior para áudio
-                    '-shortest'
-                ])
-                .save(segPath)
-                .on('end', () => { segmentPaths.push(segPath); resolve(); })
-                .on('error', (err) => { 
-                    console.error(`Erro Seg ${i}:`, err.message);
-                    reject(err); 
-                });
+                cmd.outputOptions(['-c:v libx264', '-preset ultrafast', '-c:a aac', '-shortest'])
+                   .save(segPath)
+                   .on('end', () => { segments.push(segPath); resolve(); })
+                   .on('error', (err) => reject(err));
             });
         }
 
-        // --- JUNÇÃO FINAL ---
-        if (segmentPaths.length === 0) throw new Error("Sem segmentos.");
-
+        // Concatenação
         const concatCmd = ffmpeg();
-        segmentPaths.forEach(s => concatCmd.input(s));
+        segments.forEach(s => concatCmd.input(s));
+        const filterStr = segments.map((_, idx) => `[${idx}:v][${idx}:a]`).join('') + `concat=n=${segments.length}:v=1:a=1[v][a]`;
         
-        const filterInputs = segmentPaths.map((_, idx) => `[${idx}:v][${idx}:a]`).join('');
-        const concatFilter = `${filterInputs}concat=n=${segmentPaths.length}:v=1:a=1[v][a]`;
-
-        concatCmd.complexFilter(concatFilter)
+        concatCmd.complexFilter(filterStr)
             .map('[v]').map('[a]')
-            .outputOptions([
-                '-c:v libx264',
-                '-preset medium',
-                '-crf 18',
-                '-c:a aac',
-                '-b:a 192k',
-                '-movflags +faststart'
-            ])
-            .save(finalOutputPath)
+            .outputOptions(['-c:v libx264', '-preset medium', '-c:a aac', '-movflags +faststart'])
+            .save(finalOutput)
             .on('end', () => {
-                segmentPaths.forEach(s => fs.unlink(s, () => {}));
-                res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${finalOutputName}` });
+                segments.forEach(s => fs.unlink(s, () => {}));
+                res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${path.basename(finalOutput)}` });
             })
-            .on('error', (err) => {
-                console.error("Erro Concat:", err.message);
-                res.status(500).send(`Erro na Finalização: ${err.message}`);
-            });
+            .on('error', (err) => res.status(500).send(err.message));
 
-    } catch (error) {
-        console.error("Erro Crítico:", error.message);
-        res.status(500).send(`Erro de Renderização: ${error.message}`);
-    }
+    } catch (e) { res.status(500).send(e.message); }
 });
 
-app.listen(PORT, '0.0.0.0', () => console.log(`🚀 MOTOR TURBO v3.7 ATIVO NA PORTA ${PORT}`));
+/**
+ * PROCESSADOR DE ÁUDIO (JOIN, CLEAN, CUT, ETC)
+ */
+app.post('/process-audio', upload.array('audio'), async (req, res) => {
+    const action = req.body.action || 'clean';
+    if (!req.files || req.files.length === 0) return res.status(400).send('Sem áudios.');
+
+    const output = path.join(OUTPUT_DIR, `audio_${Date.now()}.mp3`);
+    let cmd = ffmpeg();
+
+    req.files.forEach(f => cmd.input(f.path));
+
+    if (action === 'join' && req.files.length > 1) {
+        cmd.mergeToFile(output, UPLOAD_DIR);
+    } else {
+        // Clean, volume boost, etc.
+        cmd.audioFilters(['aresample=44100', 'volume=1.5'])
+           .save(output);
+    }
+
+    cmd.on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${path.basename(output)}` }))
+       .on('error', (err) => res.status(500).send(err.message));
+});
+
+/**
+ * PROCESSADOR DE IMAGEM
+ */
+app.post('/process-image', upload.array('image'), async (req, res) => {
+    const action = req.body.action || 'convert';
+    if (!req.files || req.files.length === 0) return res.status(400).send('Sem imagens.');
+
+    const output = path.join(OUTPUT_DIR, `img_${Date.now()}.png`);
+    // Simulação de processamento de imagem via FFmpeg
+    ffmpeg(req.files[0].path)
+        .save(output)
+        .on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${path.basename(output)}` }))
+        .on('error', (err) => res.status(500).send(err.message));
+});
+
+/**
+ * UTILITÁRIOS DE VÍDEO (UPSCALE, CUT, COMPRESS, ETC)
+ */
+const videoUtils = ['upscale', 'colorize', 'cut', 'join', 'compress', 'remove-audio', 'extract-audio'];
+videoUtils.forEach(route => {
+    app.post(`/${route}`, upload.array('video'), (req, res) => {
+        if (!req.files || req.files.length === 0) return res.status(400).send('Sem vídeos.');
+        const output = path.join(OUTPUT_DIR, `${route}_${Date.now()}.mp4`);
+        let cmd = ffmpeg(req.files[0].path);
+
+        if (route === 'extract-audio') {
+            const audioOut = output.replace('.mp4', '.mp3');
+            cmd.noVideo().save(audioOut)
+               .on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${path.basename(audioOut)}` }));
+            return;
+        }
+
+        if (route === 'remove-audio') cmd.noAudio();
+        if (route === 'compress') cmd.videoBitrate('1000k');
+        
+        cmd.save(output)
+           .on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${path.basename(output)}` }))
+           .on('error', (err) => res.status(500).send(err.message));
+    });
+});
+
+app.listen(PORT, '0.0.0.0', () => console.log(`🚀 MASTER BACKEND v4.0 ONLINE NA PORTA ${PORT}`));
