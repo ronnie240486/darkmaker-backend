@@ -83,7 +83,6 @@ const processSegment = (visualPath, audioPath, text, index, isVertical) => {
         filters.push(`setsar=1`); // Pixel quadrado obrigatório
 
         // 2. Texto (Simples, sem fonte externa para evitar erros)
-        // Usando fonte padrão do sistema do FFmpeg
         if (text) {
             // Sanitização básica do texto para o filtro drawtext
             const sanitizedText = text.replace(/:/g, '\\:').replace(/'/g, '').replace(/\n/g, ' ');
@@ -91,6 +90,8 @@ const processSegment = (visualPath, audioPath, text, index, isVertical) => {
             const yPos = height - Math.floor(height * 0.15);
             
             // Drawtext com background box para legibilidade
+            // Nota: Se não houver fonte configurada no sistema, o FFmpeg pode usar a padrão.
+            // Para maior robustez em produção, recomenda-se apontar para um arquivo .ttf específico.
             filters.push(`drawtext=text='${sanitizedText}':fontcolor=white:fontsize=${fontSize}:box=1:boxcolor=black@0.6:boxborderw=10:x=(w-text_w)/2:y=${yPos}`);
         }
 
@@ -101,10 +102,7 @@ const processSegment = (visualPath, audioPath, text, index, isVertical) => {
                 filter: filters.join(','),
                 inputs: '0:v',
                 outputs: 'v_processed'
-            },
-            // Garante duração correta baseada no áudio ou tempo fixo para imagem
-            // Se for imagem e tem áudio, o áudio dita a duração (via -shortest)
-            // Se for vídeo, mantemos o vídeo
+            }
         ]);
 
         // Mapeamento
