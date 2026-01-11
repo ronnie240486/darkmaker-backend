@@ -47,6 +47,7 @@ const PORT = process.env.PORT || 3001;
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
 const OUTPUT_DIR = path.join(__dirname, 'outputs');
 const TEMP_DIR = path.join(__dirname, 'temp');
+const DIST_DIR = path.join(__dirname, 'dist');
 
 // Garantir diretórios
 [UPLOAD_DIR, OUTPUT_DIR, TEMP_DIR].forEach(dir => {
@@ -56,7 +57,10 @@ const TEMP_DIR = path.join(__dirname, 'temp');
 app.use(cors({ origin: '*' }));
 app.use(express.json({ limit: '500mb' }));
 app.use(express.urlencoded({ extended: true, limit: '500mb' }));
+
+// Serve static files (Outputs & Frontend)
 app.use('/outputs', express.static(OUTPUT_DIR));
+app.use(express.static(DIST_DIR));
 
 const upload = multer({ 
     storage: multer.diskStorage({
@@ -243,6 +247,15 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
     } catch (error) {
         console.error("❌ ERRO FATAL NO SERVIDOR:", error);
         res.status(500).json({ error: error.message });
+    }
+});
+
+// Handle SPA routing - Must be last
+app.get('*', (req, res) => {
+    if (fs.existsSync(path.join(DIST_DIR, 'index.html'))) {
+        res.sendFile(path.join(DIST_DIR, 'index.html'));
+    } else {
+        res.status(404).send('Frontend not built or not found. Run `npm run build`.');
     }
 });
 
