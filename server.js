@@ -88,8 +88,7 @@ const processScene = async (visual, audio, text, index, w, h, isImg, UPLOAD_DIR)
         ];
 
         // Efeito Ken Burns (Zoom Lento) apenas para imagens
-        // FIX CRÍTICO: d=1 para garantir 1 frame de saída por frame de entrada (stream), 
-        // evitando buffer infinito ou travamento com -t 10.
+        // FIX CRÍTICO: d=1 para evitar conflito com -t 10 e travar o render
         if (isImg) {
             vFilters.push(`zoompan=z='min(zoom+0.0015,1.5)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${w}x${h}:d=1`);
         }
@@ -129,15 +128,14 @@ const processScene = async (visual, audio, text, index, w, h, isImg, UPLOAD_DIR)
             '-b:a 192k',
             '-pix_fmt yuv420p',
             '-t 10',
-            '-shortest', // FIX CRÍTICO: Garante que o vídeo pare quando o menor input acabar (segurança contra loops infinitos)
+            '-shortest', // FIX: Garante que o vídeo pare quando o menor input acabar (segurança)
             '-movflags +faststart'
         ])
         .on('start', commandLine => {
             console.log(`▶️ FFmpeg Cena ${index} Start:`, commandLine);
         })
         .on('progress', progress => {
-            // Uso de timemark é mais confiável quando percent não está disponível
-            console.log(`⏳ Cena ${index}: ${progress.timemark}`);
+            if (progress.percent) console.log(`⏳ Cena ${index}: ${Math.floor(progress.percent)}%`);
         })
         .save(segPath)
         .on('end', () => resolve(segPath))
@@ -200,8 +198,7 @@ app.post(['/ia-turbo', '/magic-workflow'], upload.fields([{ name: 'visuals' }, {
         concatCmd
             .input(listPath)
             .inputOptions(['-f concat', '-safe 0'])
-            // FIX CRÍTICO: Re-encode para garantir estabilidade na junção de arquivos processados complexos.
-            // '-c copy' falha aqui pois os parâmetros de SAR/Timebase podem variar levemente.
+            // FIX: Re-encode para garantir estabilidade na junção de arquivos processados complexos
             .outputOptions([
                 '-c:v libx264',
                 '-preset ultrafast',
@@ -212,7 +209,7 @@ app.post(['/ia-turbo', '/magic-workflow'], upload.fields([{ name: 'visuals' }, {
                 console.log('▶️ FFmpeg Concat Start:', commandLine);
             })
             .on('progress', progress => {
-                console.log(`⏳ Concat: ${progress.timemark}`);
+                if (progress.percent) console.log(`⏳ Concat: ${Math.floor(progress.percent)}%`);
             })
             .save(finalOutput)
             .on('end', () => {
@@ -252,26 +249,15 @@ app.post('/process-audio', upload.array('audio'), (req, res) => {
     const outputPath = path.join(OUTPUT_DIR, `audio_proc_${Date.now()}.mp3`);
     const cmd = ffmpeg();
 
-    // Se a ação for 'join' e houver múltiplos arquivos, usamos concat
     if (action === 'join' && files.length > 1) {
-        // Gera arquivo de lista para concatenação segura
         const listPath = path.join(UPLOAD_DIR, `audiolist_${Date.now()}.txt`);
         const fileContent = files.map(f => `file '${f.path}'`).join('\n');
         fs.writeFileSync(listPath, fileContent);
-        
-        cmd.input(listPath)
-           .inputOptions(['-f concat', '-safe 0']);
-           
-        // Limpeza posterior do txt
+        cmd.input(listPath).inputOptions(['-f concat', '-safe 0']);
         cmd.on('end', () => fs.unlink(listPath, () => {}));
     } else {
-        // Processa apenas o primeiro arquivo (ou único)
         cmd.input(files[0].path);
-        
-        // Exemplo: Limpeza simples (filtro Highpass/Lowpass)
-        if (action === 'clean') {
-            cmd.audioFilters(['highpass=f=200', 'lowpass=f=3000']);
-        }
+        if (action === 'clean') cmd.audioFilters(['highpass=f=200', 'lowpass=f=3000']);
     }
 
     cmd.output(outputPath)
@@ -282,12 +268,9 @@ app.post('/process-audio', upload.array('audio'), (req, res) => {
              const protocol = req.protocol;
              const host = req.get('host');
              res.json({ url: `${protocol}://${host}/outputs/${path.basename(outputPath)}` });
-             
-             // Limpeza dos uploads
              files.forEach(f => fs.unlink(f.path, ()=>{}));
         })
         .on('error', (err) => {
-            console.error("Audio error:", err);
             res.status(500).send(err.message);
         })
         .run();
@@ -297,13 +280,10 @@ app.post('/process-audio', upload.array('audio'), (req, res) => {
 app.post('/process-image', upload.array('image'), (req, res) => {
     const files = req.files || [];
     if (files.length === 0) return res.status(400).send("No image files");
-    
-    // Converte para JPG otimizado por padrão
     const outputPath = path.join(OUTPUT_DIR, `img_proc_${Date.now()}.jpg`);
-    
     ffmpeg(files[0].path)
         .output(outputPath)
-        .outputOptions(['-q:v 2']) // Alta qualidade JPG
+        .outputOptions(['-q:v 2'])
         .on('end', () => {
              const protocol = req.protocol;
              const host = req.get('host');
