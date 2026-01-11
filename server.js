@@ -1,23 +1,34 @@
 
-const express = require('express');
-const cors = require('cors');
-const multer = require('multer');
-const ffmpeg = require('fluent-ffmpeg');
-const fs = require('fs');
-const path = require('path');
+import express from 'express';
+import cors from 'cors';
+import multer from 'multer';
+import ffmpeg from 'fluent-ffmpeg';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+// Fix for __dirname in ESM
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // --- CONFIGURAÇÃO DO FFMPEG ---
 let ffmpegPath, ffprobePath;
 try {
-    ffmpegPath = require('@ffmpeg-installer/ffmpeg').path;
-    ffprobePath = require('@ffprobe-installer/ffprobe').path;
-    ffmpeg.setFfmpegPath(ffmpegPath);
-    ffmpeg.setFfprobePath(ffprobePath);
-    process.env.FFMPEG_PATH = ffmpegPath;
-    process.env.FFPROBE_PATH = ffprobePath;
-    console.log(`✅ MASTER ENGINE v5.2 - AUDIO SYNC & MULTI-ROUTING`);
+    // Attempt to import paths. Note: Some installers might need special handling in ESM
+    // If these fail, you might need to install @ffmpeg-installer/ffmpeg and @ffprobe-installer/ffprobe
+    // and manually set the path if they don't export properly for ESM.
+    const ffmpegInstaller = await import('@ffmpeg-installer/ffmpeg');
+    const ffprobeInstaller = await import('@ffprobe-installer/ffprobe');
+    
+    ffmpegPath = ffmpegInstaller.default?.path || ffmpegInstaller.path;
+    ffprobePath = ffprobeInstaller.default?.path || ffprobeInstaller.path;
+    
+    if (ffmpegPath) ffmpeg.setFfmpegPath(ffmpegPath);
+    if (ffprobePath) ffmpeg.setFfprobePath(ffprobePath);
+    
+    console.log(`✅ MASTER ENGINE v5.3 (ESM) - AUDIO SYNC & MULTI-ROUTING`);
 } catch (error) {
-    console.error("❌ Erro Crítico FFmpeg:", error);
+    console.warn("⚠️ Aviso FFmpeg: Verifique se os instaladores estão disponíveis. Erro:", error.message);
 }
 
 const app = express();
@@ -232,3 +243,5 @@ app.post(['/ia-turbo', '/magic-workflow'], upload.fields([{ name: 'visuals' }, {
         res.status(500).send(e.message);
     }
 });
+
+app.listen(PORT, '0.0.0.0', () => console.log(`🚀 MASTER ENGINE v5.3 (ESM) ONLINE NA PORTA ${PORT}`));
