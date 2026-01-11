@@ -14,9 +14,6 @@ const __dirname = path.dirname(__filename);
 // --- CONFIGURAÇÃO DO FFMPEG ---
 let ffmpegPath, ffprobePath;
 try {
-    // Attempt to import paths. Note: Some installers might need special handling in ESM
-    // If these fail, you might need to install @ffmpeg-installer/ffmpeg and @ffprobe-installer/ffprobe
-    // and manually set the path if they don't export properly for ESM.
     const ffmpegInstaller = await import('@ffmpeg-installer/ffmpeg');
     const ffprobeInstaller = await import('@ffprobe-installer/ffprobe');
     
@@ -26,9 +23,9 @@ try {
     if (ffmpegPath) ffmpeg.setFfmpegPath(ffmpegPath);
     if (ffprobePath) ffmpeg.setFfprobePath(ffprobePath);
     
-    console.log(`✅ MASTER ENGINE v5.3 (ESM) - AUDIO SYNC & MULTI-ROUTING`);
+    console.log(`✅ MASTER ENGINE v5.4 (ESM) - AUDIO SYNC ACTIVATED`);
 } catch (error) {
-    console.warn("⚠️ Aviso FFmpeg: Verifique se os instaladores estão disponíveis. Erro:", error.message);
+    console.warn("⚠️ Aviso FFmpeg:", error.message);
 }
 
 const app = express();
@@ -73,16 +70,13 @@ const processScene = async (visual, audio, text, index, w, h, isImg, UPLOAD_DIR)
     return new Promise((resolve, reject) => {
         let cmd = ffmpeg();
 
-        // Input 0: Visual
         if (isImg) cmd.input(visual.path).inputOptions(['-loop 1']);
         else cmd.input(visual.path);
 
-        // Input 1: Áudio (Narração ou Silêncio Gerado)
+        // Garante que SEMPRE haja áudio (mesmo que seja silêncio) para evitar erro de concatenação
         if (audio && fs.existsSync(audio.path)) {
             cmd.input(audio.path);
         } else {
-            // CRITICAL: Gera um rastro de áudio vazio se não houver narração
-            // Isso evita erro de concatenação posterior (vídeo sem áudio + vídeo com áudio)
             cmd.input('anullsrc=channel_layout=stereo:sample_rate=44100').inputFormat('lavfi');
         }
 
@@ -119,7 +113,7 @@ const processScene = async (visual, audio, text, index, w, h, isImg, UPLOAD_DIR)
         ]);
 
         cmd.map('v_processed').map('a_processed');
-        cmd.duration(5); // Padroniza todas as cenas em 5 segundos
+        cmd.duration(5);
 
         cmd.outputOptions([
             '-c:v libx264',
@@ -138,45 +132,26 @@ const processScene = async (visual, audio, text, index, w, h, isImg, UPLOAD_DIR)
 };
 
 /**
- * ROTA: PROCESSAMENTO DE ÁUDIO (JOIN / CLEAN / STEMS)
+ * ROTAS DE ÁUDIO
  */
 app.post('/process-audio', upload.array('audio'), async (req, res) => {
     const files = req.files || [];
-    const action = req.body.action || 'join';
-
-    if (files.length === 0) return res.status(400).send('Nenhum arquivo de áudio enviado.');
-
+    if (files.length === 0) return res.status(400).send('Sem áudio.');
     const outputPath = path.join(OUTPUT_DIR, `audio_${Date.now()}.mp3`);
-    
     try {
         let cmd = ffmpeg();
         files.forEach(f => cmd.input(f.path));
-
         if (files.length > 1) {
             cmd.mergeToFile(outputPath, UPLOAD_DIR)
                 .on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${path.basename(outputPath)}` }))
                 .on('error', (err) => res.status(500).send(err.message));
         } else {
-            // Processamento Simples (Volume / Bass / Clean)
             cmd.audioFilters(['volume=1.2', 'highpass=f=200', 'lowpass=f=3000'])
                 .save(outputPath)
                 .on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${path.basename(outputPath)}` }))
                 .on('error', (err) => res.status(500).send(err.message));
         }
-    } catch (e) {
-        res.status(500).send(e.message);
-    }
-});
-
-/**
- * ROTA: PROCESSAMENTO DE IMAGEM
- */
-app.post('/process-image', upload.array('image'), async (req, res) => {
-    const files = req.files || [];
-    if (files.length === 0) return res.status(400).send('Nenhuma imagem enviada.');
-    
-    // Simplesmente retorna a primeira imagem por enquanto (placeholder para IA de imagem)
-    res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${path.basename(files[0].path)}` });
+    } catch (e) { res.status(500).send(e.message); }
 });
 
 /**
@@ -188,7 +163,7 @@ app.post(['/ia-turbo', '/magic-workflow'], upload.fields([{ name: 'visuals' }, {
     const narrations = req.body.narrations ? JSON.parse(req.body.narrations) : [];
     const aspectRatio = req.body.aspectRatio || '16:9';
 
-    if (visualFiles.length === 0) return res.status(400).send('Sem mídia para processar.');
+    if (visualFiles.length === 0) return res.status(400).send('Sem mídia.');
 
     const isVertical = aspectRatio === '9:16';
     const w = isVertical ? 1080 : 1920;
@@ -198,7 +173,7 @@ app.post(['/ia-turbo', '/magic-workflow'], upload.fields([{ name: 'visuals' }, {
     const segments = [];
 
     try {
-        console.log(`🎬 Masterizando ${visualFiles.length} cenas...`);
+        console.log(`🎬 Masterizando vídeo com áudio sincronizado...`);
         for (let i = 0; i < visualFiles.length; i++) {
             const seg = await processScene(
                 visualFiles[i], 
@@ -211,7 +186,6 @@ app.post(['/ia-turbo', '/magic-workflow'], upload.fields([{ name: 'visuals' }, {
             segments.push(seg);
         }
 
-        // CONCATENAÇÃO FINAL
         const concatCmd = ffmpeg();
         segments.forEach(s => concatCmd.input(s));
 
@@ -229,19 +203,12 @@ app.post(['/ia-turbo', '/magic-workflow'], upload.fields([{ name: 'visuals' }, {
             ])
             .save(finalOutput)
             .on('end', () => {
-                console.log(`✅ Vídeo Gerado: ${finalOutput}`);
                 segments.forEach(s => fs.unlink(s, () => {}));
                 res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${path.basename(finalOutput)}` });
             })
-            .on('error', (err) => {
-                console.error("Erro Final:", err);
-                res.status(500).send(err.message);
-            });
+            .on('error', (err) => res.status(500).send(err.message));
 
-    } catch (e) {
-        console.error("Falha no Motor:", e);
-        res.status(500).send(e.message);
-    }
+    } catch (e) { res.status(500).send(e.message); }
 });
 
-app.listen(PORT, '0.0.0.0', () => console.log(`🚀 MASTER ENGINE v5.3 (ESM) ONLINE NA PORTA ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => console.log(`🚀 MASTER ENGINE v5.4 ONLINE NA PORTA ${PORT}`));
