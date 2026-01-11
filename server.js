@@ -42,26 +42,28 @@ const storage = multer.diskStorage({
 const upload = multer({ storage: storage });
 
 /**
- * Escapes text for drawtext filter. 
- * FFmpeg's drawtext filter requires specific escaping for special characters.
+ * Escapes text for drawtext filter with robust multi-level escaping.
+ * FFmpeg's filtergraph parser requires escaping special characters like colons, commas, and single quotes.
  */
 function sanitizeForFFmpeg(text) {
     if (!text || text.trim() === '') return ' ';
-    // FFmpeg drawtext escaping rules are tricky. 
-    // Within complex filters, we need to escape single quotes, colons, and backslashes.
+    // 1. Escape backslashes first
+    // 2. Escape single quotes for the text parameter
+    // 3. Escape colons, commas, semicolons for the filter parser
     return text
-        .replace(/\\/g, "\\\\")
-        .replace(/'/g, "'\\''")
-        .replace(/:/g, "\\:")
-        .replace(/,/g, "\\,")
-        .replace(/%/g, "\\%")
-        .replace(/\[/g, "\\[")
-        .replace(/\]/g, "\\]");
+        .replace(/\\/g, '\\\\\\\\')
+        .replace(/'/g, "'\\\\\\''")
+        .replace(/:/g, '\\\\:')
+        .replace(/,/g, '\\\\,')
+        .replace(/%/g, '\\\\%')
+        .replace(/\[/g, '\\\\[')
+        .replace(/\]/g, '\\\\]');
 }
 
 /**
- * IA TURBO / MASTER RENDER V3
+ * IA TURBO / MASTER RENDER V3.1
  * High-performance rendering pipeline with burn-in subtitles and synchronized audio.
+ * Fixed: Robustness against "Invalid argument" and "Error reinitializing filters".
  */
 app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), async (req, res) => {
     const visualFiles = req.files['visuals'];
@@ -77,7 +79,7 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
     let targetW = isVertical ? 1080 : (resolution === '4K' ? 3840 : 1920);
     let targetH = isVertical ? 1920 : (resolution === '4K' ? 2160 : 1080);
 
-    // Ensure dimensions are divisible by 2 for libx264
+    // Ensure dimensions are strictly divisible by 2 for libx264 compatibility
     targetW = Math.floor(targetW / 2) * 2;
     targetH = Math.floor(targetH / 2) * 2;
 
@@ -108,60 +110,71 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
                 if (audio) {
                     cmd.input(audio.path);
                 } else {
+                    // Generate stereo silence if no audio is provided
                     cmd.input('anullsrc=r=44100:cl=stereo').inputFormat('lavfi');
                 }
 
                 let videoFilters = [];
 
                 if (isImage) {
-                    // Optimized Zoompan for looped images
-                    // Using 'on' (output frame number) for continuous zoom
+                    // Normalize aspect ratio and size before zoompan to prevent "Invalid argument"
                     const aspect = targetW / targetH;
-                    let cropW = 4000;
-                    let cropH = Math.floor(4000 / aspect);
+                    let baseW = 3840;
+                    let baseH = Math.floor(3840 / aspect);
                     if (aspect < 1) { // Vertical
-                        cropW = Math.floor(4000 * aspect);
-                        cropH = 4000;
+                        baseW = Math.floor(3840 * aspect);
+                        baseH = 3840;
                     }
-                    
-                    // Force even dimensions for crop to avoid issues
-                    cropW = Math.floor(cropW / 2) * 2;
-                    cropH = Math.floor(cropH / 2) * 2;
+                    // Force even base dimensions
+                    baseW = Math.floor(baseW / 2) * 2;
+                    baseH = Math.floor(baseH / 2) * 2;
 
                     videoFilters.push(
-                        `scale=4000:4000:force_original_aspect_ratio=increase`,
-                        `crop=${cropW}:${cropH}`,
-                        // d=1 means output 1 frame per input frame. fps=30 ensures the logic matches our target.
-                        // zoom starts at 1 and increases. x/y are centered using floor to avoid float errors.
-                        `zoompan=z='min(1+on*0.001,1.5)':x='floor(iw/2-(iw/zoom/2))':y='floor(ih/2-(ih/zoom/2))':s=${targetW}x${targetH}:d=1:fps=30`
+                        `scale=${baseW}:${baseH}:force_original_aspect_ratio=increase`,
+                        `crop=${baseW}:${baseH}`,
+                        `setsar=1/1`,
+                        // zoompan is sensitive to coordinates; use trunc() to ensure integers
+                        // d=1 results in 1 output frame per input frame. fps=30 defines the speed.
+                        `zoompan=z='min(zoom+0.001,1.5)':x='trunc(iw/2-(iw/zoom/2))':y='trunc(ih/2-(ih/zoom/2))':s=${targetW}x${targetH}:d=1:fps=30`
                     );
                 } else {
                     videoFilters.push(
                         `scale=${targetW}:${targetH}:force_original_aspect_ratio=increase`,
-                        `crop=${targetW}:${targetH}`
+                        `crop=${targetW}:${targetH}`,
+                        `setsar=1/1`
                     );
                 }
 
                 // Add Professional Subtitles
                 if (text && text.trim() !== '') {
                     const cleanText = sanitizeForFFmpeg(text);
-                    const fontSize = Math.floor(targetH * 0.04);
-                    const boxMargin = Math.floor(targetH * 0.12);
+                    const fontSize = Math.floor(targetH * 0.045);
+                    const boxMargin = Math.floor(targetH * 0.15);
                     
-                    // Try to find a system font, otherwise fallback to default
-                    const commonFont = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf";
-                    const fontParam = fs.existsSync(commonFont) ? `:fontfile='${commonFont}'` : "";
+                    // Attempt to use system fonts for stability
+                    const fontCandidates = [
+                        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                        "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
+                        "C\\:/Windows/Fonts/arialbd.ttf"
+                    ];
+                    let fontFile = "";
+                    for (const candidate of fontCandidates) {
+                        if (fs.existsSync(candidate.replace(/\\/g, ""))) {
+                            fontFile = `:fontfile='${candidate}'`;
+                            break;
+                        }
+                    }
 
-                    videoFilters.push(`drawtext=text='${cleanText}'${fontParam}:fontcolor=white:fontsize=${fontSize}:box=1:boxcolor=black@0.6:boxborderw=15:x=(w-text_w)/2:y=h-th-${boxMargin}`);
+                    videoFilters.push(`drawtext=text='${cleanText}'${fontFile}:fontcolor=white:fontsize=${fontSize}:box=1:boxcolor=black@0.6:boxborderw=15:x=(w-text_w)/2:y=h-th-${boxMargin}`);
                 }
 
-                // Final stability filters
+                // Final frame standardization to prevent concatenation errors
                 videoFilters.push(`format=yuv420p`, `fps=30`);
 
                 const audioFilters = [
                     `aresample=44100`,
                     `aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo`,
-                    `volume=1.1`
+                    `volume=1.2`
                 ];
 
                 cmd.complexFilter([
@@ -171,29 +184,34 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
 
                 cmd.map('v_out').map('a_out');
 
-                // Limit duration: Images default 5s, Videos follow audio or original
+                // Segment duration: Images fixed 5s, Videos limited by shortest stream
                 if (isImage) {
                     cmd.duration(5);
                 }
 
                 cmd.outputOptions([
                     '-c:v libx264',
-                    '-preset fast',
-                    '-crf 22',
+                    '-preset medium',
+                    '-crf 23',
                     '-c:a aac',
                     '-b:a 128k',
                     '-shortest'
                 ])
                 .save(segmentPath)
-                .on('end', () => { segmentPaths.push(segmentPath); resolve(); })
+                .on('end', () => { 
+                    segmentPaths.push(segmentPath); 
+                    resolve(); 
+                })
                 .on('error', (err) => { 
-                    console.error(`Segment ${i} Error:`, err.message);
+                    console.error(`❌ Segment ${i} failed:`, err.message);
                     reject(err); 
                 });
             });
         }
 
         // --- FINAL CONCATENATION ---
+        if (segmentPaths.length === 0) throw new Error("No segments were successfully rendered.");
+
         const finalCmd = ffmpeg();
         segmentPaths.forEach(p => finalCmd.input(p));
         
@@ -202,21 +220,28 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
 
         finalCmd.complexFilter(filterStr)
             .map('[v]').map('[a]')
-            .outputOptions(['-c:v libx264', '-pix_fmt yuv420p', '-c:a aac', '-shortest'])
+            .outputOptions([
+                '-c:v libx264',
+                '-pix_fmt yuv420p',
+                '-c:a aac',
+                '-shortest',
+                '-movflags +faststart'
+            ])
             .save(outputPath)
             .on('end', () => {
+                // Cleanup temporary segments
                 segmentPaths.forEach(p => fs.unlink(p, () => {}));
                 res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${outputFilename}` });
             })
             .on('error', (err) => {
-                console.error("Concat Error:", err.message);
+                console.error("❌ Concat failure:", err.message);
                 res.status(500).send(`Render Error: ${err.message}`);
             });
 
     } catch (error) {
-        console.error("Critical Failure:", error.message);
+        console.error("❌ Critical Render Failure:", error.message);
         res.status(500).send(`Export Error: ${error.message}`);
     }
 });
 
-app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Pro Render Engine Active on port ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Master Render Engine v3.1 Online on port ${PORT}`));
