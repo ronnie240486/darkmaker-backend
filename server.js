@@ -1,16 +1,11 @@
-import express from 'express';
-import cors from 'cors';
-import multer from 'multer';
-import ffmpeg from 'fluent-ffmpeg';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import ffmpegStatic from 'ffmpeg-static';
-import ffprobeStatic from 'ffprobe-static';
-
-// Setup de Caminhos para ES Modules
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const express = require('express');
+const cors = require('cors');
+const multer = require('multer');
+const ffmpeg = require('fluent-ffmpeg');
+const fs = require('fs');
+const path = require('path');
+const ffmpegStatic = require('ffmpeg-static');
+const ffprobeStatic = require('ffprobe-static');
 
 // Configuração Robusta do FFmpeg
 ffmpeg.setFfmpegPath(ffmpegStatic);
@@ -89,9 +84,6 @@ const processSegment = (visualPath, audioPath, text, index, isVertical) => {
             const fontSize = Math.floor(height * 0.05);
             const yPos = height - Math.floor(height * 0.15);
             
-            // Drawtext com background box para legibilidade
-            // Nota: Se não houver fonte configurada no sistema, o FFmpeg pode usar a padrão.
-            // Para maior robustez em produção, recomenda-se apontar para um arquivo .ttf específico.
             filters.push(`drawtext=text='${sanitizedText}':fontcolor=white:fontsize=${fontSize}:box=1:boxcolor=black@0.6:boxborderw=10:x=(w-text_w)/2:y=${yPos}`);
         }
 
@@ -155,7 +147,6 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
         
         for (let i = 0; i < visualFiles.length; i++) {
             const visual = visualFiles[i];
-            // Encontra áudio correspondente pelo índice ou ordem
             const audio = audioFiles.find(a => getIndex(a.originalname) === getIndex(visual.originalname)) || audioFiles[i];
             const text = narrations[i] || "";
 
@@ -169,7 +160,6 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
         const finalOutputName = `master_${Date.now()}.mp4`;
         const finalOutputPath = path.join(OUTPUT_DIR, finalOutputName);
         
-        // Criar arquivo de lista para concat demuxer
         const listPath = path.join(TEMP_DIR, `list_${Date.now()}.txt`);
         const fileListContent = segmentPaths.map(p => `file '${p.replace(/\\/g, '/')}'`).join('\n');
         fs.writeFileSync(listPath, fileListContent);
@@ -207,15 +197,13 @@ app.post('/ia-turbo', upload.fields([{ name: 'visuals' }, { name: 'audios' }]), 
 
 // Endpoint genérico para outras ferramentas
 app.post('/:action', upload.any(), (req, res) => {
-    // Placeholder para manter compatibilidade com frontend antigo
-    // A lógica principal está no /ia-turbo agora
     res.status(501).json({ error: "Endpoint legado. Use IA Turbo para exportação." });
 });
 
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`
     ==================================================
-    🎥 DARKMAKER RENDER ENGINE V2 (ROBUST)
+    🎥 DARKMAKER RENDER ENGINE V2 (ROBUST - CJS)
     ✅ Server running on port ${PORT}
     ✅ FFmpeg Static Loaded
     ✅ Output dir: ${OUTPUT_DIR}
