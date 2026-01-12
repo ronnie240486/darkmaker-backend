@@ -28,8 +28,8 @@ try {
 }
 
 const app = express();
-// MUDANÇA CRÍTICA: Porta 3000 para não conflitar com o Frontend na 8080
-const PORT = process.env.PORT || 3000; 
+// MUDANÇA CRÍTICA: Forçando porta 3001 para garantir alinhamento com o Proxy do Vite
+const PORT = 3001; 
 
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
 const OUTPUT_DIR = path.join(__dirname, 'outputs');
@@ -40,21 +40,27 @@ if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
 
 // Middleware de Log Global
 app.use((req, res, next) => {
-    // Loga tudo que não for arquivo estático para debug
     if (!req.url.startsWith('/outputs')) {
         console.log(`📨 [${new Date().toLocaleTimeString()}] REQUISIÇÃO RECEBIDA: ${req.method} ${req.url}`);
     }
     next();
 });
 
-app.use(cors({ origin: '*' })); // Permite tudo para evitar bloqueio
+app.use(cors({ origin: '*' })); 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use('/outputs', express.static(OUTPUT_DIR));
+
+// Serve arquivos estáticos com headers corretos para download/visualização
+app.use('/outputs', express.static(OUTPUT_DIR, {
+    setHeaders: (res, path) => {
+        res.set('Access-Control-Allow-Origin', '*');
+        res.set('Content-Disposition', 'inline'); // Permite abrir no navegador
+    }
+}));
 
 // Health Check
-app.get('/', (req, res) => res.status(200).send('AI Media Suite Backend Online 🟢'));
-app.get('/health', (req, res) => res.status(200).json({ status: 'ok', ffmpeg: 'ready' }));
+app.get('/', (req, res) => res.status(200).send('AI Media Suite Backend Online 🟢 na porta ' + PORT));
+app.get('/health', (req, res) => res.status(200).json({ status: 'ok', ffmpeg: 'ready', port: PORT }));
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, UPLOAD_DIR),
@@ -148,7 +154,8 @@ app.post(['/ia-turbo', '/magic-workflow'], (req, res) => {
         const finalOutput = path.join(OUTPUT_DIR, `MASTER_${Date.now()}.mp4`);
         const segments = [];
 
-        res.setTimeout(10 * 60 * 1000, () => console.log("⚠️ Timeout de conexão (cliente demorou a receber)."));
+        // Timeout handling no lado do express para evitar corte prematuro
+        res.setTimeout(10 * 60 * 1000, () => console.log("⚠️ Timeout de conexão (Express)."));
 
         try {
             // 1. Processar Cenas
@@ -195,9 +202,6 @@ app.post(['/ia-turbo', '/magic-workflow'], (req, res) => {
                 audioFiles.forEach(f => fs.unlinkSync(f.path));
             } catch (e) { /* ignore cleanup errors */ }
 
-            const protocol = req.protocol;
-            const host = req.get('host');
-            // Retorna URL relativa ao proxy se necessário, ou absoluta
             res.json({ url: `/outputs/${path.basename(finalOutput)}` });
 
         } catch (error) {
@@ -212,5 +216,5 @@ app.post('/process-image', upload.array('image'), (req, res) => res.json({ url: 
 
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`\n🚀 [BACKEND] SERVIDOR RODANDO NA PORTA ${PORT}`);
-    console.log(`👉 Aguardando conexões do Vite (Proxy)...`);
+    console.log(`👉 Certifique-se que o Vite está roteando /api para esta porta.`);
 });
