@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "vite build",
-    "start": "node server.js"
+    "start": "vite build && node server.js",
+    "dev": "vite"
   },
   "dependencies": {
     "react-dom": "^19.2.0",
@@ -20,8 +21,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
-    
+    "@vitejs/plugin-react": "^5.0.0",
     "typescript": "~5.8.2",
-    
-  }
-}
+    "vite": "^6.2.0"
+ 
