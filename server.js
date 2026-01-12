@@ -12,7 +12,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // --- CONFIGURAÇÃO DO FFMPEG ---
-console.log("\n🎥 [SERVER] INICIALIZANDO ENGINE DE VÍDEO (PORTA 3000)...");
+console.log("\n🎥 [SERVER] INICIALIZANDO ENGINE DE VÍDEO (PORTA 8080)...");
 try {
     const ffmpegPath = typeof ffmpegStatic === 'string' ? ffmpegStatic : ffmpegStatic?.path;
     const ffprobePath = typeof ffprobeStatic === 'string' ? ffprobeStatic : ffprobeStatic?.path;
@@ -27,7 +27,7 @@ try {
 }
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8080;
 
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
 const OUTPUT_DIR = path.join(__dirname, 'outputs');
@@ -36,15 +36,12 @@ const DIST_DIR = path.join(__dirname, 'dist');
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
 
-// Configuração CORS Permissiva para evitar bloqueios entre portas locais
 app.use(cors({ origin: '*' })); 
 app.use(express.json({ limit: '500mb' }));
 app.use(express.urlencoded({ extended: true, limit: '500mb' }));
 
-// 1. Servir Arquivos Estáticos do Frontend (Se existirem)
-if (fs.existsSync(DIST_DIR)) {
-    app.use(express.static(DIST_DIR));
-}
+// 1. Servir Arquivos Estáticos do Frontend (Pasta dist gerada pelo build)
+app.use(express.static(DIST_DIR));
 
 // 2. Servir Outputs de Vídeo (Público)
 app.use('/outputs', express.static(OUTPUT_DIR));
@@ -190,14 +187,22 @@ app.post(['/api/ia-turbo', '/api/render'], (req, res) => {
     });
 });
 
+// SPA Fallback: Qualquer rota não-API retorna o index.html do frontend
 app.get('*', (req, res) => {
-    if (fs.existsSync(path.join(DIST_DIR, 'index.html'))) {
-        res.sendFile(path.join(DIST_DIR, 'index.html'));
+    const indexPath = path.join(DIST_DIR, 'index.html');
+    if (fs.existsSync(indexPath)) {
+        res.sendFile(indexPath);
     } else {
-        res.status(404).send("API Backend Rodando. Frontend não buildado.");
+        res.status(404).send(`
+            <h1>Site não compilado!</h1>
+            <p>O servidor backend está rodando na porta ${PORT}, mas não encontrou o frontend na pasta 'dist'.</p>
+            <p>Execute <code>npm run build</code> para gerar o frontend.</p>
+        `);
     }
 });
 
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 SERVIDOR ON NA PORTA ${PORT}`);
+    console.log(`\n==================================================`);
+    console.log(`🚀 SERVIDOR COMPLETO RODANDO: http://localhost:${PORT}`);
+    console.log(`==================================================\n`);
 });
