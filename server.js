@@ -56,15 +56,11 @@ if (!fs.existsSync(publicDir)) {
     fs.mkdirSync(publicDir, { recursive: true });
 }
 
-// --- LOCATE RESOURCES ---
+// --- SELF-HEALING: CHECK & RESTORE INDEX.HTML ---
 console.log("🔍 [SEARCH] Procurando arquivos de fonte (index.html, index.tsx)...");
-const foundHtml = findFile(process.cwd(), 'index.html');
-const foundEntry = findFile(process.cwd(), 'index.tsx');
+let foundHtml = findFile(process.cwd(), 'index.html');
+let foundEntry = findFile(process.cwd(), 'index.tsx');
 
-console.log(`   📄 HTML encontrado: ${foundHtml || 'NÃO'}`);
-console.log(`   📄 TSX encontrado: ${foundEntry || 'NÃO'}`);
-
-// --- PREPARE INDEX.HTML ---
 const publicIndexHtml = path.join(publicDir, 'index.html');
 
 if (foundHtml) {
@@ -75,7 +71,7 @@ if (foundHtml) {
         console.error("❌ [SETUP] Falha ao copiar index.html:", e.message);
     }
 } else {
-    console.log("⚠️ [WARN] index.html original não encontrado. Gerando fallback.");
+    console.log("⚠️ [WARN] index.html original não encontrado. Gerando fallback de emergência.");
     const fallbackHtml = `
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -105,37 +101,68 @@ if (foundHtml) {
     fs.writeFileSync(publicIndexHtml, fallbackHtml);
 }
 
-// --- BUILD FRONTEND ---
-if (foundEntry) {
-    try {
-        console.log(`🔨 [BUILD] Compilando Frontend (Entrada: ${foundEntry})...`);
-        
-        esbuild.buildSync({
-            entryPoints: [foundEntry],
-            bundle: true,
-            outfile: path.join(publicDir, 'bundle.js'),
-            format: 'esm',
-            target: ['es2020'],
-            external: ['react', 'react-dom', 'react-dom/client', '@google/genai', 'lucide-react', 'fs', 'path', 'fluent-ffmpeg'],
-            loader: { '.tsx': 'tsx', '.ts': 'ts', '.css': 'css' },
-            define: {
-                'process.env.API_KEY': JSON.stringify(GEMINI_KEY),
-                'process.env.NODE_ENV': '"development"',
-                'global': 'window'
-            },
-            logLevel: 'info',
-        });
-        console.log("✅ [BUILD] Frontend compilado com sucesso.");
-    } catch (e) {
-        console.error("❌ [BUILD ERROR] Falha crítica no Esbuild:", e.message);
+// --- SELF-HEALING: CHECK & RESTORE INDEX.TSX ---
+if (!foundEntry) {
+    console.warn("⚠️ [WARN] index.tsx não encontrado. Gerando entrada de emergência.");
+    // Tenta encontrar o App.tsx para restaurar a funcionalidade
+    const foundApp = findFile(process.cwd(), 'App.tsx');
+    
+    let recoveryTsx = "";
+    if (foundApp) {
+        console.log("   ✅ App.tsx encontrado. Criando index.tsx para montar o App.");
+        recoveryTsx = `
+            import React from 'react';
+            import { createRoot } from 'react-dom/client';
+            import App from './App';
+            const root = createRoot(document.getElementById('root')!);
+            root.render(<React.StrictMode><App /></React.StrictMode>);
+        `;
+    } else {
+        console.log("   ❌ App.tsx TAMBÉM não encontrado. Criando página de erro estática.");
+        recoveryTsx = `
+            import React from 'react';
+            import { createRoot } from 'react-dom/client';
+            const root = createRoot(document.getElementById('root')!);
+            root.render(
+                <div style={{height: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', backgroundColor: '#050505', color: 'white'}}>
+                    <h1 style={{fontSize: '2rem', marginBottom: '1rem'}}>Erro Crítico de Deploy</h1>
+                    <p>Os arquivos de fonte (index.tsx, App.tsx) não foram encontrados no servidor.</p>
+                    <p style={{marginTop: '1rem', color: '#666'}}>Verifique se os arquivos estão sendo copiados corretamente no Dockerfile.</p>
+                </div>
+            );
+        `;
     }
-} else {
-    console.error("❌ [BUILD ERROR] index.tsx não encontrado. Gerando bundle vazio.");
-    const dummyBundle = `
-        console.warn("AI Media Suite: index.tsx not found during build.");
-        document.getElementById('root').innerHTML = '<div style="color:red;padding:20px;text-align:center"><h1>Erro de Build</h1><p>O arquivo index.tsx não foi encontrado.</p></div>';
-    `;
-    fs.writeFileSync(path.join(publicDir, 'bundle.js'), dummyBundle);
+    
+    // Escreve o arquivo de recuperação na raiz para o esbuild pegar
+    const recoveryPath = path.join(__dirname, 'index.tsx');
+    fs.writeFileSync(recoveryPath, recoveryTsx);
+    foundEntry = recoveryPath;
+}
+
+// --- BUILD FRONTEND ---
+try {
+    console.log(`🔨 [BUILD] Compilando Frontend (Entrada: ${foundEntry})...`);
+    
+    esbuild.buildSync({
+        entryPoints: [foundEntry],
+        bundle: true,
+        outfile: path.join(publicDir, 'bundle.js'),
+        format: 'esm',
+        target: ['es2020'],
+        external: ['react', 'react-dom', 'react-dom/client', '@google/genai', 'lucide-react', 'fs', 'path', 'fluent-ffmpeg'],
+        loader: { '.tsx': 'tsx', '.ts': 'ts', '.css': 'css' },
+        define: {
+            'process.env.API_KEY': JSON.stringify(GEMINI_KEY),
+            'process.env.NODE_ENV': '"development"',
+            'global': 'window'
+        },
+        logLevel: 'info',
+    });
+    console.log("✅ [BUILD] Frontend compilado com sucesso.");
+} catch (e) {
+    console.error("❌ [BUILD ERROR] Falha crítica no Esbuild:", e.message);
+    // Cria um bundle.js seguro para não quebrar o HTML
+    fs.writeFileSync(path.join(publicDir, 'bundle.js'), `console.error("Build Failed: ${e.message.replace(/"/g, '\\"')}"); document.body.innerHTML = "<h1>Build Failed</h1><p>Check server logs.</p>";`);
 }
 
 // --- CONFIGURAÇÃO BACKEND ---
@@ -173,7 +200,7 @@ app.use(cors({ origin: '*' }));
 app.use(express.json({ limit: '500mb' }));
 app.use(express.urlencoded({ extended: true, limit: '500mb' }));
 
-// Static Files
+// Static Files - Serve Public Dir First
 app.use(express.static(publicDir));
 app.use(express.static(__dirname));
 app.use('/outputs', express.static(OUTPUT_DIR));
@@ -307,11 +334,10 @@ app.post('/api/*', (req, res) => {
 
 // Fallback Route - CRITICAL for preventing 404
 app.get('*', (req, res) => {
-    console.log(`🔍 [ROUTE] Servindo fallback para: ${req.url}`);
     if (fs.existsSync(publicIndexHtml)) {
         res.sendFile(publicIndexHtml);
     } else {
-        res.send("<h1>500 - System Error</h1><p>index.html not generated.</p>");
+        res.status(500).send("<h1>System Error</h1><p>index.html missing and auto-generation failed.</p>");
     }
 });
 
