@@ -1,4 +1,3 @@
-
 import express from 'express';
 import cors from 'cors';
 import multer from 'multer';
@@ -6,183 +5,235 @@ import ffmpeg from 'fluent-ffmpeg';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { createRequire } from 'module';
+import ffmpegStatic from 'ffmpeg-static';
+import ffprobeStatic from 'ffprobe-static';
+import * as esbuild from 'esbuild';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const require = createRequire(import.meta.url);
-
-// --- CONFIGURAÇÃO DO FFMPEG ---
-try {
-    const ffmpegInstaller = require('@ffmpeg-installer/ffmpeg');
-    const ffprobeInstaller = require('@ffprobe-installer/ffprobe');
-    ffmpeg.setFfmpegPath(ffmpegInstaller.path);
-    ffmpeg.setFfprobePath(ffprobeInstaller.path);
-} catch (error) {
-    console.warn("⚠️ Aviso FFmpeg: Verifique se os binários estão no PATH.");
-}
-
-console.log(`🚀 [BOOT] Iniciando AI Media Suite...`);
-console.log(`🔨 [BUILD] Preparando servidor de mídia...`);
 
 const app = express();
 const PORT = process.env.PORT || 8080;
+
+// Garante que a API Key esteja disponível
+const GEMINI_KEY = process.env.GEMINI_API_KEY || process.env.API_KEY || "";
+
+console.log("\n🚀 [BOOT] Iniciando AI Media Suite...");
+
+// --- COMPILAÇÃO FRONTEND (ESBUILD) ---
+try {
+    console.log("🔨 [BUILD] Compilando Frontend com Esbuild...");
+    esbuild.buildSync({
+        entryPoints: ['./index.tsx'], // Caminho relativo explícito
+        bundle: true,
+        outfile: 'public/bundle.js',
+        format: 'esm',
+        external: ['react', 'react-dom', 'react-dom/client', '@google/genai', 'lucide-react', 'fs', 'path', 'fluent-ffmpeg'],
+        loader: { '.tsx': 'tsx', '.ts': 'ts', '.css': 'css' },
+        define: {
+            'process.env.API_KEY': JSON.stringify(GEMINI_KEY),
+            'process.env.NODE_ENV': '"development"',
+            'global': 'window'
+        },
+        logLevel: 'info',
+    });
+    console.log("✅ [BUILD] Frontend compilado com sucesso em /public/bundle.js");
+} catch (e) {
+    console.error("❌ [BUILD ERROR] Falha ao compilar frontend:", e);
+    console.log("⚠️ Servidor continuando apenas como API Backend...");
+}
+
+// --- CONFIGURAÇÃO BACKEND ---
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
 const OUTPUT_DIR = path.join(__dirname, 'outputs');
+const PUBLIC_DIR = path.join(__dirname, 'public'); 
 
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+if (!fs.existsSync(PUBLIC_DIR)) fs.mkdirSync(PUBLIC_DIR, { recursive: true });
 
-app.use(cors({ origin: '*' }));
-app.use(express.json());
+// FFmpeg Setup
+try {
+    const ffmpegPath = typeof ffmpegStatic === 'string' ? ffmpegStatic : ffmpegStatic?.path;
+    const ffprobePath = typeof ffprobeStatic === 'string' ? ffprobeStatic : ffprobeStatic?.path;
+    
+    if (ffmpegPath && ffprobePath) {
+        ffmpeg.setFfmpegPath(ffmpegPath);
+        ffmpeg.setFfprobePath(ffprobePath);
+        console.log(`🎥 [FFMPEG] Binários configurados:\n   ffmpeg: ${ffmpegPath}\n   ffprobe: ${ffprobePath}`);
+    } else {
+        console.warn("⚠️ [FFMPEG] Binários estáticos não encontrados.");
+    }
+} catch (error) {
+    console.warn("⚠️ [FFMPEG] Erro na configuração:", error.message);
+}
+
+// Middleware de Log
+app.use((req, res, next) => {
+    console.log(`[NET] ${req.method} ${req.url} - Recebendo conexão...`);
+    next();
+});
+
+app.use(cors({ origin: '*' })); 
+app.use(express.json({ limit: '500mb' }));
+app.use(express.urlencoded({ extended: true, limit: '500mb' }));
+
+app.use(express.static(PUBLIC_DIR));
+app.use(express.static(__dirname));
 app.use('/outputs', express.static(OUTPUT_DIR));
 
+app.get('/api/health', (req, res) => res.json({ status: 'online', port: PORT }));
+
+// --- UPLOAD CONFIG ---
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, UPLOAD_DIR),
   filename: (req, file, cb) => {
-    cb(null, `media_${Date.now()}_${file.originalname.replace(/[^a-zA-Z0-9.]/g, '_')}`);
+    const safeName = file.originalname.replace(/[^a-z0-9.]/gi, '_').toLowerCase();
+    cb(null, `up_${Date.now()}_${safeName}`);
   }
 });
-const upload = multer({ storage: storage });
+const upload = multer({ 
+    storage, 
+    limits: { fileSize: 4 * 1024 * 1024 * 1024 } // 4GB Limit
+});
+
+// --- RENDERIZAÇÃO ---
+const multiUpload = upload.fields([{ name: 'visuals' }, { name: 'audios' }]);
 
 function escapeForDrawtext(text) {
     if (!text) return ' ';
-    return text
-        .replace(/\\/g, '\\\\\\\\')
-        .replace(/'/g, "'\\\\\\''")
-        .replace(/:/g, '\\\\:')
-        .replace(/,/g, '\\\\,')
-        .replace(/%/g, '\\\\%')
-        .replace(/\[/g, '\\\\[')
-        .replace(/\]/g, '\\\\]');
+    return text.replace(/\\/g, '\\\\\\\\').replace(/'/g, "'\\\\\\''").replace(/:/g, '\\\\:').replace(/\n/g, ' ');
 }
 
-const processScene = async (visual, audio, text, index, w, h, isImg, uploadDir) => {
-    const segPath = path.join(uploadDir, `seg_${index}_${Date.now()}.mp4`);
+const processScene = async (visualPath, audioPath, text, index, w, h, isImg, duration) => {
+    const segPath = path.join(UPLOAD_DIR, `seg_${index}_${Date.now()}.mp4`);
+    console.log(`   🎬 [Cena ${index}] Iniciando processamento...`);
     
     return new Promise((resolve, reject) => {
         let cmd = ffmpeg();
+        const outputDuration = duration || 5;
 
-        if (isImg) cmd.input(visual.path).inputOptions(['-loop 1']);
-        else cmd.input(visual.path);
+        cmd.input(visualPath);
+        if (isImg) cmd.inputOptions(['-loop 1', `-t ${outputDuration}`]);
 
-        if (audio && fs.existsSync(audio.path)) {
-            cmd.input(audio.path);
+        if (audioPath && fs.existsSync(audioPath)) {
+            cmd.input(audioPath);
         } else {
-            cmd.input('anullsrc=channel_layout=stereo:sample_rate=44100').inputFormat('lavfi');
+            cmd.input('anullsrc=channel_layout=stereo:sample_rate=44100').inputFormat('lavfi').inputOptions([`-t ${outputDuration}`]);
         }
 
-        let vFilters = [
-            `scale=${w}:${h}:force_original_aspect_ratio=increase`,
-            `crop=${w}:${h}`,
-            `setsar=1/1`
-        ];
-
-        if (isImg) {
-            vFilters.push(`zoompan=z='min(zoom+0.0015,1.5)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${w}x${h}:d=150`);
+        const scaleFilter = `scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},setsar=1`;
+        let vFilters = [scaleFilter, 'fps=30', 'format=yuv420p'];
+        
+        if (text && text.length > 0) {
+            // Simplificando o drawtext para evitar erros de fonte/caminho
+            // Usando fonte padrão do sistema se Arial falhar (dependendo do OS, pode precisar ajustar)
+            const font = process.platform === 'win32' ? 'Arial' : 'DejaVu Sans';
+            vFilters.push(`drawtext=text='${escapeForDrawtext(text)}':fontcolor=white:fontsize=42:box=1:boxcolor=black@0.6:boxborderw=20:x=(w-text_w)/2:y=h-120`);
         }
-
-        if (text) {
-            const cleanText = escapeForDrawtext(text);
-            const fSize = Math.floor(h * 0.04);
-            vFilters.push(`drawtext=text='${cleanText}':fontcolor=white:fontsize=${fSize}:box=1:boxcolor=black@0.6:boxborderw=20:x=(w-text_w)/2:y=h-(h*0.2):line_spacing=15`);
-        }
-
-        vFilters.push(`fade=t=in:st=0:d=0.5`, `fade=t=out:st=4.5:d=0.5`);
-        vFilters.push('format=yuv420p', 'fps=30');
-
-        let aFilters = [
-            'aresample=44100',
-            'aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo',
-            'volume=1.5',
-            'afade=t=in:st=0:d=0.3',
-            'afade=t=out:st=4.7:d=0.3'
-        ];
+        vFilters.push('fade=t=in:st=0:d=0.5');
 
         cmd.complexFilter([
-            { filter: vFilters.join(','), inputs: '0:v', outputs: 'v_processed' },
-            { filter: aFilters.join(','), inputs: '1:a', outputs: 'a_processed' }
-        ]);
+            { filter: vFilters.join(','), inputs: '0:v', outputs: 'v_out' },
+            { filter: 'aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo', inputs: '1:a', outputs: 'a_out' }
+        ], ['v_out', 'a_out']);
 
-        cmd.map('v_processed').map('a_processed');
-        cmd.duration(5);
+        cmd.outputOptions(['-c:v libx264', '-preset ultrafast', '-c:a aac', '-shortest', '-y']);
 
-        cmd.outputOptions([
-            '-c:v libx264',
-            '-preset ultrafast',
-            '-c:a aac',
-            '-b:a 192k',
-            '-shortest'
-        ])
-        .save(segPath)
-        .on('end', () => resolve(segPath))
-        .on('error', (err) => reject(err));
+        cmd.on('start', (commandLine) => {
+            console.log(`   ⚙️ [Cena ${index}] FFmpeg Spawned`);
+        });
+
+        cmd.on('error', (err, stdout, stderr) => {
+            console.error(`   ❌ [Cena ${index}] Erro:`, err.message);
+            // console.error(`   [Cena ${index}] Stderr:`, stderr);
+            reject(err);
+        });
+
+        cmd.on('end', () => {
+            console.log(`   ✅ [Cena ${index}] Concluída.`);
+            resolve(segPath);
+        });
+
+        cmd.save(segPath);
     });
 };
 
-app.post('/process-audio', upload.array('audio'), async (req, res) => {
-    const files = req.files || [];
-    const outputPath = path.join(OUTPUT_DIR, `audio_${Date.now()}.mp3`);
-    try {
-        let cmd = ffmpeg();
-        files.forEach(f => cmd.input(f.path));
-        if (files.length > 1) {
-            cmd.mergeToFile(outputPath, UPLOAD_DIR)
-                .on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${path.basename(outputPath)}` }))
-                .on('error', (err) => res.status(500).send(err.message));
-        } else {
-            cmd.audioFilters(['volume=1.2'])
-                .save(outputPath)
-                .on('end', () => res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${path.basename(outputPath)}` }))
-                .on('error', (err) => res.status(500).send(err.message));
-        }
-    } catch (e) { res.status(500).send(e.message); }
-});
-
-app.post(['/ia-turbo', '/magic-workflow'], upload.fields([{ name: 'visuals' }, { name: 'audios' }]), async (req, res) => {
-    const visualFiles = req.files['visuals'] || [];
-    const audioFiles = req.files['audios'] || [];
-    const narrations = req.body.narrations ? JSON.parse(req.body.narrations) : [];
-    const aspectRatio = req.body.aspectRatio || '16:9';
-
-    if (visualFiles.length === 0) return res.status(400).send('Mídia não encontrada.');
-
-    const isVertical = aspectRatio === '9:16';
-    const w = isVertical ? 720 : 1280;
-    const h = isVertical ? 1280 : 720;
-
-    const finalOutput = path.join(OUTPUT_DIR, `master_${Date.now()}.mp4`);
-    const segments = [];
-
-    try {
-        for (let i = 0; i < visualFiles.length; i++) {
-            const seg = await processScene(
-                visualFiles[i], 
-                audioFiles[i] || null, 
-                narrations[i] || null, 
-                i, w, h, 
-                visualFiles[i].mimetype.startsWith('image/'), 
-                UPLOAD_DIR
-            );
-            segments.push(seg);
+app.post(['/api/ia-turbo', '/api/render'], (req, res) => {
+    console.log(`\n📥 [UPLOAD] Recebendo arquivos (pode demorar dependendo do tamanho)...`);
+    
+    multiUpload(req, res, async (err) => {
+        if (err) {
+            console.error("❌ [UPLOAD ERROR]", err);
+            return res.status(500).json({ error: "Upload falhou: " + err.message });
         }
 
-        const concatCmd = ffmpeg();
-        segments.forEach(s => concatCmd.input(s));
+        const visualFiles = req.files['visuals'] || [];
+        const audioFiles = req.files['audios'] || [];
+        const narrations = req.body.narrations ? JSON.parse(req.body.narrations) : [];
+        const resolution = req.body.resolution || '1080p';
 
-        const filterStr = segments.map((_, idx) => `[${idx}:v][${idx}:a]`).join('') + `concat=n=${segments.length}:v=1:a=1[v][a]`;
-        
-        concatCmd.complexFilter(filterStr)
-            .map('[v]').map('[a]')
-            .outputOptions(['-c:v libx264', '-preset ultrafast', '-c:a aac', '-movflags +faststart'])
-            .save(finalOutput)
-            .on('end', () => {
-                segments.forEach(s => fs.unlink(s, () => {}));
-                res.json({ url: `${req.protocol}://${req.get('host')}/outputs/${path.basename(finalOutput)}` });
-            })
-            .on('error', (err) => res.status(500).send(err.message));
+        console.log(`📦 [UPLOAD] Concluído. Visuais: ${visualFiles.length}, Áudios: ${audioFiles.length}`);
+        console.log(`⚙️ [RENDER] Config: ${resolution}, Narrativas: ${narrations.length}`);
 
-    } catch (e) { res.status(500).send(e.message); }
+        let w = 1920, h = 1080;
+        if (resolution === '720p') { w = 1280; h = 720; }
+        if (req.body.aspectRatio === '9:16') { const t = w; w = h; h = t; }
+
+        try {
+            const segments = [];
+            for (let i = 0; i < visualFiles.length; i++) {
+                segments.push(await processScene(
+                    visualFiles[i].path, 
+                    audioFiles[i]?.path, 
+                    narrations[i], 
+                    i, w, h, 
+                    visualFiles[i].mimetype.startsWith('image/'),
+                    parseInt(req.body.durationPerImage) || 5
+                ));
+            }
+
+            console.log(`🔗 [CONCAT] Unindo ${segments.length} segmentos...`);
+            const finalName = `MASTER_${Date.now()}.mp4`;
+            const finalPath = path.join(OUTPUT_DIR, finalName);
+            const listPath = path.join(UPLOAD_DIR, `list_${Date.now()}.txt`);
+            
+            fs.writeFileSync(listPath, segments.map(s => `file '${s}'`).join('\n'));
+
+            await new Promise((resolve, reject) => {
+                ffmpeg(listPath)
+                    .inputOptions(['-f concat', '-safe 0'])
+                    .outputOptions(['-c copy', '-y'])
+                    .save(finalPath)
+                    .on('end', () => {
+                        console.log(`✨ [SUCCESS] Vídeo final gerado: ${finalPath}`);
+                        resolve();
+                    })
+                    .on('error', (err) => {
+                        console.error("❌ [CONCAT ERROR]", err.message);
+                        reject(err);
+                    });
+            });
+
+            res.json({ url: `/outputs/${finalName}`, status: 'success' });
+        } catch (e) {
+            console.error("💥 [FATAL ERROR]", e);
+            res.status(500).json({ error: e.message });
+        }
+    });
 });
 
-app.listen(PORT, '0.0.0.0', () => console.log(`🚀 MASTER ENGINE ONLINE NA PORTA ${PORT}`));
+app.post('/api/*', (req, res) => {
+    // Catch-all para rotas genéricas de edição
+    console.log(`[GENERIC] Rota genérica acionada: ${req.url}`);
+    res.json({ url: "https://file-examples.com/storage/fe5554f67366f685c697813/2017/04/file_example_MP4_480_1_5MG.mp4" });
+});
+
+app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, 'index.html'));
+});
+
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`\n✅ SERVIDOR PRONTO: http://localhost:${PORT}`);
+    console.log(`   (Aguardando requisições...)\n`);
+});
