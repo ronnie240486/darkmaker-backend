@@ -19,16 +19,35 @@ const PORT = process.env.PORT || 8080;
 const GEMINI_KEY = process.env.GEMINI_API_KEY || process.env.API_KEY || "";
 
 console.log("\n🚀 [BOOT] Iniciando AI Media Suite...");
-console.log(`📂 [INFO] Diretório de Trabalho: ${process.cwd()}`);
+console.log(`📂 [INFO] Diretório de Trabalho (CWD): ${process.cwd()}`);
 console.log(`📂 [INFO] __dirname: ${__dirname}`);
 
-// --- DEBUG: LIST FILES ---
-// Helps identify where index.tsx actually is in the container environment
-try {
-    const files = fs.readdirSync(__dirname);
-    console.log("🗂️ [DEBUG] Arquivos na raiz:", files.filter(f => !f.startsWith('node_modules')));
-} catch (e) {
-    console.error("❌ [DEBUG ERROR] Não foi possível listar arquivos:", e.message);
+// --- HELPER: Recursively find file ---
+// Critical for finding files in nested container structures
+function findFile(startDir, filename) {
+    if (!fs.existsSync(startDir)) return null;
+    try {
+        const files = fs.readdirSync(startDir);
+        for (const file of files) {
+            const fullPath = path.join(startDir, file);
+            if (file === 'node_modules' || file === '.git' || file === 'dist' || file === 'public') continue;
+            
+            try {
+                const stat = fs.statSync(fullPath);
+                if (stat.isDirectory()) {
+                    const found = findFile(fullPath, filename);
+                    if (found) return found;
+                } else if (file === filename) {
+                    return fullPath;
+                }
+            } catch (e) {
+                // Ignore permission errors etc
+            }
+        }
+    } catch (e) {
+        console.warn(`⚠️ Erro lendo diretório ${startDir}: ${e.message}`);
+    }
+    return null;
 }
 
 // --- SETUP PUBLIC DIR ---
@@ -37,50 +56,62 @@ if (!fs.existsSync(publicDir)) {
     fs.mkdirSync(publicDir, { recursive: true });
 }
 
-// --- FALLBACK GENERATION ---
-// Se index.html não existir na raiz (como indicado pelos logs de erro), cria um básico em public
-const rootIndexHtml = path.join(__dirname, 'index.html');
+// --- LOCATE RESOURCES ---
+console.log("🔍 [SEARCH] Procurando arquivos de fonte (index.html, index.tsx)...");
+const foundHtml = findFile(process.cwd(), 'index.html');
+const foundEntry = findFile(process.cwd(), 'index.tsx');
+
+console.log(`   📄 HTML encontrado: ${foundHtml || 'NÃO'}`);
+console.log(`   📄 TSX encontrado: ${foundEntry || 'NÃO'}`);
+
+// --- PREPARE INDEX.HTML ---
 const publicIndexHtml = path.join(publicDir, 'index.html');
 
-if (!fs.existsSync(rootIndexHtml) && !fs.existsSync(publicIndexHtml)) {
-    console.log("⚠️ [WARN] index.html não encontrado. Criando página de fallback...");
+if (foundHtml) {
+    try {
+        fs.copyFileSync(foundHtml, publicIndexHtml);
+        console.log("✅ [SETUP] index.html copiado para public/");
+    } catch (e) {
+        console.error("❌ [SETUP] Falha ao copiar index.html:", e.message);
+    }
+} else {
+    console.log("⚠️ [WARN] index.html original não encontrado. Gerando fallback.");
     const fallbackHtml = `
 <!DOCTYPE html>
-<html lang="en">
+<html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Media Suite - Maintenance</title>
+    <title>AI Media Suite (Recovery)</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <style>body { background: #050505; color: white; display: flex; align-items: center; justify-content: center; height: 100vh; font-family: sans-serif; }</style>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script>
+        window.process = { env: { NODE_ENV: 'development' } };
+        window.global = window;
+    </script>
 </head>
-<body>
-    <div class="text-center">
-        <h1 class="text-4xl font-bold mb-4">AI Media Suite Backend</h1>
-        <p class="text-gray-400">O servidor está online, mas os arquivos de frontend não foram encontrados.</p>
-        <p class="text-xs text-gray-600 mt-2">Verifique o processo de build/deploy.</p>
+<body class="bg-black text-white">
+    <div id="root">
+        <div class="h-screen flex flex-col items-center justify-center p-8 text-center">
+            <i class="fas fa-robot text-6xl text-orange-500 mb-6 animate-bounce"></i>
+            <h1 class="text-3xl font-bold mb-2">AI Media Suite</h1>
+            <p class="text-gray-400">Modo de Recuperação Ativo</p>
+            <p class="text-xs text-gray-600 mt-4 max-w-md">O arquivo 'index.html' original não foi encontrado no container. O sistema gerou esta interface temporária para carregar a aplicação.</p>
+        </div>
     </div>
+    <script type="module" src="/bundle.js"></script>
 </body>
 </html>`;
     fs.writeFileSync(publicIndexHtml, fallbackHtml);
-} else if (fs.existsSync(rootIndexHtml)) {
-    // Se existir na raiz, copia para public para garantir que o express.static sirva
-    fs.copyFileSync(rootIndexHtml, publicIndexHtml);
 }
 
-// --- COMPILAÇÃO FRONTEND (ESBUILD) ---
-const possibleEntryPoints = [
-    path.join(__dirname, 'index.tsx'),
-    path.join(process.cwd(), 'index.tsx')
-];
-const entryPoint = possibleEntryPoints.find(p => fs.existsSync(p));
-
-if (entryPoint) {
+// --- BUILD FRONTEND ---
+if (foundEntry) {
     try {
-        console.log(`🔨 [BUILD] Compilando Frontend (Entrada: ${entryPoint})...`);
+        console.log(`🔨 [BUILD] Compilando Frontend (Entrada: ${foundEntry})...`);
         
         esbuild.buildSync({
-            entryPoints: [entryPoint],
+            entryPoints: [foundEntry],
             bundle: true,
             outfile: path.join(publicDir, 'bundle.js'),
             format: 'esm',
@@ -99,11 +130,12 @@ if (entryPoint) {
         console.error("❌ [BUILD ERROR] Falha crítica no Esbuild:", e.message);
     }
 } else {
-    console.error("❌ [BUILD ERROR] Arquivo index.tsx NÃO ENCONTRADO.");
-    // Criar um bundle.js vazio para não quebrar a página se ela depender dele
-    if (!fs.existsSync(path.join(publicDir, 'bundle.js'))) {
-        fs.writeFileSync(path.join(publicDir, 'bundle.js'), "console.log('Frontend source missing');");
-    }
+    console.error("❌ [BUILD ERROR] index.tsx não encontrado. Gerando bundle vazio.");
+    const dummyBundle = `
+        console.warn("AI Media Suite: index.tsx not found during build.");
+        document.getElementById('root').innerHTML = '<div style="color:red;padding:20px;text-align:center"><h1>Erro de Build</h1><p>O arquivo index.tsx não foi encontrado.</p></div>';
+    `;
+    fs.writeFileSync(path.join(publicDir, 'bundle.js'), dummyBundle);
 }
 
 // --- CONFIGURAÇÃO BACKEND ---
@@ -129,7 +161,7 @@ try {
     console.warn("⚠️ [FFMPEG] Erro config:", error.message);
 }
 
-// Middleware de Log Genérico
+// Middleware
 app.use((req, res, next) => {
     if (req.url.startsWith('/api')) {
         console.log(`[NET] ${req.method} ${req.url} - ${new Date().toISOString()}`);
@@ -141,15 +173,14 @@ app.use(cors({ origin: '*' }));
 app.use(express.json({ limit: '500mb' }));
 app.use(express.urlencoded({ extended: true, limit: '500mb' }));
 
-// Ordem importante: primeiro estáticos, depois rotas
+// Static Files
 app.use(express.static(publicDir));
 app.use(express.static(__dirname));
 app.use('/outputs', express.static(OUTPUT_DIR));
 
-// Rota de Health Check
+// API Routes
 app.get('/api/health', (req, res) => res.json({ status: 'online', port: PORT }));
 
-// --- UPLOAD CONFIG ---
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, UPLOAD_DIR),
   filename: (req, file, cb) => {
@@ -162,7 +193,6 @@ const upload = multer({
     limits: { fileSize: 4 * 1024 * 1024 * 1024 } 
 });
 
-// --- RENDERIZAÇÃO ---
 const multiUpload = upload.fields([{ name: 'visuals' }, { name: 'audios' }]);
 
 function escapeForDrawtext(text) {
@@ -213,7 +243,6 @@ const processScene = async (visualPath, audioPath, text, index, w, h, isImg, dur
 };
 
 app.post(['/api/ia-turbo', '/api/render'], (req, res) => {
-    // Log Imediato ao receber headers
     console.log(`\n📥 [API] START RENDER - Recebendo stream de dados...`);
     
     multiUpload(req, res, async (err) => {
@@ -227,7 +256,7 @@ app.post(['/api/ia-turbo', '/api/render'], (req, res) => {
         const narrations = req.body.narrations ? JSON.parse(req.body.narrations) : [];
         const resolution = req.body.resolution || '1080p';
 
-        console.log(`📦 [UPLOAD COMPLETE] Arquivos recebidos. Iniciando processamento...`);
+        console.log(`📦 [UPLOAD COMPLETE] ${visualFiles.length} visuais, ${audioFiles.length} áudios.`);
 
         try {
             let w = 1920, h = 1080;
@@ -276,8 +305,14 @@ app.post('/api/*', (req, res) => {
     res.json({ url: "https://file-examples.com/storage/fe5554f67366f685c697813/2017/04/file_example_MP4_480_1_5MG.mp4" });
 });
 
+// Fallback Route - CRITICAL for preventing 404
 app.get('*', (req, res) => {
-    res.sendFile(path.join(publicDir, 'index.html'));
+    console.log(`🔍 [ROUTE] Servindo fallback para: ${req.url}`);
+    if (fs.existsSync(publicIndexHtml)) {
+        res.sendFile(publicIndexHtml);
+    } else {
+        res.send("<h1>500 - System Error</h1><p>index.html not generated.</p>");
+    }
 });
 
 app.listen(PORT, '0.0.0.0', () => {
