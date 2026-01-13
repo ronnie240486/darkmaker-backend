@@ -1,8 +1,9 @@
 
 {
+  "name": "AI Media Suite",
+  "description": "Uma suíte completa de ferramentas de IA para geração e edição de vídeo, imagem e áudio.",
   "requestFramePermissions": [
-    "camera",
     "microphone",
-    "geolocation"
+    "camera"
   ]
 }
