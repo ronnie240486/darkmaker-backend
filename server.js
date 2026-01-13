@@ -19,25 +19,33 @@ const PORT = process.env.PORT || 8080;
 const GEMINI_KEY = process.env.GEMINI_API_KEY || process.env.API_KEY || "";
 
 console.log("\n🚀 [BOOT] Iniciando AI Media Suite...");
+console.log(`📂 [INFO] Diretório Raiz: ${__dirname}`);
 
 // --- COMPILAÇÃO FRONTEND (ESBUILD) ---
 try {
     console.log("🔨 [BUILD] Compilando Frontend com Esbuild...");
-    esbuild.buildSync({
-        entryPoints: ['./index.tsx'], // Caminho relativo explícito
-        bundle: true,
-        outfile: 'public/bundle.js',
-        format: 'esm',
-        external: ['react', 'react-dom', 'react-dom/client', '@google/genai', 'lucide-react', 'fs', 'path', 'fluent-ffmpeg'],
-        loader: { '.tsx': 'tsx', '.ts': 'ts', '.css': 'css' },
-        define: {
-            'process.env.API_KEY': JSON.stringify(GEMINI_KEY),
-            'process.env.NODE_ENV': '"development"',
-            'global': 'window'
-        },
-        logLevel: 'info',
-    });
-    console.log("✅ [BUILD] Frontend compilado com sucesso em /public/bundle.js");
+    const entryPoint = path.join(__dirname, 'index.tsx');
+    
+    if (fs.existsSync(entryPoint)) {
+        esbuild.buildSync({
+            entryPoints: [entryPoint],
+            bundle: true,
+            outfile: path.join(__dirname, 'public', 'bundle.js'),
+            absWorkingDir: __dirname,
+            format: 'esm',
+            external: ['react', 'react-dom', 'react-dom/client', '@google/genai', 'lucide-react', 'fs', 'path', 'fluent-ffmpeg'],
+            loader: { '.tsx': 'tsx', '.ts': 'ts', '.css': 'css' },
+            define: {
+                'process.env.API_KEY': JSON.stringify(GEMINI_KEY),
+                'process.env.NODE_ENV': '"development"',
+                'global': 'window'
+            },
+            logLevel: 'info',
+        });
+        console.log("✅ [BUILD] Frontend compilado com sucesso em /public/bundle.js");
+    } else {
+        console.error(`❌ [BUILD ERROR] Arquivo de entrada não encontrado: ${entryPoint}`);
+    }
 } catch (e) {
     console.error("❌ [BUILD ERROR] Falha ao compilar frontend:", e);
     console.log("⚠️ Servidor continuando apenas como API Backend...");
