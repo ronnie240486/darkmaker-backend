@@ -1,5 +1,4 @@
 
-
 import express from 'express';
 import cors from 'cors';
 import multer from 'multer';
@@ -32,27 +31,54 @@ try {
     console.error("❌ [DEBUG ERROR] Não foi possível listar arquivos:", e.message);
 }
 
-// --- COMPILAÇÃO FRONTEND (ESBUILD) ---
-// Simplified check. If index.tsx is in the same folder as server.js, this will find it.
-const possibleEntry = path.join(__dirname, 'index.tsx');
-let entryPoint = null;
-
-if (fs.existsSync(possibleEntry)) {
-    entryPoint = possibleEntry;
-} else if (fs.existsSync(path.join(process.cwd(), 'index.tsx'))) {
-    entryPoint = path.join(process.cwd(), 'index.tsx');
+// --- SETUP PUBLIC DIR ---
+const publicDir = path.join(__dirname, 'public');
+if (!fs.existsSync(publicDir)) {
+    fs.mkdirSync(publicDir, { recursive: true });
 }
+
+// --- FALLBACK GENERATION ---
+// Se index.html não existir na raiz (como indicado pelos logs de erro), cria um básico em public
+const rootIndexHtml = path.join(__dirname, 'index.html');
+const publicIndexHtml = path.join(publicDir, 'index.html');
+
+if (!fs.existsSync(rootIndexHtml) && !fs.existsSync(publicIndexHtml)) {
+    console.log("⚠️ [WARN] index.html não encontrado. Criando página de fallback...");
+    const fallbackHtml = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Media Suite - Maintenance</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>body { background: #050505; color: white; display: flex; align-items: center; justify-content: center; height: 100vh; font-family: sans-serif; }</style>
+</head>
+<body>
+    <div class="text-center">
+        <h1 class="text-4xl font-bold mb-4">AI Media Suite Backend</h1>
+        <p class="text-gray-400">O servidor está online, mas os arquivos de frontend não foram encontrados.</p>
+        <p class="text-xs text-gray-600 mt-2">Verifique o processo de build/deploy.</p>
+    </div>
+</body>
+</html>`;
+    fs.writeFileSync(publicIndexHtml, fallbackHtml);
+} else if (fs.existsSync(rootIndexHtml)) {
+    // Se existir na raiz, copia para public para garantir que o express.static sirva
+    fs.copyFileSync(rootIndexHtml, publicIndexHtml);
+}
+
+// --- COMPILAÇÃO FRONTEND (ESBUILD) ---
+const possibleEntryPoints = [
+    path.join(__dirname, 'index.tsx'),
+    path.join(process.cwd(), 'index.tsx')
+];
+const entryPoint = possibleEntryPoints.find(p => fs.existsSync(p));
 
 if (entryPoint) {
     try {
         console.log(`🔨 [BUILD] Compilando Frontend (Entrada: ${entryPoint})...`);
         
-        // Garante que a pasta public existe
-        const publicDir = path.join(__dirname, 'public');
-        if (!fs.existsSync(publicDir)) {
-            fs.mkdirSync(publicDir, { recursive: true });
-        }
-
         esbuild.buildSync({
             entryPoints: [entryPoint],
             bundle: true,
@@ -73,14 +99,16 @@ if (entryPoint) {
         console.error("❌ [BUILD ERROR] Falha crítica no Esbuild:", e.message);
     }
 } else {
-    console.error("❌ [BUILD ERROR] Arquivo index.tsx NÃO ENCONTRADO em nenhum dos locais esperados.");
-    // Warn user but don't crash the API part
+    console.error("❌ [BUILD ERROR] Arquivo index.tsx NÃO ENCONTRADO.");
+    // Criar um bundle.js vazio para não quebrar a página se ela depender dele
+    if (!fs.existsSync(path.join(publicDir, 'bundle.js'))) {
+        fs.writeFileSync(path.join(publicDir, 'bundle.js'), "console.log('Frontend source missing');");
+    }
 }
 
 // --- CONFIGURAÇÃO BACKEND ---
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
 const OUTPUT_DIR = path.join(__dirname, 'outputs');
-const PUBLIC_DIR = path.join(__dirname, 'public'); 
 
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
@@ -103,7 +131,6 @@ try {
 
 // Middleware de Log Genérico
 app.use((req, res, next) => {
-    // Log apenas rotas de API para reduzir ruído
     if (req.url.startsWith('/api')) {
         console.log(`[NET] ${req.method} ${req.url} - ${new Date().toISOString()}`);
     }
@@ -114,7 +141,8 @@ app.use(cors({ origin: '*' }));
 app.use(express.json({ limit: '500mb' }));
 app.use(express.urlencoded({ extended: true, limit: '500mb' }));
 
-app.use(express.static(PUBLIC_DIR));
+// Ordem importante: primeiro estáticos, depois rotas
+app.use(express.static(publicDir));
 app.use(express.static(__dirname));
 app.use('/outputs', express.static(OUTPUT_DIR));
 
@@ -249,7 +277,7 @@ app.post('/api/*', (req, res) => {
 });
 
 app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, 'index.html'));
+    res.sendFile(path.join(publicDir, 'index.html'));
 });
 
 app.listen(PORT, '0.0.0.0', () => {
