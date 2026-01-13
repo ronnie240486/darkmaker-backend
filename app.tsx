@@ -12,7 +12,7 @@ import { Settings } from './pages/Settings';
 import { Utilities } from './pages/Utilities';
 import { PageId } from './types';
 
-const App: React.FC = () => {
+const app: React.FC = () => {
   const [currentPage, setCurrentPage] = useState<PageId>('home');
   const [activeTool, setActiveTool] = useState<string | undefined>(undefined);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
