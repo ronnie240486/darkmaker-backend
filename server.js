@@ -1,3 +1,4 @@
+
 import express from 'express';
 import cors from 'cors';
 import multer from 'multer';
@@ -21,37 +22,41 @@ console.log("\n🚀 [BOOT] Iniciando AI Media Suite...");
 console.log(`📂 [INFO] Diretório de Trabalho: ${process.cwd()}`);
 console.log(`📂 [INFO] __dirname: ${__dirname}`);
 
-// --- DEBUG: LIST FILES ---
-try {
-    const files = fs.readdirSync(__dirname);
-    console.log("🗂️ [DEBUG] Arquivos na raiz:", files.filter(f => !f.startsWith('node_modules')));
-} catch (e) {
-    console.error("❌ [DEBUG ERROR] Não foi possível listar arquivos:", e.message);
+// --- HELPER: Recursively find file ---
+function findFile(startDir, filename) {
+    if (!fs.existsSync(startDir)) return null;
+    const files = fs.readdirSync(startDir);
+    for (const file of files) {
+        const fullPath = path.join(startDir, file);
+        if (file === 'node_modules') continue;
+        const stat = fs.statSync(fullPath);
+        if (stat.isDirectory()) {
+            const found = findFile(fullPath, filename);
+            if (found) return found;
+        } else if (file === filename) {
+            return fullPath;
+        }
+    }
+    return null;
 }
 
 // --- COMPILAÇÃO FRONTEND (ESBUILD) ---
-// Tenta localizar o index.tsx em vários locais possíveis
-const possibleEntryPoints = [
-    path.join(__dirname, 'index.tsx'),
-    path.join(process.cwd(), 'index.tsx'),
-    './index.tsx'
-];
-
-let entryPoint = possibleEntryPoints.find(p => fs.existsSync(p));
+const entryPoint = findFile(process.cwd(), 'index.tsx');
 
 if (entryPoint) {
     try {
-        console.log(`🔨 [BUILD] Compilando Frontend (Entrada: ${entryPoint})...`);
+        console.log(`🔨 [BUILD] Encontrado index.tsx em: ${entryPoint}`);
         
         // Garante que a pasta public existe
-        if (!fs.existsSync(path.join(__dirname, 'public'))) {
-            fs.mkdirSync(path.join(__dirname, 'public'));
+        const publicDir = path.join(__dirname, 'public');
+        if (!fs.existsSync(publicDir)) {
+            fs.mkdirSync(publicDir, { recursive: true });
         }
 
         esbuild.buildSync({
             entryPoints: [entryPoint],
             bundle: true,
-            outfile: path.join(__dirname, 'public', 'bundle.js'),
+            outfile: path.join(publicDir, 'bundle.js'),
             format: 'esm',
             target: ['es2020'],
             external: ['react', 'react-dom', 'react-dom/client', '@google/genai', 'lucide-react', 'fs', 'path', 'fluent-ffmpeg'],
@@ -68,8 +73,7 @@ if (entryPoint) {
         console.error("❌ [BUILD ERROR] Falha crítica no Esbuild:", e.message);
     }
 } else {
-    console.error("❌ [BUILD ERROR] Arquivo index.tsx NÃO ENCONTRADO em nenhum dos locais esperados.");
-    console.log("⚠️ O servidor continuará rodando, mas a interface pode não carregar.");
+    console.error("❌ [BUILD ERROR] Arquivo index.tsx NÃO ENCONTRADO no sistema de arquivos.");
 }
 
 // --- CONFIGURAÇÃO BACKEND ---
@@ -96,11 +100,11 @@ try {
     console.warn("⚠️ [FFMPEG] Erro config:", error.message);
 }
 
-// Middleware de Log Genérico (Antes de tudo)
+// Middleware de Log
 app.use((req, res, next) => {
-    // Ignora requests de estáticos comuns para não poluir o log
-    if (!req.url.includes('.js') && !req.url.includes('.css') && !req.url.includes('.ico')) {
-        console.log(`[NET] ${req.method} ${req.url}`);
+    // Log apenas rotas de API para reduzir ruído
+    if (req.url.startsWith('/api')) {
+        console.log(`[NET] ${req.method} ${req.url} - ${new Date().toISOString()}`);
     }
     next();
 });
@@ -113,7 +117,7 @@ app.use(express.static(PUBLIC_DIR));
 app.use(express.static(__dirname));
 app.use('/outputs', express.static(OUTPUT_DIR));
 
-// Rota de Health Check para o Frontend validar conexão
+// Rota de Health Check
 app.get('/api/health', (req, res) => res.json({ status: 'online', port: PORT }));
 
 // --- UPLOAD CONFIG ---
@@ -158,7 +162,6 @@ const processScene = async (visualPath, audioPath, text, index, w, h, isImg, dur
         let vFilters = [scaleFilter, 'fps=30', 'format=yuv420p'];
         
         if (text && text.length > 0) {
-            // Fonte fallback simples
             vFilters.push(`drawtext=text='${escapeForDrawtext(text)}':fontcolor=white:fontsize=42:x=(w-text_w)/2:y=h-120:shadowcolor=black:shadowx=2:shadowy=2`);
         }
         vFilters.push('fade=t=in:st=0:d=0.5');
@@ -181,7 +184,8 @@ const processScene = async (visualPath, audioPath, text, index, w, h, isImg, dur
 };
 
 app.post(['/api/ia-turbo', '/api/render'], (req, res) => {
-    console.log(`\n📥 [API] Requisição de Renderização Recebida. Iniciando Upload...`);
+    // Log Imediato ao receber headers
+    console.log(`\n📥 [API] START RENDER - Recebendo stream de dados...`);
     
     multiUpload(req, res, async (err) => {
         if (err) {
@@ -194,7 +198,7 @@ app.post(['/api/ia-turbo', '/api/render'], (req, res) => {
         const narrations = req.body.narrations ? JSON.parse(req.body.narrations) : [];
         const resolution = req.body.resolution || '1080p';
 
-        console.log(`📦 [UPLOAD OK] ${visualFiles.length} visuais recebidos.`);
+        console.log(`📦 [UPLOAD COMPLETE] Arquivos recebidos. Iniciando processamento...`);
 
         try {
             let w = 1920, h = 1080;
