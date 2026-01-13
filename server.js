@@ -1,4 +1,5 @@
 
+
 import express from 'express';
 import cors from 'cors';
 import multer from 'multer';
@@ -22,30 +23,29 @@ console.log("\n🚀 [BOOT] Iniciando AI Media Suite...");
 console.log(`📂 [INFO] Diretório de Trabalho: ${process.cwd()}`);
 console.log(`📂 [INFO] __dirname: ${__dirname}`);
 
-// --- HELPER: Recursively find file ---
-function findFile(startDir, filename) {
-    if (!fs.existsSync(startDir)) return null;
-    const files = fs.readdirSync(startDir);
-    for (const file of files) {
-        const fullPath = path.join(startDir, file);
-        if (file === 'node_modules') continue;
-        const stat = fs.statSync(fullPath);
-        if (stat.isDirectory()) {
-            const found = findFile(fullPath, filename);
-            if (found) return found;
-        } else if (file === filename) {
-            return fullPath;
-        }
-    }
-    return null;
+// --- DEBUG: LIST FILES ---
+// Helps identify where index.tsx actually is in the container environment
+try {
+    const files = fs.readdirSync(__dirname);
+    console.log("🗂️ [DEBUG] Arquivos na raiz:", files.filter(f => !f.startsWith('node_modules')));
+} catch (e) {
+    console.error("❌ [DEBUG ERROR] Não foi possível listar arquivos:", e.message);
 }
 
 // --- COMPILAÇÃO FRONTEND (ESBUILD) ---
-const entryPoint = findFile(process.cwd(), 'index.tsx');
+// Simplified check. If index.tsx is in the same folder as server.js, this will find it.
+const possibleEntry = path.join(__dirname, 'index.tsx');
+let entryPoint = null;
+
+if (fs.existsSync(possibleEntry)) {
+    entryPoint = possibleEntry;
+} else if (fs.existsSync(path.join(process.cwd(), 'index.tsx'))) {
+    entryPoint = path.join(process.cwd(), 'index.tsx');
+}
 
 if (entryPoint) {
     try {
-        console.log(`🔨 [BUILD] Encontrado index.tsx em: ${entryPoint}`);
+        console.log(`🔨 [BUILD] Compilando Frontend (Entrada: ${entryPoint})...`);
         
         // Garante que a pasta public existe
         const publicDir = path.join(__dirname, 'public');
@@ -73,7 +73,8 @@ if (entryPoint) {
         console.error("❌ [BUILD ERROR] Falha crítica no Esbuild:", e.message);
     }
 } else {
-    console.error("❌ [BUILD ERROR] Arquivo index.tsx NÃO ENCONTRADO no sistema de arquivos.");
+    console.error("❌ [BUILD ERROR] Arquivo index.tsx NÃO ENCONTRADO em nenhum dos locais esperados.");
+    // Warn user but don't crash the API part
 }
 
 // --- CONFIGURAÇÃO BACKEND ---
@@ -100,7 +101,7 @@ try {
     console.warn("⚠️ [FFMPEG] Erro config:", error.message);
 }
 
-// Middleware de Log
+// Middleware de Log Genérico
 app.use((req, res, next) => {
     // Log apenas rotas de API para reduzir ruído
     if (req.url.startsWith('/api')) {
