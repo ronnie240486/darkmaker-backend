@@ -23,8 +23,12 @@ console.log(`📂 [INFO] Diretório de Trabalho (CWD): ${process.cwd()}`);
 console.log(`📂 [INFO] __dirname: ${__dirname}`);
 
 // --- HELPER: Recursively find file ---
-// Critical for finding files in nested container structures
 function findFile(startDir, filename) {
+    // 1. Check direct path first (Optimization)
+    const directPath = path.join(startDir, filename);
+    if (fs.existsSync(directPath)) return directPath;
+
+    // 2. Recursive Search
     if (!fs.existsSync(startDir)) return null;
     try {
         const files = fs.readdirSync(startDir);
@@ -37,8 +41,6 @@ function findFile(startDir, filename) {
                 if (stat.isDirectory()) {
                     const found = findFile(fullPath, filename);
                     if (found) return found;
-                } else if (file === filename) {
-                    return fullPath;
                 }
             } catch (e) {
                 // Ignore permission errors etc
@@ -103,8 +105,8 @@ if (foundHtml) {
 
 // --- SELF-HEALING: CHECK & RESTORE INDEX.TSX ---
 if (!foundEntry) {
-    console.warn("⚠️ [WARN] index.tsx não encontrado. Gerando entrada de emergência.");
-    // Tenta encontrar o App.tsx para restaurar a funcionalidade
+    console.warn("⚠️ [WARN] index.tsx não encontrado via busca recursiva. Tentando caminhos padrão...");
+    // Fallback: Check for App.tsx to create a synthetic entry point
     const foundApp = findFile(process.cwd(), 'App.tsx');
     
     let recoveryTsx = "";
@@ -114,26 +116,32 @@ if (!foundEntry) {
             import React from 'react';
             import { createRoot } from 'react-dom/client';
             import App from './App';
-            const root = createRoot(document.getElementById('root')!);
-            root.render(<React.StrictMode><App /></React.StrictMode>);
+            const rootElement = document.getElementById('root');
+            if (rootElement) {
+                const root = createRoot(rootElement);
+                root.render(<React.StrictMode><App /></React.StrictMode>);
+            }
         `;
     } else {
         console.log("   ❌ App.tsx TAMBÉM não encontrado. Criando página de erro estática.");
         recoveryTsx = `
             import React from 'react';
             import { createRoot } from 'react-dom/client';
-            const root = createRoot(document.getElementById('root')!);
-            root.render(
-                <div style={{height: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', backgroundColor: '#050505', color: 'white'}}>
-                    <h1 style={{fontSize: '2rem', marginBottom: '1rem'}}>Erro Crítico de Deploy</h1>
-                    <p>Os arquivos de fonte (index.tsx, App.tsx) não foram encontrados no servidor.</p>
-                    <p style={{marginTop: '1rem', color: '#666'}}>Verifique se os arquivos estão sendo copiados corretamente no Dockerfile.</p>
-                </div>
-            );
+            const rootElement = document.getElementById('root');
+            if (rootElement) {
+                const root = createRoot(rootElement);
+                root.render(
+                    <div style={{height: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', backgroundColor: '#050505', color: 'white'}}>
+                        <h1 style={{fontSize: '2rem', marginBottom: '1rem'}}>Erro Crítico de Deploy</h1>
+                        <p>Os arquivos de fonte (index.tsx, App.tsx) não foram encontrados no servidor.</p>
+                        <p style={{marginTop: '1rem', color: '#666'}}>Verifique se os arquivos estão sendo copiados corretamente no Dockerfile.</p>
+                    </div>
+                );
+            }
         `;
     }
     
-    // Escreve o arquivo de recuperação na raiz para o esbuild pegar
+    // Write recovery file to root
     const recoveryPath = path.join(__dirname, 'index.tsx');
     fs.writeFileSync(recoveryPath, recoveryTsx);
     foundEntry = recoveryPath;
@@ -161,7 +169,6 @@ try {
     console.log("✅ [BUILD] Frontend compilado com sucesso.");
 } catch (e) {
     console.error("❌ [BUILD ERROR] Falha crítica no Esbuild:", e.message);
-    // Cria um bundle.js seguro para não quebrar o HTML
     fs.writeFileSync(path.join(publicDir, 'bundle.js'), `console.error("Build Failed: ${e.message.replace(/"/g, '\\"')}"); document.body.innerHTML = "<h1>Build Failed</h1><p>Check server logs.</p>";`);
 }
 
