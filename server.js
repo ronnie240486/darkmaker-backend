@@ -17,7 +17,7 @@ const app = express();
 const PORT = process.env.PORT || 8080;
 const GEMINI_KEY = process.env.GEMINI_API_KEY || process.env.API_KEY || "";
 
-console.log("\x1b[36m%s\x1b[0m", "\n🚀 [BOOT] Iniciando Servidor Multimídia AI Suite...");
+console.log("\x1b[36m%s\x1b[0m", "\n🚀 [BOOT] Iniciando Servidor Multimídia AI Suite (Ultimate Edition)...");
 
 // --- CONFIGURATION ---
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
@@ -32,7 +32,8 @@ if (fs.existsSync(UPLOAD_DIR)) fs.rmSync(UPLOAD_DIR, { recursive: true, force: t
 
 // --- FFMPEG SETUP ---
 try {
-    const ffmpegPath = ffmpegStatic; // ffmpeg-static exporta o caminho diretamente ou objeto dependendo da versão
+    // ffmpeg-static retorna o caminho string
+    const ffmpegPath = ffmpegStatic; 
     const ffprobePath = ffprobeStatic.path;
     
     if (ffmpegPath && ffprobePath) {
@@ -40,7 +41,7 @@ try {
         ffmpeg.setFfprobePath(ffprobePath);
         console.log(`🎥 [FFMPEG] Binários Carregados.`);
     } else {
-        console.error("⚠️ [FFMPEG] Binários não encontrados!");
+        console.error("⚠️ [FFMPEG] Binários não encontrados! O processamento de vídeo falhará.");
     }
 } catch (error) {
     console.error("⚠️ [FFMPEG] Erro Config:", error.message);
@@ -108,7 +109,7 @@ const normalizeScene = (visualPath, audioPath, index, width, height) => {
         let duration = 5;
         
         if (audioPath) duration = await getDuration(audioPath);
-        duration += 0.5; // Padding
+        duration = parseFloat(duration) + 0.1; // Padding para evitar cortes abruptos no áudio
 
         console.log(`   ⚙️ Processando Cena ${index}: ${path.basename(visualPath)} (${duration.toFixed(1)}s)`);
 
@@ -123,20 +124,29 @@ const normalizeScene = (visualPath, audioPath, index, width, height) => {
         if (audioPath && fs.existsSync(audioPath)) {
             cmd.input(audioPath);
         } else {
+            // Gera silêncio se não houver áudio
             cmd.input('anullsrc=channel_layout=stereo:sample_rate=44100').inputFormat('lavfi');
         }
 
-        // Filters: Scale, Crop, FPS, Pixel Format, Audio Resample
+        // Filtros Complexos: Scale, Crop, FPS, Pixel Format, Audio Resample
+        // Isso garante que todos os pedaços tenham EXATAMENTE a mesma codificação
+        const vFilters = [
+            `scale=${width}:${height}:force_original_aspect_ratio=increase`,
+            `crop=${width}:${height}`,
+            'fps=30',
+            'format=yuv420p'
+        ];
+        
         cmd.complexFilter([
-            `[0:v]scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},fps=30,format=yuv420p[v]`,
+            `[0:v]${vFilters.join(',')}[v]`,
             `[1:a]aresample=44100,aformat=channel_layouts=stereo[a]`
         ], ['v', 'a']);
 
         cmd.outputOptions([
             '-c:v libx264', '-preset ultrafast', '-tune stillimage',
             '-c:a aac', '-b:a 192k',
-            '-shortest', // Corta vídeo se áudio acabar (para loops infinitos de imagem)
-            '-t', `${duration}`, // Força duração máxima baseada no áudio
+            '-shortest', // Corta vídeo se áudio acabar
+            '-t', `${duration}`, // Força duração máxima
             '-movflags +faststart'
         ]);
 
@@ -151,18 +161,21 @@ const normalizeScene = (visualPath, audioPath, index, width, height) => {
 
 // --- ROUTES ---
 
-app.get('/api/health', (req, res) => res.json({ status: 'online', msg: 'Media Server Ready' }));
+app.get('/api/health', (req, res) => res.json({ status: 'online', msg: 'Media Engine Active' }));
 
-// 1. MAIN RENDER ROUTE (Concatena imagens/vídeos)
+// 1. MAIN RENDER ROUTE (IA Turbo / Magic Workflow)
 app.post('/api/render', (req, res) => {
     uploadRender(req, res, async (err) => {
-        if (err) return res.status(500).json({ error: "Upload error: " + err.message });
+        if (err) {
+            console.error("Upload Error:", err);
+            return res.status(500).json({ error: "Upload failed: " + err.message });
+        }
 
         console.log("\n🎬 [RENDER] Iniciando Job de Renderização...");
         const visuals = req.files['visuals'] || [];
         const audios = req.files['audios'] || [];
         
-        if (!visuals.length) return res.status(400).json({ error: "Sem arquivos visuais." });
+        if (!visuals.length) return res.status(400).json({ error: "Nenhum arquivo visual recebido." });
 
         // Configuração de Resolução
         const resolution = req.body.resolution || '1080p';
@@ -177,21 +190,26 @@ app.post('/api/render', (req, res) => {
         try {
             const segments = [];
             
-            // Fase 1: Normalização
+            // Fase 1: Normalização (Sequencial para evitar sobrecarga de CPU)
             for (let i = 0; i < visuals.length; i++) {
                 const vis = visuals[i];
                 const aud = audios[i] || null;
-                const seg = await normalizeScene(vis.path, aud ? aud.path : null, i, w, h);
-                segments.push(seg);
+                try {
+                    const seg = await normalizeScene(vis.path, aud ? aud.path : null, i, w, h);
+                    segments.push(seg);
+                } catch (sceneErr) {
+                    console.error(`Pular cena ${i} devido a erro de processamento.`);
+                }
             }
+
+            if(segments.length === 0) throw new Error("Nenhuma cena pôde ser processada.");
 
             // Fase 2: Concatenação
             console.log(`   🔗 Unindo ${segments.length} segmentos...`);
             const listPath = path.join(UPLOAD_DIR, `concat_list_${Date.now()}.txt`);
-            const finalName = `RENDER_FINAL_${Date.now()}.mp4`;
+            const finalName = `MASTER_${Date.now()}.mp4`;
             const finalPath = path.join(OUTPUT_DIR, finalName);
 
-            // FFmpeg Concat Demuxer Format
             const listContent = segments.map(p => `file '${p}'`).join('\n');
             fs.writeFileSync(listPath, listContent);
 
@@ -199,7 +217,7 @@ app.post('/api/render', (req, res) => {
                 ffmpeg()
                     .input(listPath)
                     .inputOptions(['-f concat', '-safe 0'])
-                    .outputOptions(['-c copy']) // Stream copy (muito rápido pois já normalizamos)
+                    .outputOptions(['-c copy', '-y']) // Copy stream pois já normalizamos
                     .save(finalPath)
                     .on('end', resolve)
                     .on('error', reject);
@@ -227,7 +245,7 @@ app.post('/api/render', (req, res) => {
 app.post('/api/audio-process', (req, res) => {
     uploadGeneric(req, res, async (err) => {
         if (err) return res.status(500).json({ error: err.message });
-        console.log("\n🎵 [AUDIO] Processando...");
+        console.log("\n🎵 [AUDIO] Processando Requisição...");
         
         const files = req.files || [];
         const action = req.body.action || 'convert';
@@ -235,21 +253,29 @@ app.post('/api/audio-process', (req, res) => {
         if (!files.length) return res.status(400).json({ error: "Sem áudio." });
 
         try {
-            const outName = `AUDIO_${action}_${Date.now()}.mp3`; // Default output
+            const outName = `AUDIO_${action}_${Date.now()}.mp3`; 
             const outPath = path.join(OUTPUT_DIR, outName);
             const cmd = ffmpeg();
 
             if (action === 'join') {
-                // Merge logic
+                console.log(`   Unindo ${files.length} arquivos de áudio...`);
                 files.forEach(f => cmd.input(f.path));
-                cmd.mergeToFile(outPath, os.tmpdir()) // Fluent-ffmpeg merge helper
+                cmd.mergeToFile(outPath, path.join(__dirname, 'temp'))
+                   .on('end', () => res.json({ url: `/outputs/${outName}` }))
+                   .on('error', (e) => res.status(500).json({ error: e.message }));
+            } else if (action === 'cut') {
+                console.log("   Cortando áudio...");
+                cmd.input(files[0].path)
+                   .setStartTime(0).setDuration(15) // Exemplo simplificado
+                   .save(outPath)
                    .on('end', () => res.json({ url: `/outputs/${outName}` }))
                    .on('error', (e) => res.status(500).json({ error: e.message }));
             } else {
-                // Default convert/process single file
-                cmd.input(files[0].path);
-                cmd.toFormat('mp3');
-                cmd.save(outPath)
+                // Convert default
+                console.log("   Convertendo para MP3...");
+                cmd.input(files[0].path)
+                   .toFormat('mp3')
+                   .save(outPath)
                    .on('end', () => res.json({ url: `/outputs/${outName}` }))
                    .on('error', (e) => res.status(500).json({ error: e.message }));
             }
@@ -272,9 +298,9 @@ app.post('/api/image-process', (req, res) => {
             const outName = `IMG_${Date.now()}.png`;
             const outPath = path.join(OUTPUT_DIR, outName);
             
-            // Basic Convert/Resize using FFmpeg (it handles images too!)
+            // Simple Conversion/Resize via FFmpeg (supports images well)
             ffmpeg(files[0].path)
-                .outputOptions(['-vf scale=1080:-1']) // Resize width to 1080, keep aspect
+                .outputOptions(['-vf scale=1080:-1'])
                 .save(outPath)
                 .on('end', () => res.json({ url: `/outputs/${outName}` }))
                 .on('error', (e) => res.status(500).json({ error: e.message }));
@@ -286,12 +312,11 @@ app.post('/api/image-process', (req, res) => {
 });
 
 // 4. GENERIC VIDEO TOOLS (Cut, Compress, etc.)
-// Captura qualquer outra rota não definida acima, ex: /api/cut, /api/upscale
 app.post('/api/:tool', (req, res) => {
     uploadGeneric(req, res, async (err) => {
         if (err) return res.status(500).json({ error: err.message });
         const tool = req.params.tool;
-        console.log(`\n🔧 [TOOL] Executando: ${tool}`);
+        console.log(`\n🔧 [TOOL] Executando Ferramenta: ${tool}`);
         
         const files = req.files || [];
         if (!files.length) return res.status(400).json({ error: "Sem arquivos." });
@@ -301,16 +326,15 @@ app.post('/api/:tool', (req, res) => {
             const outPath = path.join(OUTPUT_DIR, outName);
             const cmd = ffmpeg(files[0].path);
 
-            // Simulação de lógicas básicas baseadas na ferramenta
             switch(tool) {
                 case 'compress':
                     cmd.videoCodec('libx264').outputOptions(['-crf 28']);
                     break;
                 case 'cut':
-                    cmd.setStartTime(0).setDuration(10); // Exemplo estático, idealmente viria do req.body
+                    cmd.setStartTime(0).setDuration(10);
                     break;
                 case 'upscale':
-                    cmd.videoFilters('scale=3840:-1:flags=lanczos'); // 4K Upscale simples
+                    cmd.videoFilters('scale=3840:-1:flags=lanczos');
                     break;
                 case 'extract-audio':
                     const audName = `EXTRACT_${Date.now()}.mp3`;
@@ -318,9 +342,8 @@ app.post('/api/:tool', (req, res) => {
                     cmd.noVideo().save(audPath)
                         .on('end', () => res.json({ url: `/outputs/${audName}` }))
                         .on('error', (e) => res.status(500).json({ error: e.message }));
-                    return; // Early return for audio
+                    return; 
                 default:
-                    // Default pass-through conversion
                     cmd.outputOptions(['-c copy']); 
             }
 
@@ -338,10 +361,10 @@ app.post('/api/:tool', (req, res) => {
 app.get('*', (req, res) => {
     const index = path.join(PUBLIC_DIR, 'index.html');
     if (fs.existsSync(index)) res.sendFile(index);
-    else res.send("<h1>Server Online</h1><p>Frontend building...</p>");
+    else res.send("<h1>Server Online</h1><p>Frontend building... Refresh in a moment.</p>");
 });
 
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`\n🟢 SERVER LISTENING: http://localhost:${PORT}`);
-    console.log(`   Output Folder: ${OUTPUT_DIR}\n`);
+    console.log(`   Ready to process all media requests.`);
 });
