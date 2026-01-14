@@ -31,7 +31,6 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 });
 
 // --- FFMPEG SETUP ---
-// Critical: Point fluent-ffmpeg to static binaries to ensure it works in containers/local without system install
 try {
     const ffmpegPath = typeof ffmpegStatic === 'string' ? ffmpegStatic : ffmpegStatic?.path;
     const ffprobePath = typeof ffprobeStatic === 'string' ? ffprobeStatic : ffprobeStatic?.path;
@@ -39,16 +38,15 @@ try {
     if (ffmpegPath && ffprobePath) {
         ffmpeg.setFfmpegPath(ffmpegPath);
         ffmpeg.setFfprobePath(ffprobePath);
-        console.log(`🎥 [FFMPEG] Binários configurados com sucesso.`);
+        console.log(`🎥 [FFMPEG] Binários configurados: ${ffmpegPath}`);
     } else {
-        console.warn("⚠️ [FFMPEG] Binários estáticos não encontrados. Tentando PATH do sistema.");
+        console.warn("⚠️ [FFMPEG] Binários estáticos não encontrados.");
     }
 } catch (error) {
     console.warn("⚠️ [FFMPEG] Erro na configuração:", error.message);
 }
 
-// --- BUILD FRONTEND (IF NEEDED) ---
-// Checks if we need to build the React app for static serving
+// --- BUILD FRONTEND ---
 const entryPoint = path.join(__dirname, 'index.tsx');
 if (fs.existsSync(entryPoint) && !fs.existsSync(path.join(PUBLIC_DIR, 'bundle.js'))) {
     console.log("🔨 [BUILD] Compilando Frontend...");
@@ -63,19 +61,18 @@ if (fs.existsSync(entryPoint) && !fs.existsSync(path.join(PUBLIC_DIR, 'bundle.js
             loader: { '.tsx': 'tsx', '.ts': 'ts', '.css': 'css' },
             define: { 'process.env.API_KEY': JSON.stringify(GEMINI_KEY), 'global': 'window' },
         });
-        // Copy index.html
         if (fs.existsSync('index.html')) fs.copyFileSync('index.html', path.join(PUBLIC_DIR, 'index.html'));
     } catch (e) { console.error("❌ Build falhou:", e.message); }
 }
 
 // --- MIDDLEWARE ---
-app.use(cors({ origin: '*' })); // Allow all for dev
-app.use(express.json({ limit: '500mb' }));
-app.use(express.urlencoded({ extended: true, limit: '500mb' }));
+app.use(cors({ origin: '*' })); 
+app.use(express.json({ limit: '1gb' }));
+app.use(express.urlencoded({ extended: true, limit: '1gb' }));
 
 // Static Files
 app.use(express.static(PUBLIC_DIR));
-app.use('/outputs', express.static(OUTPUT_DIR)); // Serve generated videos
+app.use('/outputs', express.static(OUTPUT_DIR));
 
 // --- UPLOAD CONFIG ---
 const storage = multer.diskStorage({
@@ -88,64 +85,47 @@ const storage = multer.diskStorage({
 
 const upload = multer({ 
     storage, 
-    limits: { fileSize: 500 * 1024 * 1024 } // 500MB limit
+    limits: { fileSize: 1024 * 1024 * 1024 } // 1GB limit
 });
 
 const multiUpload = upload.fields([{ name: 'visuals' }, { name: 'audios' }]);
 
-// --- VIDEO PROCESSING LOGIC ---
+// --- HELPERS ---
 
-/**
- * Gets the duration of an audio file using ffprobe
- */
 const getMediaDuration = (filePath) => {
     return new Promise((resolve) => {
         ffmpeg.ffprobe(filePath, (err, metadata) => {
-            if (err) return resolve(5); // Default 5s if probe fails
+            if (err) return resolve(5);
             resolve(metadata.format.duration || 5);
         });
     });
 };
 
-/**
- * Processes a single scene (Visual + Audio) into a standardized MP4 segment
- */
 const processScene = async (visualPath, audioPath, index, resolutionConfig) => {
     const segPath = path.join(UPLOAD_DIR, `segment_${index}_${Date.now()}.mp4`);
     const { w, h } = resolutionConfig;
     
-    // Determine duration based on audio (or default)
     let duration = 5;
     if (audioPath) {
         duration = await getMediaDuration(audioPath);
     }
-    // Add small buffer to prevent audio cutoff
     duration = parseFloat(duration) + 0.1;
 
-    console.log(`   🎬 [Cena ${index}] Renderizando... (Duração: ${duration.toFixed(2)}s)`);
+    console.log(`   🎬 [Cena ${index}] Renderizando... (In: ${path.basename(visualPath)}, Dur: ${duration.toFixed(2)}s)`);
 
     return new Promise((resolve, reject) => {
         const cmd = ffmpeg();
-        
-        // 1. INPUTS
-        // Check if visual is image or video
         const isImage = visualPath.match(/\.(jpg|jpeg|png|webp)$/i);
         
         cmd.input(visualPath);
-        if (isImage) {
-            cmd.inputOptions(['-loop 1']); 
-        }
+        if (isImage) cmd.inputOptions(['-loop 1']); 
 
         if (audioPath && fs.existsSync(audioPath)) {
             cmd.input(audioPath);
         } else {
-            // Generate silent audio if missing
-            cmd.input('anullsrc=channel_layout=stereo:sample_rate=44100')
-               .inputFormat('lavfi');
+            cmd.input('anullsrc=channel_layout=stereo:sample_rate=44100').inputFormat('lavfi');
         }
 
-        // 2. VIDEO FILTERS (Standardize Resolution & FPS)
-        // scale to target, crop to target, set framerate, format pixel data
         const vFilters = [
             `scale=${w}:${h}:force_original_aspect_ratio=increase`,
             `crop=${w}:${h}`,
@@ -153,10 +133,6 @@ const processScene = async (visualPath, audioPath, index, resolutionConfig) => {
             'format=yuv420p'
         ];
         
-        // Add fade in/out for smoother transitions
-        // vFilters.push('fade=t=in:st=0:d=0.2');
-
-        // 3. AUDIO FILTERS (Standardize Rate)
         const aFilters = ['aresample=44100', 'aformat=sample_fmts=fltp:channel_layouts=stereo'];
 
         cmd.complexFilter([
@@ -164,19 +140,18 @@ const processScene = async (visualPath, audioPath, index, resolutionConfig) => {
             { filter: aFilters.join(','), inputs: '1:a', outputs: 'a_out' }
         ], ['v_out', 'a_out']);
 
-        // 4. OUTPUT OPTIONS
         cmd.outputOptions([
-            '-c:v libx264', '-preset ultrafast', // Fast encoding for preview
+            '-c:v libx264', '-preset ultrafast', '-pix_fmt yuv420p',
             '-c:a aac', '-b:a 192k',
-            '-t', `${duration}`, // Force duration
-            '-shortest', // Stop when shortest input ends (usually audio for looped images)
-            '-y' // Overwrite
+            '-t', `${duration}`,
+            '-shortest',
+            '-y'
         ]);
 
         cmd.save(segPath)
            .on('end', () => resolve(segPath))
            .on('error', (err) => {
-               console.error(`   ❌ [Cena ${index}] Falha:`, err.message);
+               console.error(`   ❌ [Cena ${index}] Falha no FFmpeg:`, err.message);
                reject(err);
            });
     });
@@ -184,52 +159,57 @@ const processScene = async (visualPath, audioPath, index, resolutionConfig) => {
 
 // --- ROUTES ---
 
-app.get('/api/health', (req, res) => res.json({ status: 'online', engine: 'ffmpeg-static' }));
+app.get('/api/health', (req, res) => {
+    console.log("💓 Health check received");
+    res.json({ status: 'online', engine: 'ffmpeg-static' });
+});
 
 app.post('/api/render', (req, res) => {
-    console.log(`\n📥 [RENDER] Nova solicitação recebida`);
+    console.log(`\n📥 [RENDER] Recebendo arquivos...`);
 
     multiUpload(req, res, async (err) => {
         if (err) {
-            console.error("❌ Upload falhou:", err);
+            console.error("❌ Erro no upload (Multer):", err);
             return res.status(500).json({ error: "Upload failed: " + err.message });
         }
 
         const visuals = req.files['visuals'] || [];
         const audios = req.files['audios'] || [];
         const resolution = req.body.resolution || '1080p';
-        const aspectRatio = req.body.aspectRatio || '16:9';
+        
+        console.log(`📦 Dados recebidos: ${visuals.length} visuais, ${audios.length} áudios.`);
 
         if (visuals.length === 0) {
             return res.status(400).json({ error: "Nenhum arquivo visual recebido." });
         }
 
-        // Determine dimensions
         let w = 1920, h = 1080;
         if (resolution === '720p') { w = 1280; h = 720; }
-        if (aspectRatio === '9:16') { [w, h] = [h, w]; } // Swap for portrait
+        // Se for 9:16 (shorts), inverte
+        if (req.body.aspectRatio === '9:16') { [w, h] = [h, w]; }
 
         try {
             const segmentPaths = [];
 
-            // 1. Process each scene into a segment
             for (let i = 0; i < visuals.length; i++) {
                 const visual = visuals[i];
-                // Match audio by index, or reuse last, or silent
                 const audio = audios[i] || null; 
-
-                const segment = await processScene(visual.path, audio ? audio.path : null, i, { w, h });
-                segmentPaths.push(segment);
+                try {
+                    const segment = await processScene(visual.path, audio ? audio.path : null, i, { w, h });
+                    segmentPaths.push(segment);
+                } catch (sceneErr) {
+                    console.error(`Pular cena ${i} devido a erro:`, sceneErr);
+                }
             }
 
-            // 2. Concatenate Segments
+            if (segmentPaths.length === 0) throw new Error("Nenhum segmento foi gerado com sucesso.");
+
             console.log(`🔗 [CONCAT] Unindo ${segmentPaths.length} segmentos...`);
             
             const listPath = path.join(UPLOAD_DIR, `list_${Date.now()}.txt`);
             const finalFilename = `MASTER_${Date.now()}.mp4`;
             const finalPath = path.join(OUTPUT_DIR, finalFilename);
 
-            // Create FFmpeg concat list format
             const listContent = segmentPaths.map(p => `file '${p}'`).join('\n');
             fs.writeFileSync(listPath, listContent);
 
@@ -237,29 +217,28 @@ app.post('/api/render', (req, res) => {
                 ffmpeg()
                     .input(listPath)
                     .inputOptions(['-f concat', '-safe 0'])
-                    .outputOptions(['-c copy', '-y']) // Copy stream (very fast) since segments are standardized
+                    .outputOptions(['-c copy', '-y'])
                     .save(finalPath)
                     .on('end', resolve)
                     .on('error', reject);
             });
 
-            // 3. Cleanup Temps (Async)
+            // Cleanup
             setTimeout(() => {
                 [...segmentPaths, listPath, ...visuals.map(f=>f.path), ...audios.map(f=>f.path)]
-                .forEach(p => fs.unlink(p, () => {}));
-            }, 5000);
+                .forEach(p => { if(fs.existsSync(p)) fs.unlinkSync(p); });
+            }, 10000);
 
             console.log(`✅ [SUCESSO] Vídeo gerado: /outputs/${finalFilename}`);
             res.json({ url: `/outputs/${finalFilename}`, status: 'success' });
 
         } catch (error) {
-            console.error("💥 [ERRO FATAL]", error);
+            console.error("💥 [ERRO FATAL NO SERVIDOR]", error);
             res.status(500).json({ error: "Falha na renderização: " + error.message });
         }
     });
 });
 
-// Fallback for single page app
 app.get('*', (req, res) => {
     const index = path.join(PUBLIC_DIR, 'index.html');
     if (fs.existsSync(index)) res.sendFile(index);
@@ -268,5 +247,4 @@ app.get('*', (req, res) => {
 
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`\n🟢 SERVER ONLINE: http://localhost:${PORT}`);
-    console.log(`   Health Check: http://localhost:${PORT}/api/health`);
 });
