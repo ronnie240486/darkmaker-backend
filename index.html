@@ -236,7 +236,7 @@ function escapeForDrawtext(text) {
 
 const processScene = async (visualPath, audioPath, text, index, w, h, isImg, duration) => {
     const segPath = path.join(UPLOAD_DIR, `seg_${index}_${Date.now()}.mp4`);
-    console.log(`   🎬 [Scene ${index}] Iniciando encode...`);
+    console.log(`   🎬 [Scene ${index + 1}] Iniciando encode... Duração alvo: ${duration}s`);
     
     return new Promise((resolve, reject) => {
         let cmd = ffmpeg();
@@ -245,19 +245,15 @@ const processScene = async (visualPath, audioPath, text, index, w, h, isImg, dur
         cmd.input(visualPath);
         if (isImg) cmd.inputOptions(['-loop 1', `-t ${outputDuration}`]);
 
-        if (audioPath && fs.existsSync(audioPath)) {
+        if (audioPath && fs.existsSync(audioPath) && fs.statSync(audioPath).size > 100) {
             cmd.input(audioPath);
         } else {
+            // Se não tem áudio ou é muito pequeno (dummy file), cria silêncio
             cmd.input('anullsrc=channel_layout=stereo:sample_rate=44100').inputFormat('lavfi').inputOptions([`-t ${outputDuration}`]);
         }
 
         const scaleFilter = `scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},setsar=1`;
         let vFilters = [scaleFilter, 'fps=30', 'format=yuv420p'];
-        
-        // Removed drawtext temporarily to ensure stability in all environments
-        // If fonts are missing, drawtext crashes ffmpeg silently or causing timeouts.
-        // vFilters.push(`drawtext=text='${escapeForDrawtext(text)}':fontcolor=white:fontsize=42:x=(w-text_w)/2:y=h-120:shadowcolor=black:shadowx=2:shadowy=2`);
-        
         vFilters.push('fade=t=in:st=0:d=0.5');
 
         cmd.complexFilter([
@@ -268,9 +264,13 @@ const processScene = async (visualPath, audioPath, text, index, w, h, isImg, dur
         // Force duration with -t to prevent hangs if shortest fails
         cmd.outputOptions(['-c:v libx264', '-preset ultrafast', '-c:a aac', '-shortest', `-t ${outputDuration}`, '-y']);
 
-        cmd.on('end', () => resolve(segPath));
+        cmd.on('end', () => {
+             console.log(`   ✅ [Scene ${index + 1}] Segmento pronto: ${segPath}`);
+             resolve(segPath);
+        });
+        
         cmd.on('error', (err) => {
-            console.error(`   ❌ [Scene ${index}] Erro FFmpeg:`, err.message);
+            console.error(`   ❌ [Scene ${index + 1}] Erro FFmpeg:`, err.message);
             reject(err);
         });
 
@@ -279,7 +279,7 @@ const processScene = async (visualPath, audioPath, text, index, w, h, isImg, dur
 };
 
 app.post(['/api/ia-turbo', '/api/render'], (req, res) => {
-    console.log(`\n📥 [API] START RENDER - Recebendo stream de dados...`);
+    console.log(`\n📥 [API] NOVA RENDERIZAÇÃO INICIADA`);
     
     multiUpload(req, res, async (err) => {
         if (err) {
@@ -291,8 +291,10 @@ app.post(['/api/ia-turbo', '/api/render'], (req, res) => {
         const audioFiles = req.files['audios'] || [];
         const narrations = req.body.narrations ? JSON.parse(req.body.narrations) : [];
         const resolution = req.body.resolution || '1080p';
+        const durationPerImage = parseInt(req.body.durationPerImage) || 5;
 
-        console.log(`📦 [UPLOAD COMPLETE] ${visualFiles.length} visuais, ${audioFiles.length} áudios.`);
+        console.log(`📦 [DADOS] Visuais: ${visualFiles.length} | Áudios: ${audioFiles.length}`);
+        console.log(`⚙️ [CONFIG] Resolução: ${resolution} | Duração/Cena: ${durationPerImage}s`);
 
         try {
             let w = 1920, h = 1080;
@@ -307,7 +309,7 @@ app.post(['/api/ia-turbo', '/api/render'], (req, res) => {
                     narrations[i], 
                     i, w, h, 
                     visualFiles[i].mimetype.startsWith('image/'),
-                    parseInt(req.body.durationPerImage) || 5
+                    durationPerImage
                 ));
             }
 
@@ -323,15 +325,20 @@ app.post(['/api/ia-turbo', '/api/render'], (req, res) => {
                     .inputOptions(['-f concat', '-safe 0'])
                     .outputOptions(['-c copy', '-y'])
                     .save(finalPath)
-                    .on('end', resolve)
-                    .on('error', reject);
+                    .on('end', () => {
+                        console.log(`✨ [DONE] VÍDEO PRONTO: ${finalName}`);
+                        resolve();
+                    })
+                    .on('error', (err) => {
+                        console.error(`💥 [CONCAT ERROR]`, err.message);
+                        reject(err);
+                    });
             });
 
-            console.log(`✨ [DONE] Vídeo pronto: /outputs/${finalName}`);
             res.json({ url: `/outputs/${finalName}`, status: 'success' });
 
         } catch (e) {
-            console.error("💥 [RENDER ERROR]", e);
+            console.error("💥 [RENDER FATAL ERROR]", e);
             res.status(500).json({ error: e.message });
         }
     });
