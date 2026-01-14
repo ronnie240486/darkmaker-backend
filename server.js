@@ -18,33 +18,54 @@ const app = express();
 const PORT = process.env.PORT || 8080;
 const GEMINI_KEY = process.env.GEMINI_API_KEY || process.env.API_KEY || "";
 
-console.log("\x1b[36m%s\x1b[0m", "\n🚀 [BOOT] Iniciando Servidor Multimídia (Baseado em spawn/jobs)...");
+console.log("\x1b[36m%s\x1b[0m", "\n🚀 [BOOT] Iniciando Servidor Multimídia (Production Ready)...");
 
 // --- CONFIGURAÇÃO ---
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
 const OUTPUT_DIR = path.join(__dirname, 'outputs');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
+// Garantir diretórios
 if (fs.existsSync(UPLOAD_DIR)) fs.rmSync(UPLOAD_DIR, { recursive: true, force: true });
 [UPLOAD_DIR, OUTPUT_DIR, PUBLIC_DIR].forEach(dir => {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
 
-// --- BUILD FRONTEND ---
+// --- BUILD FRONTEND (CRÍTICO: RODA SEMPRE NO START) ---
 const entryPoint = path.join(__dirname, 'index.tsx');
-if (fs.existsSync(entryPoint) && !fs.existsSync(path.join(PUBLIC_DIR, 'bundle.js'))) {
-    console.log("🔨 [BUILD] Compilando Frontend...");
-    esbuild.buildSync({
-        entryPoints: [entryPoint],
-        bundle: true,
-        outfile: path.join(PUBLIC_DIR, 'bundle.js'),
-        format: 'esm',
-        target: ['es2020'],
-        external: ['react', 'react-dom', 'react-dom/client', '@google/genai', 'lucide-react', 'fs', 'path', 'fluent-ffmpeg'],
-        loader: { '.tsx': 'tsx', '.ts': 'ts', '.css': 'css' },
-        define: { 'process.env.API_KEY': JSON.stringify(GEMINI_KEY), 'global': 'window' },
-    });
-    if (fs.existsSync('index.html')) fs.copyFileSync('index.html', path.join(PUBLIC_DIR, 'index.html'));
+const htmlSource = path.join(__dirname, 'index.html');
+const htmlDest = path.join(PUBLIC_DIR, 'index.html');
+
+console.log("🔨 [BUILD] Iniciando compilação do Frontend...");
+
+try {
+    // 1. Copiar HTML (Sempre)
+    if (fs.existsSync(htmlSource)) {
+        fs.copyFileSync(htmlSource, htmlDest);
+        console.log("   📄 index.html copiado para public/");
+    } else {
+        console.error("   ❌ ERRO CRÍTICO: index.html não encontrado na raiz!");
+    }
+
+    // 2. Compilar React (Sempre)
+    if (fs.existsSync(entryPoint)) {
+        esbuild.buildSync({
+            entryPoints: [entryPoint],
+            bundle: true,
+            outfile: path.join(PUBLIC_DIR, 'bundle.js'),
+            format: 'esm',
+            target: ['es2020'],
+            external: ['react', 'react-dom', 'react-dom/client', '@google/genai', 'lucide-react', 'fs', 'path', 'fluent-ffmpeg'],
+            loader: { '.tsx': 'tsx', '.ts': 'ts', '.css': 'css' },
+            define: { 'process.env.API_KEY': JSON.stringify(GEMINI_KEY), 'global': 'window' },
+            minify: true, // Minificar para produção
+        });
+        console.log("   ✅ Bundle JS gerado com sucesso.");
+    } else {
+        console.error("   ❌ ERRO CRÍTICO: index.tsx não encontrado!");
+    }
+} catch (e) {
+    console.error("   💥 FALHA NO BUILD:", e.message);
 }
 
 // --- MIDDLEWARE ---
@@ -86,11 +107,9 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
     jobs[jobId].status = 'processing';
     jobs[jobId].progress = 0;
     
-    // Se response object foi passado, responde imediatamente com o ID
     if (res) res.status(202).json({ jobId, status: 'processing' });
 
     console.log(`🎬 [JOB ${jobId}] Iniciando FFmpeg...`);
-    // console.log(`   Cmd: ffmpeg ${args.join(' ')}`);
 
     const ffmpeg = spawn(ffmpegStatic, ['-hide_banner', '-loglevel', 'error', '-stats', ...args]);
     
@@ -99,7 +118,6 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
         const line = d.toString();
         stderr += line;
         
-        // Parse progress time
         const timeMatch = line.match(/time=(\d{2}:\d{2}:\d{2}\.\d{2})/);
         if (timeMatch && expectedDuration > 0) {
             const parts = timeMatch[1].split(':');
@@ -116,27 +134,24 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
             console.log(`✅ [JOB ${jobId}] Concluído.`);
             jobs[jobId].status = 'completed';
             jobs[jobId].progress = 100;
-            // O outputPath é definido antes de chamar essa função
             const filename = path.basename(jobs[jobId].outputPath);
-            jobs[jobId].downloadUrl = `/outputs/${filename}`; // Direct static link
+            jobs[jobId].downloadUrl = `/outputs/${filename}`;
         } else {
             console.error(`❌ [JOB ${jobId}] Falhou (Code ${code}):`);
             console.error(stderr.slice(-500));
             jobs[jobId].status = 'failed';
-            jobs[jobId].error = "Erro no processamento do vídeo (FFmpeg). Verifique os formatos.";
+            jobs[jobId].error = "Erro no processamento do vídeo.";
         }
     });
 }
 
-// --- LOGICA DE EXPORTAÇÃO (Handle Export) ---
-// Normaliza e concatena múltiplos arquivos
+// --- LOGICA DE EXPORTAÇÃO ---
 async function processExportJob(jobId) {
     const job = jobs[jobId];
     if(!job) return;
 
     try {
-        const files = job.files; // Array de arquivos do multer
-        // Separar visuais e audios baseados nos fieldnames ou mimetype
+        const files = job.files;
         const visuals = files.filter(f => f.fieldname === 'visuals' || f.mimetype.startsWith('video') || f.mimetype.startsWith('image'));
         const audios = files.filter(f => f.fieldname === 'audios' || f.mimetype.startsWith('audio'));
         
@@ -149,32 +164,26 @@ async function processExportJob(jobId) {
         const segments = [];
         let totalDuration = 0;
 
-        // Fase 1: Normalização
         for(let i=0; i<visuals.length; i++) {
             const vis = visuals[i];
-            const aud = audios[i]; // Pode ser undefined
+            const aud = audios[i];
             
             const segName = `seg_${jobId}_${i}.mp4`;
             const segPath = path.join(UPLOAD_DIR, segName);
             
-            // Calcula duração
-            let dur = 5; // Default image
+            let dur = 5; 
             if(vis.mimetype.startsWith('video')) dur = await getDuration(vis.path);
-            if(aud) dur = await getDuration(aud.path) + 0.1; // Audio manda na duração se existir
+            if(aud) dur = await getDuration(aud.path) + 0.1;
 
             totalDuration += dur;
 
-            // Constroi comando de normalização para este segmento
             const args = [];
-            
-            // Inputs
             if(vis.mimetype.startsWith('image')) args.push('-loop', '1');
             args.push('-i', vis.path);
             
             if(aud) args.push('-i', aud.path);
             else args.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
 
-            // Filters
             const vFilter = `scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},fps=30,format=yuv420p`;
             const aFilter = `aresample=44100,aformat=channel_layouts=stereo`;
 
@@ -187,18 +196,15 @@ async function processExportJob(jobId) {
                 '-y', segPath
             );
 
-            // Executa sincrono (await spawn)
             await new Promise((resolve, reject) => {
                 const p = spawn(ffmpegStatic, ['-hide_banner', '-loglevel', 'error', ...args]);
                 p.on('close', (code) => code === 0 ? resolve() : reject(new Error(`Falha normalizando cena ${i}`)));
             });
 
             segments.push(segPath);
-            // Atualiza progresso parcial (fase de preparação = 0-20%)
             jobs[jobId].progress = Math.min(20, Math.round((i/visuals.length)*20));
         }
 
-        // Fase 2: Concatenação
         const listPath = path.join(UPLOAD_DIR, `list_${jobId}.txt`);
         const finalName = `FINAL_${jobId}.mp4`;
         const finalPath = path.join(OUTPUT_DIR, finalName);
@@ -206,9 +212,6 @@ async function processExportJob(jobId) {
 
         fs.writeFileSync(listPath, segments.map(s => `file '${s}'`).join('\n'));
 
-        // Inicia o job final de concatenação (Copy mode = rápido)
-        // Como copy é instantaneo, vamos re-encodar levemente para garantir integridade ou apenas copy se confiarmos na normalização
-        // Vamos usar concat demuxer com copy
         createFFmpegJob(jobId, ['-f', 'concat', '-safe', '0', '-i', listPath, '-c', 'copy', '-y', finalPath], 0);
 
     } catch(e) {
@@ -218,17 +221,16 @@ async function processExportJob(jobId) {
     }
 }
 
-// --- ROTAS DE PROCESSO UNICO ---
 async function processSingleClipJob(jobId) {
     const job = jobs[jobId];
     if (!job) return;
 
-    const action = jobId.split('_')[0]; // ex: 'upscale' de 'upscale_123'
+    const action = jobId.split('_')[0];
     const videoFile = job.files[0];
     if (!videoFile) { job.status = 'failed'; job.error = "Nenhum arquivo."; return; }
 
     const originalDuration = await getDuration(videoFile.path);
-    const outputPath = path.join(OUTPUT_DIR, `${action}_${Date.now()}.mp4`); // Salva direto em output
+    const outputPath = path.join(OUTPUT_DIR, `${action}_${Date.now()}.mp4`);
     job.outputPath = outputPath;
 
     let args = [];
@@ -242,7 +244,7 @@ async function processSingleClipJob(jobId) {
             args = ['-i', videoFile.path, '-c:v', 'libx264', '-crf', '28', '-preset', 'faster', '-y', outputPath];
             break;
         case 'cut':
-            args = ['-i', videoFile.path, '-ss', '0', '-t', '10', '-c', 'copy', '-y', outputPath]; // Exemplo fixo, idealmente params
+            args = ['-i', videoFile.path, '-ss', '0', '-t', '10', '-c', 'copy', '-y', outputPath];
             expectedDuration = 10;
             break;
         case 'convert':
@@ -260,31 +262,17 @@ async function processSingleClipJob(jobId) {
     createFFmpegJob(jobId, args, expectedDuration);
 }
 
-
 // --- ENDPOINTS ---
 
 app.get('/api/health', (req, res) => res.json({ status: 'online' }));
 
-// ROTA DE EXPORTAÇÃO (MAIN)
 app.post('/api/export/start', uploadAny, (req, res) => {
-    // console.log("Recebido request exportação:", req.files.length, "arquivos");
     const jobId = `export_${Date.now()}`;
-    jobs[jobId] = { 
-        id: jobId,
-        status: 'pending', 
-        files: req.files, 
-        params: req.body, 
-        outputPath: null, 
-        startTime: Date.now() 
-    };
-    
-    // Responde e inicia
+    jobs[jobId] = { id: jobId, status: 'pending', files: req.files, params: req.body, outputPath: null, startTime: Date.now() };
     res.status(202).json({ jobId, status: 'pending' });
     processExportJob(jobId);
 });
 
-// ROTA DE RENDERIZAÇÃO LEGADA (Compatibilidade com IA Turbo antiga se chamar /render)
-// Redireciona internamente para lógica de export
 app.post('/api/render', uploadAny, (req, res) => {
     const jobId = `render_${Date.now()}`;
     jobs[jobId] = { id: jobId, status: 'pending', files: req.files, params: req.body, startTime: Date.now() };
@@ -292,7 +280,6 @@ app.post('/api/render', uploadAny, (req, res) => {
     processExportJob(jobId);
 });
 
-// ROTAS DE FERRAMENTAS SIMPLES
 app.post('/api/process/start/:action', uploadAny, (req, res) => {
     const action = req.params.action;
     const jobId = `${action}_${Date.now()}`;
@@ -301,13 +288,9 @@ app.post('/api/process/start/:action', uploadAny, (req, res) => {
     processSingleClipJob(jobId);
 });
 
-// POLLING STATUS
 app.get('/api/process/status/:jobId', (req, res) => {
     const job = jobs[req.params.jobId];
     if (!job) return res.status(404).json({ status: 'not_found' });
-    
-    // Se for rota legada /render esperando URL direta no JSON, podemos tentar adaptar, 
-    // mas o ideal é o frontend suportar polling.
     res.json({
         id: req.params.jobId,
         status: job.status,
@@ -317,7 +300,6 @@ app.get('/api/process/status/:jobId', (req, res) => {
     });
 });
 
-// DOWNLOAD
 app.get('/api/process/download/:jobId', (req, res) => {
     const job = jobs[req.params.jobId];
     if (!job || !job.outputPath || !fs.existsSync(job.outputPath)) {
@@ -326,7 +308,6 @@ app.get('/api/process/download/:jobId', (req, res) => {
     res.download(job.outputPath);
 });
 
-// PROXY PIXABAY
 app.get('/api/proxy/pixabay', (req, res) => {
     const { q } = req.query;
     const results = REAL_MUSIC_FALLBACKS.filter(item => 
@@ -335,21 +316,44 @@ app.get('/api/proxy/pixabay', (req, res) => {
     res.json({ hits: results });
 });
 
-// SPA FALLBACK
+// SPA FALLBACK (ROBUSTO)
 app.get('*', (req, res) => {
     const idx = path.join(PUBLIC_DIR, 'index.html');
-    if (fs.existsSync(idx)) res.sendFile(idx);
-    else res.send("<h1>Server Loading...</h1>");
+    if (fs.existsSync(idx)) {
+        res.sendFile(idx);
+    } else {
+        // Tenta copiar novamente se não existir
+        if(fs.existsSync('index.html')) {
+            try {
+                fs.copyFileSync('index.html', idx);
+                return res.sendFile(idx);
+            } catch(e) {
+                console.error("Erro ao recuperar index.html", e);
+            }
+        }
+        
+        // Página de Loading Auto-Refresh
+        res.status(503).send(`
+            <!DOCTYPE html>
+            <html style="background:#050505;color:white;font-family:sans-serif;height:100%;">
+            <head><meta http-equiv="refresh" content="3"></head>
+            <body style="display:flex;align-items:center;justify-content:center;height:100%;flex-direction:column;">
+                <h1 style="color:#3b82f6;">Inicializando Sistema...</h1>
+                <p>O servidor está compilando o aplicativo. A página recarregará automaticamente.</p>
+                <div style="width:200px;height:4px;background:#333;margin-top:20px;border-radius:2px;overflow:hidden;">
+                    <div style="width:50%;height:100%;background:#3b82f6;animation:load 1s infinite;"></div>
+                </div>
+                <style>@keyframes load{0%{transform:translateX(-100%)}100%{transform:translateX(200%)}}</style>
+            </body>
+            </html>
+        `);
+    }
 });
 
-// CLEANUP
 setInterval(() => {
     const now = Date.now();
     Object.keys(jobs).forEach(id => {
-        if (now - jobs[id].startTime > 3600000) { // 1 hora
-            // Opcional: deletar arquivo fisico
-            delete jobs[id];
-        }
+        if (now - jobs[id].startTime > 3600000) delete jobs[id];
     });
 }, 600000);
 
