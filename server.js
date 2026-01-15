@@ -110,18 +110,17 @@ function runFFmpeg(args, jobId) {
 }
 
 // Helper: Filtros de Movimento (Ken Burns)
-// IMPORTANTE: NÃO precisa de arquivos externos. Isso gera filtros matemáticos.
-// Fix: Adicionado fps=30 e format=yuv420p EXPLICITAMENTE dentro do filtro para garantir compatibilidade.
 const FRAMES_BUFFER = 750; // Buffer alto para evitar fim prematuro
 const W = 1280;
 const H = 720;
 
 function getMovementFilter(type) {
-    // Pré-processamento: Garante que a imagem preencha 16:9 antes de aplicar movimento
+    // 1. Scale e Crop para garantir que a imagem preencha a tela
     const preProcess = `scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1`;
     
     let effect = "";
-    // Todos os zoompans retornam s=WxH explicitamente para evitar erros de arredondamento
+    // CRÍTICO: 'setsar=1' evita distorção de pixel
+    // CRÍTICO: 'setpts=PTS-STARTPTS' reseta o relógio do vídeo, EVITANDO A TELA PRETA
     switch(type) {
         case 'zoom-in': 
             effect = `zoompan=z='min(zoom+0.0015,1.5)':d=${FRAMES_BUFFER}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${W}x${H}`;
@@ -148,7 +147,8 @@ function getMovementFilter(type) {
             return `${preProcess},fps=30,format=yuv420p`;
     }
 
-    return `${preProcess},${effect},fps=30,format=yuv420p`;
+    // A cadeia final DEVE ter setpts=PTS-STARTPTS para corrigir o "black screen" causado pelo zoompan
+    return `${preProcess},${effect},setpts=PTS-STARTPTS,fps=30,format=yuv420p`;
 }
 
 // Helper: Transições XFADE
@@ -166,7 +166,6 @@ function buildTransitionFilter(clipCount, transitionType, clipDuration, transiti
         const vIn2 = `[${i + 1}:v]`;
         const vOut = `[v${i + 1}]`;
         
-        // Se transitionType não for válido, fallback para 'fade'
         const safeTrans = transitionType || 'fade';
         videoFilter += `${vIn1}${vIn2}xfade=transition=${safeTrans}:duration=${transitionDuration}:offset=${offset}${vOut};`;
 
@@ -282,9 +281,8 @@ async function handleExport(job, uploadDir, callback) {
             const clipPath = path.join(uploadDir, `temp_clip_${job.id}_${i}.mp4`);
             const args = [];
             
-            // Argumentos de Saída Intermediária (Clipes Individuais)
-            // CRÍTICO: Usamos -video_track_timescale 90000 para garantir que todos os clipes (vídeo ou imagem)
-            // tenham EXATAMENTE a mesma base de tempo. Sem isso, o xfade falha.
+            // Argumentos de Saída Intermediária
+            // video_track_timescale padronizado para evitar erro no xfade
             const commonOutputArgs = [
                 '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '20',
                 '-pix_fmt', 'yuv420p', '-r', '30',
@@ -295,13 +293,13 @@ async function handleExport(job, uploadDir, callback) {
             if (scene.visual && scene.audio) {
                 if (scene.visual.mimetype.includes('image')) {
                     // CENA: IMAGEM + ÁUDIO
-                    // Aplica Ken Burns (getMovementFilter)
+                    // IMPORTANTE: Adicionado -framerate 30 ANTES do input (-i) para definir base de tempo
                     const moveFilter = getMovementFilter(movement);
                     
                     args.push(
-                        '-loop', '1', '-i', scene.visual.path,
+                        '-framerate', '30', '-loop', '1', '-i', scene.visual.path,
                         '-i', scene.audio.path,
-                        '-vf', moveFilter, // Filtro complexo
+                        '-vf', moveFilter, 
                         '-shortest', // Corta no fim do áudio
                         '-fflags', '+genpts',
                         ...commonOutputArgs,
@@ -309,13 +307,12 @@ async function handleExport(job, uploadDir, callback) {
                     );
                 } else {
                     // CENA: VÍDEO + ÁUDIO
-                    // Substitui áudio original, garante 16:9
-                    // Força scale e crop para garantir pixel-perfect match com as imagens
+                    // Garante que o vídeo de entrada também esteja normalizado
                     args.push(
                         '-i', scene.visual.path,
                         '-i', scene.audio.path,
                         '-map', '0:v', '-map', '1:a', '-shortest',
-                        '-vf', 'scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,fps=30,format=yuv420p,setsar=1',
+                        '-vf', 'scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,setsar=1,fps=30,format=yuv420p',
                         ...commonOutputArgs,
                         clipPath
                     );
@@ -325,7 +322,7 @@ async function handleExport(job, uploadDir, callback) {
                 if (scene.visual.mimetype.includes('image')) {
                     const moveFilter = getMovementFilter(movement);
                     args.push(
-                        '-loop', '1', '-i', scene.visual.path,
+                        '-framerate', '30', '-loop', '1', '-i', scene.visual.path,
                         '-t', FORCE_DURATION.toString(),
                         '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
                         '-vf', moveFilter,
@@ -348,7 +345,6 @@ async function handleExport(job, uploadDir, callback) {
         // --- CONCATENAÇÃO FINAL ---
         let finalArgs = [];
 
-        // Se for corte seco (cut) ou apenas 1 clipe, usamos concat demuxer (mais rápido/seguro)
         if (transition === 'cut' || clipPaths.length === 1) {
             const listPath = path.join(uploadDir, `concat_list_${job.id}.txt`);
             const fileContent = clipPaths.map(p => `file '${p}'`).join('\n');
@@ -360,7 +356,6 @@ async function handleExport(job, uploadDir, callback) {
                 '-c', 'copy', outputPath
             ];
         } else {
-            // Se for transição complexa (xfade), montamos o grafo de filtros
             const inputs = [];
             clipPaths.forEach(p => inputs.push('-i', p));
             
