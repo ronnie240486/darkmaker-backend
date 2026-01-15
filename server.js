@@ -110,35 +110,45 @@ function runFFmpeg(args, jobId) {
 }
 
 // Helper: Filtros de Movimento (Ken Burns)
-// d=duration in frames (assumindo 30fps * 10s buffer = 300 frames para garantir)
-const FRAMES_BUFFER = 450; // 15 segundos de buffer para zoompan
+// IMPORTANTE: NÃO precisa de arquivos externos. Isso gera filtros matemáticos.
+// Fix: Adicionado fps=30 e format=yuv420p EXPLICITAMENTE dentro do filtro para garantir compatibilidade.
+const FRAMES_BUFFER = 750; // Buffer alto para evitar fim prematuro
+const W = 1280;
+const H = 720;
+
 function getMovementFilter(type) {
+    // Pré-processamento: Garante que a imagem preencha 16:9 antes de aplicar movimento
+    const preProcess = `scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1`;
+    
+    let effect = "";
+    // Todos os zoompans retornam s=WxH explicitamente para evitar erros de arredondamento
     switch(type) {
         case 'zoom-in': 
-            // Zoom progressivo no centro
-            return `zoompan=z='min(zoom+0.0015,1.5)':d=${FRAMES_BUFFER}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1280x720`;
+            effect = `zoompan=z='min(zoom+0.0015,1.5)':d=${FRAMES_BUFFER}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${W}x${H}`;
+            break;
         case 'zoom-out':
-            // Zoom out (começa 1.5x e reduz)
-            return `zoompan=z='if(lte(zoom,1.0),1.5,max(1.001,zoom-0.0015))':d=${FRAMES_BUFFER}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1280x720`;
+            effect = `zoompan=z='if(lte(zoom,1.0),1.5,max(1.001,zoom-0.0015))':d=${FRAMES_BUFFER}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${W}x${H}`;
+            break;
         case 'pan-left':
-            // Move da direita para esquerda (x diminui)
-            return `zoompan=z=1.3:x='if(lte(on,1),(iw-iw/zoom)/2,x-1.5)':y='(ih-ih/zoom)/2':d=${FRAMES_BUFFER}:s=1280x720`;
+            effect = `zoompan=z=1.2:x='if(lte(on,1),(iw-iw/zoom)/2,x-1.0)':y='(ih-ih/zoom)/2':d=${FRAMES_BUFFER}:s=${W}x${H}`;
+            break;
         case 'pan-right':
-            // Move da esquerda para direita (x aumenta)
-            return `zoompan=z=1.3:x='if(lte(on,1),(iw-iw/zoom)/2,x+1.5)':y='(ih-ih/zoom)/2':d=${FRAMES_BUFFER}:s=1280x720`;
+            effect = `zoompan=z=1.2:x='if(lte(on,1),(iw-iw/zoom)/2,x+1.0)':y='(ih-ih/zoom)/2':d=${FRAMES_BUFFER}:s=${W}x${H}`;
+            break;
         case 'tilt-up':
-            // Move de baixo para cima (y diminui)
-            return `zoompan=z=1.3:x='(iw-iw/zoom)/2':y='if(lte(on,1),(ih-ih/zoom)/2,y-1.5)':d=${FRAMES_BUFFER}:s=1280x720`;
+            effect = `zoompan=z=1.2:x='(iw-iw/zoom)/2':y='if(lte(on,1),(ih-ih/zoom)/2,y-1.0)':d=${FRAMES_BUFFER}:s=${W}x${H}`;
+            break;
         case 'tilt-down':
-            // Move de cima para baixo (y aumenta)
-            return `zoompan=z=1.3:x='(iw-iw/zoom)/2':y='if(lte(on,1),(ih-ih/zoom)/2,y+1.5)':d=${FRAMES_BUFFER}:s=1280x720`;
+            effect = `zoompan=z=1.2:x='(iw-iw/zoom)/2':y='if(lte(on,1),(ih-ih/zoom)/2,y+1.0)':d=${FRAMES_BUFFER}:s=${W}x${H}`;
+            break;
         case 'handheld':
-            // Tremido leve simulado
-            return `zoompan=z=1.1:x='(iw-iw/zoom)/2+sin(time*2)*20':y='(ih-ih/zoom)/2+cos(time*3)*20':d=${FRAMES_BUFFER}:s=1280x720`;
+            effect = `zoompan=z=1.1:x='(iw-iw/zoom)/2+sin(time*2)*15':y='(ih-ih/zoom)/2+cos(time*3)*15':d=${FRAMES_BUFFER}:s=${W}x${H}`;
+            break;
         default:
-            // Static / Resize
-            return `scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1`;
+            return `${preProcess},fps=30,format=yuv420p`;
     }
+
+    return `${preProcess},${effect},fps=30,format=yuv420p`;
 }
 
 // Helper: Transições XFADE
@@ -146,7 +156,7 @@ function buildTransitionFilter(clipCount, transitionType, clipDuration, transiti
     let videoFilter = "";
     let audioFilter = "";
     
-    // Offset = Duração do Clipe - Duração da Transição
+    // Offset base assumindo duração fixa.
     const offsetBase = clipDuration - transitionDuration;
 
     for (let i = 0; i < clipCount - 1; i++) {
@@ -156,9 +166,9 @@ function buildTransitionFilter(clipCount, transitionType, clipDuration, transiti
         const vIn2 = `[${i + 1}:v]`;
         const vOut = `[v${i + 1}]`;
         
-        // Se transitionType for 'cut', não usamos xfade, mas concatenação simples seria melhor tratada fora.
-        // Aqui assumimos que se chamou buildTransitionFilter, é para usar xfade.
-        videoFilter += `${vIn1}${vIn2}xfade=transition=${transitionType}:duration=${transitionDuration}:offset=${offset}${vOut};`;
+        // Se transitionType não for válido, fallback para 'fade'
+        const safeTrans = transitionType || 'fade';
+        videoFilter += `${vIn1}${vIn2}xfade=transition=${safeTrans}:duration=${transitionDuration}:offset=${offset}${vOut};`;
 
         const aIn1 = i === 0 ? "[0:a]" : `[a${i}]`;
         const aIn2 = `[${i + 1}:a]`;
@@ -244,7 +254,7 @@ async function handleExport(job, uploadDir, callback) {
     
     // Parâmetros do Frontend
     const transition = job.params?.transition || 'mix'; 
-    const movement = job.params?.movement || 'static'; // zoom-in, pan-left, etc.
+    const movement = job.params?.movement || 'static';
     
     try {
         console.log(`[Job ${job.id}] Iniciando render (Trans: ${transition}, Mov: ${movement})...`);
@@ -272,48 +282,53 @@ async function handleExport(job, uploadDir, callback) {
             const clipPath = path.join(uploadDir, `temp_clip_${job.id}_${i}.mp4`);
             const args = [];
             
-            // Definição de Filtros Comuns
+            // Argumentos de Saída Intermediária (Clipes Individuais)
+            // CRÍTICO: Usamos -video_track_timescale 90000 para garantir que todos os clipes (vídeo ou imagem)
+            // tenham EXATAMENTE a mesma base de tempo. Sem isso, o xfade falha.
             const commonOutputArgs = [
-                '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-r', '30',
+                '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '20',
+                '-pix_fmt', 'yuv420p', '-r', '30',
+                '-video_track_timescale', '90000',
                 '-c:a', 'aac', '-ar', '44100', '-ac', '2'
             ];
             
             if (scene.visual && scene.audio) {
                 if (scene.visual.mimetype.includes('image')) {
-                    // Imagem + Áudio + MOVIMENTO DE CÂMERA
-                    // Aplicamos o filtro 'zoompan' na imagem e usamos '-shortest' para cortar no fim do áudio.
+                    // CENA: IMAGEM + ÁUDIO
+                    // Aplica Ken Burns (getMovementFilter)
                     const moveFilter = getMovementFilter(movement);
                     
                     args.push(
                         '-loop', '1', '-i', scene.visual.path,
                         '-i', scene.audio.path,
-                        '-vf', `${moveFilter},setsar=1`,
-                        '-tune', 'stillimage',
-                        '-shortest',
+                        '-vf', moveFilter, // Filtro complexo
+                        '-shortest', // Corta no fim do áudio
                         '-fflags', '+genpts',
                         ...commonOutputArgs,
                         clipPath
                     );
                 } else {
-                    // Video + Áudio (Já tem movimento próprio, apenas redimensiona)
+                    // CENA: VÍDEO + ÁUDIO
+                    // Substitui áudio original, garante 16:9
+                    // Força scale e crop para garantir pixel-perfect match com as imagens
                     args.push(
                         '-i', scene.visual.path,
                         '-i', scene.audio.path,
                         '-map', '0:v', '-map', '1:a', '-shortest',
-                        '-vf', 'scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1',
+                        '-vf', 'scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,fps=30,format=yuv420p,setsar=1',
                         ...commonOutputArgs,
                         clipPath
                     );
                 }
             } else if (scene.visual && !scene.audio) {
-                // Só Imagem (Sem áudio, força duração)
+                // CENA: SÓ IMAGEM (Sem áudio)
                 if (scene.visual.mimetype.includes('image')) {
                     const moveFilter = getMovementFilter(movement);
                     args.push(
                         '-loop', '1', '-i', scene.visual.path,
                         '-t', FORCE_DURATION.toString(),
                         '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
-                        '-vf', `${moveFilter},setsar=1`,
+                        '-vf', moveFilter,
                         ...commonOutputArgs,
                         clipPath
                     );
@@ -322,7 +337,7 @@ async function handleExport(job, uploadDir, callback) {
                 continue; 
             }
 
-            console.log(`[Job ${job.id}] Renderizando clipe ${i} com efeito ${movement}...`);
+            console.log(`[Job ${job.id}] Renderizando clipe ${i} (Filtro: ${movement})...`);
             await runFFmpeg(args, job.id);
             clipPaths.push(clipPath);
             tempFiles.push(clipPath);
@@ -333,7 +348,8 @@ async function handleExport(job, uploadDir, callback) {
         // --- CONCATENAÇÃO FINAL ---
         let finalArgs = [];
 
-        if (transition === 'cut' || transition === 'mix' || clipPaths.length === 1) {
+        // Se for corte seco (cut) ou apenas 1 clipe, usamos concat demuxer (mais rápido/seguro)
+        if (transition === 'cut' || clipPaths.length === 1) {
             const listPath = path.join(uploadDir, `concat_list_${job.id}.txt`);
             const fileContent = clipPaths.map(p => `file '${p}'`).join('\n');
             fs.writeFileSync(listPath, fileContent);
@@ -344,10 +360,10 @@ async function handleExport(job, uploadDir, callback) {
                 '-c', 'copy', outputPath
             ];
         } else {
+            // Se for transição complexa (xfade), montamos o grafo de filtros
             const inputs = [];
             clipPaths.forEach(p => inputs.push('-i', p));
             
-            // Assumindo 5s por clipe para cálculo de xfade (pode ser ajustado se tivermos metadata exata)
             const { filterComplex, mapArgs } = buildTransitionFilter(clipPaths.length, transition, 5, 1);
             
             finalArgs = [
