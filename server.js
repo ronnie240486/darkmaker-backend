@@ -59,6 +59,11 @@ await buildFrontend();
 
 // --- MIDDLEWARES ---
 app.use(cors());
+// Middleware de Log Global (Para debug "não tem nenhum log")
+app.use((req, res, next) => {
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+    next();
+});
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 app.use(express.static(PUBLIC_DIR));
@@ -363,6 +368,8 @@ app.post('/api/process/start/:action', uploadAny, (req, res) => {
     const action = req.params.action;
     const jobId = `${action}_${Date.now()}`;
     
+    console.log(`\n🔵 [API] Novo Job Genérico: ${action} (ID: ${jobId})`);
+    
     jobs[jobId] = { 
         id: jobId,
         status: 'pending', 
@@ -382,6 +389,10 @@ app.post('/api/process/start/:action', uploadAny, (req, res) => {
 // Rota Específica para Exportação Complexa (Magic Workflow)
 app.post('/api/export/start', uploadAny, (req, res) => {
     const jobId = `export_${Date.now()}`;
+    
+    console.log(`\n🟣 [API] Novo Job Exportação Complexa (ID: ${jobId})`);
+    console.log(`    Arquivos recebidos: ${req.files ? req.files.length : 0}`);
+
     jobs[jobId] = { 
         id: jobId, 
         status: 'processing',
