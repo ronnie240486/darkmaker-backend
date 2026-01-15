@@ -109,27 +109,57 @@ function runFFmpeg(args, jobId) {
     });
 }
 
-// Helper para construir filtro de transição complexo (XFADE)
+// Helper: Filtros de Movimento (Ken Burns)
+// d=duration in frames (assumindo 30fps * 10s buffer = 300 frames para garantir)
+const FRAMES_BUFFER = 450; // 15 segundos de buffer para zoompan
+function getMovementFilter(type) {
+    switch(type) {
+        case 'zoom-in': 
+            // Zoom progressivo no centro
+            return `zoompan=z='min(zoom+0.0015,1.5)':d=${FRAMES_BUFFER}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1280x720`;
+        case 'zoom-out':
+            // Zoom out (começa 1.5x e reduz)
+            return `zoompan=z='if(lte(zoom,1.0),1.5,max(1.001,zoom-0.0015))':d=${FRAMES_BUFFER}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1280x720`;
+        case 'pan-left':
+            // Move da direita para esquerda (x diminui)
+            return `zoompan=z=1.3:x='if(lte(on,1),(iw-iw/zoom)/2,x-1.5)':y='(ih-ih/zoom)/2':d=${FRAMES_BUFFER}:s=1280x720`;
+        case 'pan-right':
+            // Move da esquerda para direita (x aumenta)
+            return `zoompan=z=1.3:x='if(lte(on,1),(iw-iw/zoom)/2,x+1.5)':y='(ih-ih/zoom)/2':d=${FRAMES_BUFFER}:s=1280x720`;
+        case 'tilt-up':
+            // Move de baixo para cima (y diminui)
+            return `zoompan=z=1.3:x='(iw-iw/zoom)/2':y='if(lte(on,1),(ih-ih/zoom)/2,y-1.5)':d=${FRAMES_BUFFER}:s=1280x720`;
+        case 'tilt-down':
+            // Move de cima para baixo (y aumenta)
+            return `zoompan=z=1.3:x='(iw-iw/zoom)/2':y='if(lte(on,1),(ih-ih/zoom)/2,y+1.5)':d=${FRAMES_BUFFER}:s=1280x720`;
+        case 'handheld':
+            // Tremido leve simulado
+            return `zoompan=z=1.1:x='(iw-iw/zoom)/2+sin(time*2)*20':y='(ih-ih/zoom)/2+cos(time*3)*20':d=${FRAMES_BUFFER}:s=1280x720`;
+        default:
+            // Static / Resize
+            return `scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1`;
+    }
+}
+
+// Helper: Transições XFADE
 function buildTransitionFilter(clipCount, transitionType, clipDuration, transitionDuration = 1) {
     let videoFilter = "";
     let audioFilter = "";
     
-    // Offset calculation: (ClipDuration - TransitionDuration)
-    // Clip 1 start: 0
-    // Clip 2 start: Clip1Duration - TransDuration
+    // Offset = Duração do Clipe - Duração da Transição
     const offsetBase = clipDuration - transitionDuration;
 
     for (let i = 0; i < clipCount - 1; i++) {
         const offset = offsetBase * (i + 1);
         
-        // Video Inputs
         const vIn1 = i === 0 ? "[0:v]" : `[v${i}]`;
         const vIn2 = `[${i + 1}:v]`;
         const vOut = `[v${i + 1}]`;
         
+        // Se transitionType for 'cut', não usamos xfade, mas concatenação simples seria melhor tratada fora.
+        // Aqui assumimos que se chamou buildTransitionFilter, é para usar xfade.
         videoFilter += `${vIn1}${vIn2}xfade=transition=${transitionType}:duration=${transitionDuration}:offset=${offset}${vOut};`;
 
-        // Audio Inputs
         const aIn1 = i === 0 ? "[0:a]" : `[a${i}]`;
         const aIn2 = `[${i + 1}:a]`;
         const aOut = `[a${i + 1}]`;
@@ -137,7 +167,6 @@ function buildTransitionFilter(clipCount, transitionType, clipDuration, transiti
         audioFilter += `${aIn1}${aIn2}acrossfade=d=${transitionDuration}:c1=tri:c2=tri${aOut};`;
     }
 
-    // Map final labels
     const mapV = `-map "[v${clipCount - 1}]"`;
     const mapA = `-map "[a${clipCount - 1}]"`;
 
@@ -212,10 +241,13 @@ async function processGenericJob(jobId, action, files, params) {
 async function handleExport(job, uploadDir, callback) {
     const outputName = `render_${job.id}.mp4`;
     const outputPath = path.join(OUTPUT_DIR, outputName);
-    const transition = job.params?.transition || 'mix'; // cut, fade, wipeleft, etc.
+    
+    // Parâmetros do Frontend
+    const transition = job.params?.transition || 'mix'; 
+    const movement = job.params?.movement || 'static'; // zoom-in, pan-left, etc.
     
     try {
-        console.log(`[Job ${job.id}] Iniciando renderização (Transição: ${transition})...`);
+        console.log(`[Job ${job.id}] Iniciando render (Trans: ${transition}, Mov: ${movement})...`);
 
         const sceneMap = {};
         job.files.forEach(f => {
@@ -233,7 +265,6 @@ async function handleExport(job, uploadDir, callback) {
 
         const clipPaths = [];
         const tempFiles = [];
-        // Forçar duração fixa para transições calculadas corretamente
         const FORCE_DURATION = 5; 
 
         for (let i = 0; i < sortedScenes.length; i++) {
@@ -241,49 +272,57 @@ async function handleExport(job, uploadDir, callback) {
             const clipPath = path.join(uploadDir, `temp_clip_${job.id}_${i}.mp4`);
             const args = [];
             
-            // Padronização Rigorosa para concatenação/xfade funcionar (Timebase, SAR, Resolução, FPS)
+            // Definição de Filtros Comuns
             const commonOutputArgs = [
                 '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-r', '30',
-                '-c:a', 'aac', '-ar', '44100', '-ac', '2',
-                '-vf', `scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1`,
-                clipPath
+                '-c:a', 'aac', '-ar', '44100', '-ac', '2'
             ];
             
-            // Lógica de Mídia
             if (scene.visual && scene.audio) {
                 if (scene.visual.mimetype.includes('image')) {
-                    // Imagem + Áudio (Força duração para alinhar com audio ou default)
+                    // Imagem + Áudio + MOVIMENTO DE CÂMERA
+                    // Aplicamos o filtro 'zoompan' na imagem e usamos '-shortest' para cortar no fim do áudio.
+                    const moveFilter = getMovementFilter(movement);
+                    
                     args.push(
                         '-loop', '1', '-i', scene.visual.path,
                         '-i', scene.audio.path,
-                        '-tune', 'stillimage', '-shortest', // Usa duração do áudio
-                        '-fflags', '+genpts', // Regenera PTS para evitar falhas no Xfade
-                        ...commonOutputArgs
+                        '-vf', `${moveFilter},setsar=1`,
+                        '-tune', 'stillimage',
+                        '-shortest',
+                        '-fflags', '+genpts',
+                        ...commonOutputArgs,
+                        clipPath
                     );
                 } else {
-                    // Video + Áudio (Substitui áudio original)
+                    // Video + Áudio (Já tem movimento próprio, apenas redimensiona)
                     args.push(
                         '-i', scene.visual.path,
                         '-i', scene.audio.path,
                         '-map', '0:v', '-map', '1:a', '-shortest',
-                        ...commonOutputArgs
+                        '-vf', 'scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1',
+                        ...commonOutputArgs,
+                        clipPath
                     );
                 }
             } else if (scene.visual && !scene.audio) {
-                // Só Imagem
+                // Só Imagem (Sem áudio, força duração)
                 if (scene.visual.mimetype.includes('image')) {
+                    const moveFilter = getMovementFilter(movement);
                     args.push(
                         '-loop', '1', '-i', scene.visual.path,
                         '-t', FORCE_DURATION.toString(),
                         '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
-                        ...commonOutputArgs
+                        '-vf', `${moveFilter},setsar=1`,
+                        ...commonOutputArgs,
+                        clipPath
                     );
                 }
             } else {
                 continue; 
             }
 
-            console.log(`[Job ${job.id}] Preparando clipe ${i}...`);
+            console.log(`[Job ${job.id}] Renderizando clipe ${i} com efeito ${movement}...`);
             await runFFmpeg(args, job.id);
             clipPaths.push(clipPath);
             tempFiles.push(clipPath);
@@ -291,11 +330,10 @@ async function handleExport(job, uploadDir, callback) {
 
         if (clipPaths.length === 0) throw new Error("Falha na geração de clipes.");
 
-        // --- CONCATENAÇÃO ---
+        // --- CONCATENAÇÃO FINAL ---
         let finalArgs = [];
 
         if (transition === 'cut' || transition === 'mix' || clipPaths.length === 1) {
-            // Método Simples (Concat Demuxer) - Rápido, mas cortes secos
             const listPath = path.join(uploadDir, `concat_list_${job.id}.txt`);
             const fileContent = clipPaths.map(p => `file '${p}'`).join('\n');
             fs.writeFileSync(listPath, fileContent);
@@ -306,34 +344,28 @@ async function handleExport(job, uploadDir, callback) {
                 '-c', 'copy', outputPath
             ];
         } else {
-            // Método Avançado (XFade Filter Complex)
-            // Necessário carregar todos os inputs
             const inputs = [];
             clipPaths.forEach(p => inputs.push('-i', p));
             
-            // Vamos assumir uma duração média aproximada se não conseguirmos ler o arquivo (fallback 5s)
-            // Idealmente usaríamos ffprobe, mas para manter "simples", usamos a duração padrão esperada.
-            // O offset deve ser calculado.
-            
+            // Assumindo 5s por clipe para cálculo de xfade (pode ser ajustado se tivermos metadata exata)
             const { filterComplex, mapArgs } = buildTransitionFilter(clipPaths.length, transition, 5, 1);
             
             finalArgs = [
                 ...inputs,
                 '-filter_complex', filterComplex,
-                ...mapArgs.map(m => m.split(' ')).flat().map(s => s.replace(/"/g, '')), // Remove quotes for spawn
+                ...mapArgs.map(m => m.split(' ')).flat().map(s => s.replace(/"/g, '')),
                 '-c:v', 'libx264', '-preset', 'medium', '-crf', '23',
                 '-c:a', 'aac', '-b:a', '192k',
                 outputPath
             ];
         }
 
-        console.log(`[Job ${job.id}] Iniciando Render Final...`);
+        console.log(`[Job ${job.id}] Unindo clipes finais...`);
         callback(job.id, finalArgs, clipPaths.length * 5);
 
-        // Cleanup
         setTimeout(() => {
             tempFiles.forEach(f => { if(fs.existsSync(f)) fs.unlinkSync(f); });
-        }, 300000); // 5 min cleanup delay
+        }, 300000); 
 
     } catch (e) {
         console.error(`[Job ${job.id}] Erro Fatal:`, e);
@@ -403,6 +435,7 @@ app.post('/api/process/start/:action', uploadAny, (req, res) => {
 app.post('/api/export/start', uploadAny, (req, res) => {
     const jobId = `export_${Date.now()}`;
     console.log(`\n🟣 [API] Novo Job Workflow/Turbo (ID: ${jobId})`);
+    console.log(`    Params: Transition=${req.body.transition}, Movement=${req.body.movement}`);
     
     jobs[jobId] = { 
         id: jobId, status: 'processing', progress: 5, files: req.files, 
