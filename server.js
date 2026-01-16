@@ -86,6 +86,14 @@ function timeToSeconds(timeStr) {
     return (parseFloat(parts[0]) * 3600) + (parseFloat(parts[1]) * 60) + parseFloat(parts[2]);
 }
 
+function formatSrtTime(seconds) {
+    const date = new Date(0);
+    date.setMilliseconds(seconds * 1000);
+    const isoString = date.toISOString();
+    // 1970-01-01T00:00:00.000Z -> 00:00:00,000
+    return isoString.substr(11, 8) + ',' + isoString.substr(20, 3);
+}
+
 function runFFmpeg(args, jobId) {
     return new Promise((resolve, reject) => {
         console.log(`[Job ${jobId}] FFmpeg Cmd: ${args.join(' ')}`);
@@ -107,7 +115,6 @@ function runFFmpeg(args, jobId) {
 
 // --- CORE JOB PROCESSING ---
 
-// 1. Processamento Genérico
 async function processGenericJob(jobId, action, files, params) {
     if (!files || files.length === 0) {
         jobs[jobId].status = 'failed';
@@ -177,9 +184,18 @@ async function handleExport(job, uploadDir, callback) {
     // Parâmetros vindos do Frontend
     const transition = job.params?.transition || 'cut'; 
     const movement = job.params?.movement || 'static';
+    const renderSubtitles = job.params?.renderSubtitles === 'true';
     
+    // Recupera os textos das cenas (enviados como JSON string)
+    let scenesData = [];
     try {
-        console.log(`[Job ${job.id}] Renderizando com Presets: T=${transition}, M=${movement}`);
+        if (job.params?.scenesData) {
+            scenesData = JSON.parse(job.params.scenesData);
+        }
+    } catch(e) { console.warn("Falha ao ler dados das cenas para legendas", e); }
+
+    try {
+        console.log(`[Job ${job.id}] Renderizando com Presets: T=${transition}, M=${movement}, Subs=${renderSubtitles}`);
 
         const sceneMap = {};
         job.files.forEach(f => {
@@ -209,60 +225,47 @@ async function handleExport(job, uploadDir, callback) {
             const commonOutputArgs = [
                 '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '20',
                 '-pix_fmt', 'yuv420p', '-r', '30',
-                '-video_track_timescale', '90000', // Sincronia fina para o xfade
+                '-video_track_timescale', '90000', 
                 '-c:a', 'aac', '-ar', '44100', '-ac', '2'
             ];
             
             if (scene.visual) {
-                // Caso Imagem: Aplica Filtro de Movimento do Preset
                 if (scene.visual.mimetype.includes('image')) {
                     const moveFilter = getMovementFilter(movement);
-                    
-                    // IMPORTANTE: -framerate 30 na entrada para estabilidade temporal
-                    args.push(
-                        '-framerate', '30', '-loop', '1', '-i', scene.visual.path
-                    );
+                    args.push('-framerate', '30', '-loop', '1', '-i', scene.visual.path);
 
                     if (scene.audio) {
                         args.push(
                             '-i', scene.audio.path,
                             '-vf', moveFilter, 
-                            '-af', 'apad', // CRÍTICO: Preenche áudio com silêncio se for curto
-                            '-t', FORCE_DURATION.toString(), // CRÍTICO: Força duração exata de 5s
+                            '-af', 'apad', 
+                            '-t', FORCE_DURATION.toString(), 
                             '-fflags', '+genpts'
                         );
                     } else {
-                        // Sem áudio: gera silêncio de 5s
                         args.push(
                             '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
                             '-vf', moveFilter,
                             '-t', FORCE_DURATION.toString()
                         );
                     }
-                    
                     args.push(...commonOutputArgs, clipPath);
 
                 } else {
-                    // Caso Vídeo: Normaliza para 16:9 720p
-                    // CORREÇÃO CRÍTICA: -stream_loop -1 garante que vídeos curtos (ex: 2s) sejam repetidos
-                    // para preencher o slot de 5s exigido pela transição.
                     args.push('-stream_loop', '-1', '-i', scene.visual.path);
-                    
                     if (scene.audio) args.push('-i', scene.audio.path);
                     else args.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
 
                     args.push(
                         '-map', '0:v', '-map', '1:a',
                         '-vf', 'scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,setsar=1,fps=30,format=yuv420p',
-                        '-af', 'apad', // Garante que o áudio acompanhe o loop/duração do vídeo
-                        '-t', FORCE_DURATION.toString(), // Força 5s (cortando o loop no ponto exato)
+                        '-af', 'apad', 
+                        '-t', FORCE_DURATION.toString(), 
                         ...commonOutputArgs,
                         clipPath
                     );
                 }
-            } else {
-                continue; 
-            }
+            } else { continue; }
 
             console.log(`[Job ${job.id}] Clip ${i} OK.`);
             await runFFmpeg(args, job.id);
@@ -272,38 +275,122 @@ async function handleExport(job, uploadDir, callback) {
 
         if (clipPaths.length === 0) throw new Error("Falha na geração de clipes.");
 
+        // --- GERAÇÃO DE LEGENDAS SRT ---
+        let subtitleFilter = "";
+        let srtPath = "";
+        
+        if (renderSubtitles && scenesData.length > 0) {
+            let srtContent = "";
+            let currentTime = 0;
+            
+            // Assumimos que cada clip renderizado tem a duração exata de FORCE_DURATION
+            // Ajustamos para o XFade: se houver transição, a duração visual do clip diminui no timeline
+            // mas o áudio e a legenda devem seguir a lógica sequencial.
+            // Para simplicidade com cortes de 5s, vamos mapear linearmente.
+            const transitionDuration = transition === 'cut' ? 0 : 1;
+            const clipVisibleDuration = FORCE_DURATION - transitionDuration;
+
+            sortedScenes.forEach((_, idx) => {
+                const text = scenesData[idx]?.narration || "";
+                if (text) {
+                    const start = idx * clipVisibleDuration; // Aproximação para XFade
+                    const end = start + clipVisibleDuration;
+                    
+                    srtContent += `${idx + 1}\n`;
+                    srtContent += `${formatSrtTime(start)} --> ${formatSrtTime(end)}\n`;
+                    srtContent += `${text}\n\n`;
+                }
+            });
+
+            if (srtContent) {
+                srtPath = path.join(uploadDir, `subs_${job.id}.srt`);
+                fs.writeFileSync(srtPath, srtContent);
+                tempFiles.push(srtPath);
+                
+                // Estilo "Viral Shorts": Fonte Arial Bold, Amarelo/Branco, Outline Preto Grosso
+                // É necessário escapar o caminho para o filtro do FFmpeg
+                const escapedSrtPath = srtPath.replace(/\\/g, '/').replace(/:/g, '\\:');
+                subtitleFilter = `,subtitles='${escapedSrtPath}':force_style='FontName=Arial,FontSize=20,PrimaryColour=&H00FFFF,BackColour=&H80000000,BorderStyle=3,Outline=2,Shadow=0,Alignment=2,MarginV=30'`;
+            }
+        }
+
         // --- CONCATENAÇÃO FINAL ---
         let finalArgs = [];
 
-        // Se for "cut" (corte seco), usa concat simples (muito mais rápido)
         if (transition === 'cut' || clipPaths.length === 1) {
             const listPath = path.join(uploadDir, `concat_list_${job.id}.txt`);
             const fileContent = clipPaths.map(p => `file '${p}'`).join('\n');
             fs.writeFileSync(listPath, fileContent);
             tempFiles.push(listPath);
 
-            finalArgs = [
-                '-f', 'concat', '-safe', '0', '-i', listPath,
-                '-c', 'copy', 
-                '-movflags', '+faststart', // OTIMIZAÇÃO PARA WEB
-                outputPath
-            ];
+            // Se tiver legendas, não pode usar concat demuxer com -c copy facilmente para vídeo.
+            // Precisamos re-encodar para queimar a legenda.
+            if (renderSubtitles && srtPath) {
+                finalArgs = [
+                    '-f', 'concat', '-safe', '0', '-i', listPath,
+                    '-vf', `subtitles=${path.basename(srtPath)}:force_style='FontName=Arial,FontSize=20,PrimaryColour=&H00FFFF,BorderStyle=3,Outline=2,MarginV=30'`,
+                    '-c:v', 'libx264', '-preset', 'medium',
+                    '-c:a', 'copy',
+                    '-movflags', '+faststart',
+                    outputPath
+                ];
+                // Hack: Para usar o filtro de legenda com arquivo relativo/absolute, vamos rodar dentro do diretório ou passar full path escapado
+                // Simplificação: vamos reusar o argumento complexo de baixo se tiver legenda, ou forçar re-encode
+            } else {
+                finalArgs = [
+                    '-f', 'concat', '-safe', '0', '-i', listPath,
+                    '-c', 'copy', 
+                    '-movflags', '+faststart',
+                    outputPath
+                ];
+            }
         } else {
-            // Se tiver transição, usa o Preset de Transições Complexas
             const inputs = [];
             clipPaths.forEach(p => inputs.push('-i', p));
             
-            // Assumimos duração fixa de 5s para o cálculo de offsets
             const { filterComplex, mapArgs } = buildTransitionFilter(clipPaths.length, transition, FORCE_DURATION, 1);
             
+            // Adiciona o filtro de legendas ao final da cadeia de vídeo
+            let finalFilter = filterComplex;
+            if (renderSubtitles && subtitleFilter) {
+                // A saída do buildTransitionFilter é [vLast] (ou similar implicito no mapArgs)
+                // Precisamos interceptar. O buildTransitionFilter retorna um mapV ex: [v3]
+                // Vamos hackear a string de filtro para inserir as legendas no final do último stream de vídeo
+                
+                // O último stream de vídeo gerado no loop é `[v${clipCount - 1}]`
+                const lastVideoStream = `[v${clipPaths.length - 1}]`;
+                
+                // Remove o ponto e vírgula final se existir
+                if (finalFilter.endsWith(';')) finalFilter = finalFilter.slice(0, -1);
+                
+                // Anexa o filtro de legenda a esse stream
+                // Nota: O filtro subtitles pega o stream de entrada implicitamente se não nomeado, mas no filter_complex precisamos encadear
+                // Como filterComplex já define output pads, precisamos ser cuidadosos.
+                // A função buildTransitionFilter termina declarando outputs.
+                
+                // Abordagem mais segura: Aplicar legenda num passo separado ou encadear no output pad
+                // Vamos modificar a string de retorno do filter complex
+                // Substituir o último output label [vN] por [vN_raw], e então adicionar [vN_raw]subtitles...[vN]
+                
+                const lastLabel = `v${clipPaths.length - 1}`;
+                const rawLabel = `${lastLabel}_raw`;
+                
+                // Substitui a última ocorrência do label de saída
+                const lastIndex = finalFilter.lastIndexOf(`[${lastLabel}]`);
+                if (lastIndex !== -1) {
+                    finalFilter = finalFilter.substring(0, lastIndex) + `[${rawLabel}]` + finalFilter.substring(lastIndex + lastLabel.length + 2);
+                    finalFilter += `;[${rawLabel}]subtitles='${srtPath.replace(/\\/g, '/').replace(/:/g, '\\:')}':force_style='FontName=Arial,FontSize=20,PrimaryColour=&H00FFFF,BorderStyle=3,Outline=2,MarginV=30'[${lastLabel}]`;
+                }
+            }
+
             finalArgs = [
                 ...inputs,
-                '-filter_complex', filterComplex,
+                '-filter_complex', finalFilter,
                 ...mapArgs,
                 '-c:v', 'libx264', '-preset', 'medium', '-crf', '23',
                 '-c:a', 'aac', '-b:a', '192k',
-                '-pix_fmt', 'yuv420p', // FORÇA COMPATIBILIDADE
-                '-movflags', '+faststart', // OTIMIZAÇÃO PARA WEB
+                '-pix_fmt', 'yuv420p', 
+                '-movflags', '+faststart', 
                 outputPath
             ];
         }
