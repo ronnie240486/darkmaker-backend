@@ -1,3 +1,4 @@
+
 export function buildTransitionFilter(clipCount, transitionType, clipDuration, transitionDuration = 1) {
     let videoFilter = "";
     let audioFilter = "";
@@ -17,8 +18,9 @@ export function buildTransitionFilter(clipCount, transitionType, clipDuration, t
         // Fallback seguro se não houver tipo definido
         const safeTrans = transitionType || 'fade';
         
-        // Filtro XFADE
-        videoFilter += `${vIn1}${vIn2}xfade=transition=${safeTrans}:duration=${transitionDuration}:offset=${offset}${vOut};`;
+        // Filtro XFADE com proteção de formato
+        // Adicionamos 'format=yuv420p' após cada transição para garantir consistência
+        videoFilter += `${vIn1}${vIn2}xfade=transition=${safeTrans}:duration=${transitionDuration}:offset=${offset},format=yuv420p${vOut};`;
 
         // Definição dos streams de áudio (Crossfade)
         const aIn1 = i === 0 ? "[0:a]" : `[a${i}]`;
