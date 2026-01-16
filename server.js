@@ -90,7 +90,6 @@ function formatSrtTime(seconds) {
     const date = new Date(0);
     date.setMilliseconds(seconds * 1000);
     const isoString = date.toISOString();
-    // 1970-01-01T00:00:00.000Z -> 00:00:00,000
     return isoString.substr(11, 8) + ',' + isoString.substr(20, 3);
 }
 
@@ -186,7 +185,7 @@ async function handleExport(job, uploadDir, callback) {
     const movement = job.params?.movement || 'static';
     const renderSubtitles = job.params?.renderSubtitles === 'true';
     
-    // Recupera os textos das cenas (enviados como JSON string)
+    // Recupera os textos das cenas
     let scenesData = [];
     try {
         if (job.params?.scenesData) {
@@ -221,7 +220,6 @@ async function handleExport(job, uploadDir, callback) {
             const clipPath = path.join(uploadDir, `temp_clip_${job.id}_${i}.mp4`);
             const args = [];
             
-            // Argumentos de Saída Normalizados
             const commonOutputArgs = [
                 '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '20',
                 '-pix_fmt', 'yuv420p', '-r', '30',
@@ -276,24 +274,17 @@ async function handleExport(job, uploadDir, callback) {
         if (clipPaths.length === 0) throw new Error("Falha na geração de clipes.");
 
         // --- GERAÇÃO DE LEGENDAS SRT ---
-        let subtitleFilter = "";
         let srtPath = "";
         
         if (renderSubtitles && scenesData.length > 0) {
             let srtContent = "";
-            let currentTime = 0;
-            
-            // Assumimos que cada clip renderizado tem a duração exata de FORCE_DURATION
-            // Ajustamos para o XFade: se houver transição, a duração visual do clip diminui no timeline
-            // mas o áudio e a legenda devem seguir a lógica sequencial.
-            // Para simplicidade com cortes de 5s, vamos mapear linearmente.
             const transitionDuration = transition === 'cut' ? 0 : 1;
             const clipVisibleDuration = FORCE_DURATION - transitionDuration;
 
             sortedScenes.forEach((_, idx) => {
                 const text = scenesData[idx]?.narration || "";
                 if (text) {
-                    const start = idx * clipVisibleDuration; // Aproximação para XFade
+                    const start = idx * clipVisibleDuration; 
                     const end = start + clipVisibleDuration;
                     
                     srtContent += `${idx + 1}\n`;
@@ -306,11 +297,6 @@ async function handleExport(job, uploadDir, callback) {
                 srtPath = path.join(uploadDir, `subs_${job.id}.srt`);
                 fs.writeFileSync(srtPath, srtContent);
                 tempFiles.push(srtPath);
-                
-                // Estilo "Viral Shorts": Fonte Arial Bold, Amarelo/Branco, Outline Preto Grosso
-                // É necessário escapar o caminho para o filtro do FFmpeg
-                const escapedSrtPath = srtPath.replace(/\\/g, '/').replace(/:/g, '\\:');
-                subtitleFilter = `,subtitles='${escapedSrtPath}':force_style='FontName=Arial,FontSize=20,PrimaryColour=&H00FFFF,BackColour=&H80000000,BorderStyle=3,Outline=2,Shadow=0,Alignment=2,MarginV=30'`;
             }
         }
 
@@ -323,19 +309,19 @@ async function handleExport(job, uploadDir, callback) {
             fs.writeFileSync(listPath, fileContent);
             tempFiles.push(listPath);
 
-            // Se tiver legendas, não pode usar concat demuxer com -c copy facilmente para vídeo.
-            // Precisamos re-encodar para queimar a legenda.
             if (renderSubtitles && srtPath) {
+                // CORREÇÃO CRÍTICA DE CAMINHO PARA WINDOWS/FFMPEG
+                // Converte barras invertidas em barras normais e escapa dois pontos
+                const srtPathPosix = srtPath.split(path.sep).join('/').replace(/:/g, '\\:');
+                
                 finalArgs = [
                     '-f', 'concat', '-safe', '0', '-i', listPath,
-                    '-vf', `subtitles=${path.basename(srtPath)}:force_style='FontName=Arial,FontSize=20,PrimaryColour=&H00FFFF,BorderStyle=3,Outline=2,MarginV=30'`,
+                    '-vf', `subtitles='${srtPathPosix}':force_style='FontName=Arial,FontSize=20,PrimaryColour=&H00FFFF,BorderStyle=3,Outline=2,MarginV=30'`,
                     '-c:v', 'libx264', '-preset', 'medium',
                     '-c:a', 'copy',
                     '-movflags', '+faststart',
                     outputPath
                 ];
-                // Hack: Para usar o filtro de legenda com arquivo relativo/absolute, vamos rodar dentro do diretório ou passar full path escapado
-                // Simplificação: vamos reusar o argumento complexo de baixo se tiver legenda, ou forçar re-encode
             } else {
                 finalArgs = [
                     '-f', 'concat', '-safe', '0', '-i', listPath,
@@ -348,44 +334,25 @@ async function handleExport(job, uploadDir, callback) {
             const inputs = [];
             clipPaths.forEach(p => inputs.push('-i', p));
             
-            const { filterComplex, mapArgs } = buildTransitionFilter(clipPaths.length, transition, FORCE_DURATION, 1);
+            let { filterComplex, mapArgs } = buildTransitionFilter(clipPaths.length, transition, FORCE_DURATION, 1);
             
-            // Adiciona o filtro de legendas ao final da cadeia de vídeo
-            let finalFilter = filterComplex;
-            if (renderSubtitles && subtitleFilter) {
-                // A saída do buildTransitionFilter é [vLast] (ou similar implicito no mapArgs)
-                // Precisamos interceptar. O buildTransitionFilter retorna um mapV ex: [v3]
-                // Vamos hackear a string de filtro para inserir as legendas no final do último stream de vídeo
-                
-                // O último stream de vídeo gerado no loop é `[v${clipCount - 1}]`
-                const lastVideoStream = `[v${clipPaths.length - 1}]`;
-                
-                // Remove o ponto e vírgula final se existir
-                if (finalFilter.endsWith(';')) finalFilter = finalFilter.slice(0, -1);
-                
-                // Anexa o filtro de legenda a esse stream
-                // Nota: O filtro subtitles pega o stream de entrada implicitamente se não nomeado, mas no filter_complex precisamos encadear
-                // Como filterComplex já define output pads, precisamos ser cuidadosos.
-                // A função buildTransitionFilter termina declarando outputs.
-                
-                // Abordagem mais segura: Aplicar legenda num passo separado ou encadear no output pad
-                // Vamos modificar a string de retorno do filter complex
-                // Substituir o último output label [vN] por [vN_raw], e então adicionar [vN_raw]subtitles...[vN]
-                
+            if (renderSubtitles && srtPath) {
+                // CORREÇÃO CRÍTICA DE CAMINHO PARA WINDOWS/FFMPEG
+                const srtPathPosix = srtPath.split(path.sep).join('/').replace(/:/g, '\\:');
                 const lastLabel = `v${clipPaths.length - 1}`;
                 const rawLabel = `${lastLabel}_raw`;
                 
-                // Substitui a última ocorrência do label de saída
-                const lastIndex = finalFilter.lastIndexOf(`[${lastLabel}]`);
+                // Hack seguro: Substitui a última saída do filtro complexo para injetar a legenda
+                const lastIndex = filterComplex.lastIndexOf(`[${lastLabel}]`);
                 if (lastIndex !== -1) {
-                    finalFilter = finalFilter.substring(0, lastIndex) + `[${rawLabel}]` + finalFilter.substring(lastIndex + lastLabel.length + 2);
-                    finalFilter += `;[${rawLabel}]subtitles='${srtPath.replace(/\\/g, '/').replace(/:/g, '\\:')}':force_style='FontName=Arial,FontSize=20,PrimaryColour=&H00FFFF,BorderStyle=3,Outline=2,MarginV=30'[${lastLabel}]`;
+                    filterComplex = filterComplex.substring(0, lastIndex) + `[${rawLabel}]` + filterComplex.substring(lastIndex + lastLabel.length + 2);
+                    filterComplex += `;[${rawLabel}]subtitles='${srtPathPosix}':force_style='FontName=Arial,FontSize=20,PrimaryColour=&H00FFFF,BorderStyle=3,Outline=2,MarginV=30'[${lastLabel}]`;
                 }
             }
 
             finalArgs = [
                 ...inputs,
-                '-filter_complex', finalFilter,
+                '-filter_complex', filterComplex,
                 ...mapArgs,
                 '-c:v', 'libx264', '-preset', 'medium', '-crf', '23',
                 '-c:a', 'aac', '-b:a', '192k',
