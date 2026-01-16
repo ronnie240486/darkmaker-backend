@@ -9,7 +9,7 @@ import { spawn } from 'child_process';
 import ffmpegPath from 'ffmpeg-static';
 import * as esbuild from 'esbuild';
 
-// IMPORTAÇÃO DOS PRESETS (Pastas criadas conforme solicitado)
+// IMPORTAÇÃO DOS PRESETS
 import { getMovementFilter } from './presets/movements.js';
 import { buildTransitionFilter } from './presets/transitions.js';
 
@@ -135,7 +135,7 @@ async function processGenericJob(jobId, action, files, params) {
             case 'extract-audio': args.push('-i', inputPath, '-vn', '-acodec', 'libmp3lame', '-q:a', '2', outputPath); break;
             case 'compress': 
                 if (outputExt === 'mp3') args.push('-i', inputPath, '-map', '0:a', '-b:a', '64k', outputPath);
-                else args.push('-i', inputPath, '-vcodec', 'libx264', '-crf', '28', '-preset', 'fast', outputPath);
+                else args.push('-i', inputPath, '-vcodec', 'libx264', '-crf', '28', '-preset', 'fast', '-movflags', '+faststart', outputPath);
                 break;
             case 'join':
                 if (files.length < 2) throw new Error("Necessário pelo menos 2 arquivos.");
@@ -149,11 +149,11 @@ async function processGenericJob(jobId, action, files, params) {
                 const duration = params.duration || '10';
                 args.push('-ss', start, '-i', inputPath, '-t', duration, '-c', 'copy', outputPath);
                 break;
-            case 'clean-video': args.push('-i', inputPath, '-vf', 'hqdn3d=1.5:1.5:6:6', '-c:a', 'copy', outputPath); break;
+            case 'clean-video': args.push('-i', inputPath, '-vf', 'hqdn3d=1.5:1.5:6:6', '-c:a', 'copy', '-movflags', '+faststart', outputPath); break;
             case 'clean-audio': args.push('-i', inputPath, '-af', 'afftdn=nf=-25', outputPath); break;
             case 'stems': args.push('-i', inputPath, '-af', 'pan="stereo|c0=c0|c1=-1*c1"', outputPath); break;
-            case 'convert': args.push('-i', inputPath, outputPath); break;
-            default: args.push('-i', inputPath, outputPath);
+            case 'convert': args.push('-i', inputPath, '-movflags', '+faststart', outputPath); break;
+            default: args.push('-i', inputPath, '-movflags', '+faststart', outputPath);
         }
         
         jobs[jobId].progress = 50;
@@ -244,7 +244,9 @@ async function handleExport(job, uploadDir, callback) {
 
                 } else {
                     // Caso Vídeo: Normaliza para 16:9 720p
-                    args.push('-i', scene.visual.path);
+                    // CORREÇÃO CRÍTICA: -stream_loop -1 garante que vídeos curtos (ex: 2s) sejam repetidos
+                    // para preencher o slot de 5s exigido pela transição.
+                    args.push('-stream_loop', '-1', '-i', scene.visual.path);
                     
                     if (scene.audio) args.push('-i', scene.audio.path);
                     else args.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
@@ -252,12 +254,8 @@ async function handleExport(job, uploadDir, callback) {
                     args.push(
                         '-map', '0:v', '-map', '1:a',
                         '-vf', 'scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,setsar=1,fps=30,format=yuv420p',
-                        // Se o vídeo for menor que 5s, ele deve ser extendido ou mantido? 
-                        // Idealmente para transições complexas, duração fixa é melhor, mas para vídeos deixamos -shortest por enquanto
-                        // ou forçamos 5s se for curto? Vamos usar shortest aqui para não cortar vídeo longo.
-                        // Mas para xfade, isso pode desalinhar se a duração for imprevisível.
-                        // Para o modo "Shorts" ou "Magic", assumimos cenas curtas.
-                        '-shortest', 
+                        '-af', 'apad', // Garante que o áudio acompanhe o loop/duração do vídeo
+                        '-t', FORCE_DURATION.toString(), // Força 5s (cortando o loop no ponto exato)
                         ...commonOutputArgs,
                         clipPath
                     );
@@ -286,7 +284,9 @@ async function handleExport(job, uploadDir, callback) {
 
             finalArgs = [
                 '-f', 'concat', '-safe', '0', '-i', listPath,
-                '-c', 'copy', outputPath
+                '-c', 'copy', 
+                '-movflags', '+faststart', // OTIMIZAÇÃO PARA WEB
+                outputPath
             ];
         } else {
             // Se tiver transição, usa o Preset de Transições Complexas
@@ -302,6 +302,8 @@ async function handleExport(job, uploadDir, callback) {
                 ...mapArgs,
                 '-c:v', 'libx264', '-preset', 'medium', '-crf', '23',
                 '-c:a', 'aac', '-b:a', '192k',
+                '-pix_fmt', 'yuv420p', // FORÇA COMPATIBILIDADE
+                '-movflags', '+faststart', // OTIMIZAÇÃO PARA WEB
                 outputPath
             ];
         }
