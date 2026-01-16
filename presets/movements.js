@@ -2,7 +2,7 @@
 // Configurações do Filtro de Movimento
 const W = 1280;
 const H = 720;
-const FRAMES_BUFFER = 750; // Buffer de quadros para evitar congelamento (25s @ 30fps)
+const FRAMES_BUFFER = 900; // Increased buffer (30s @ 30fps) to prevent frame drop issues
 
 export function getMovementFilter(type) {
     // 1. Pré-processamento: Garante que a imagem preencha 1280x720 e tenha Pixel Ratio 1:1
@@ -18,26 +18,30 @@ export function getMovementFilter(type) {
 
     switch(type) {
         case 'zoom-in': 
-            effect = `zoompan=z='min(zoom+0.0015,1.5)':d=${FRAMES_BUFFER}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${W}x${H}`;
+            // Suavizado: Zoom de 1.0 a 1.25 (menos agressivo que 1.5)
+            effect = `zoompan=z='min(zoom+0.0008,1.25)':d=${FRAMES_BUFFER}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${W}x${H}`;
             break;
         case 'zoom-out':
-            effect = `zoompan=z='if(lte(zoom,1.0),1.5,max(1.001,zoom-0.0015))':d=${FRAMES_BUFFER}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${W}x${H}`;
+            // Suavizado
+            effect = `zoompan=z='if(lte(zoom,1.0),1.25,max(1.001,zoom-0.0008))':d=${FRAMES_BUFFER}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${W}x${H}`;
             break;
         case 'pan-left':
-            effect = `zoompan=z=1.2:x='if(lte(on,1),(iw-iw/zoom)/2,x-1.0)':y='(ih-ih/zoom)/2':d=${FRAMES_BUFFER}:s=${W}x${H}`;
+            effect = `zoompan=z=1.1:x='if(lte(on,1),(iw-iw/zoom)/2,x-0.8)':y='(ih-ih/zoom)/2':d=${FRAMES_BUFFER}:s=${W}x${H}`;
             break;
         case 'pan-right':
-            effect = `zoompan=z=1.2:x='if(lte(on,1),(iw-iw/zoom)/2,x+1.0)':y='(ih-ih/zoom)/2':d=${FRAMES_BUFFER}:s=${W}x${H}`;
+            effect = `zoompan=z=1.1:x='if(lte(on,1),(iw-iw/zoom)/2,x+0.8)':y='(ih-ih/zoom)/2':d=${FRAMES_BUFFER}:s=${W}x${H}`;
             break;
         case 'tilt-up':
-            effect = `zoompan=z=1.2:x='(iw-iw/zoom)/2':y='if(lte(on,1),(ih-ih/zoom)/2,y-1.0)':d=${FRAMES_BUFFER}:s=${W}x${H}`;
+            effect = `zoompan=z=1.1:x='(iw-iw/zoom)/2':y='if(lte(on,1),(ih-ih/zoom)/2,y-0.8)':d=${FRAMES_BUFFER}:s=${W}x${H}`;
             break;
         case 'tilt-down':
-            effect = `zoompan=z=1.2:x='(iw-iw/zoom)/2':y='if(lte(on,1),(ih-ih/zoom)/2,y+1.0)':d=${FRAMES_BUFFER}:s=${W}x${H}`;
+            effect = `zoompan=z=1.1:x='(iw-iw/zoom)/2':y='if(lte(on,1),(ih-ih/zoom)/2,y+0.8)':d=${FRAMES_BUFFER}:s=${W}x${H}`;
             break;
         case 'handheld':
-            // Simula movimento de mão tremida com seno/cosseno
-            effect = `zoompan=z=1.1:x='(iw-iw/zoom)/2+sin(time*2)*15':y='(ih-ih/zoom)/2+cos(time*3)*15':d=${FRAMES_BUFFER}:s=${W}x${H}`;
+            // CORREÇÃO CRÍTICA DE TREMOR:
+            // Reduzido multiplicador de seno (frequência) de 2 para 0.5
+            // Reduzida amplitude de 15 para 3 pixels
+            effect = `zoompan=z=1.05:x='(iw-iw/zoom)/2+sin(time*0.5)*3':y='(ih-ih/zoom)/2+cos(time*0.4)*3':d=${FRAMES_BUFFER}:s=${W}x${H}`;
             break;
         case 'static':
         default:
