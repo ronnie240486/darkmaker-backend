@@ -12,6 +12,7 @@ import * as esbuild from 'esbuild';
 // IMPORTAÇÃO DOS PRESETS
 import { getMovementFilter } from './presets/movements.js';
 import { buildTransitionFilter } from './presets/transitions.js';
+import { getFFmpegFilterFromEffect } from './presets/effects.js';
 
 // Configuração de diretórios (ESM)
 const __filename = fileURLToPath(import.meta.url);
@@ -31,7 +32,22 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 });
 
 console.log("\x1b[36m%s\x1b[0m", "\n🚀 [SERVER] Iniciando DarkMaker Engine (Modular)...");
-console.log(`📂 Presets Carregados: movements.js, transitions.js`);
+console.log(`📂 Presets Carregados: movements.js, transitions.js, effects.js`);
+
+// Helpers de Argumentos Comuns
+const getVideoArgs = () => [
+    '-c:v', 'libx264',
+    '-preset', 'ultrafast',
+    '-pix_fmt', 'yuv420p',
+    '-movflags', '+faststart',
+    '-r', '30'
+];
+
+const getAudioArgs = () => [
+    '-c:a', 'aac',
+    '-b:a', '192k',
+    '-ar', '44100'
+];
 
 // --- BUILD FRONTEND (ESBUILD) ---
 async function buildFrontend() {
@@ -220,16 +236,18 @@ async function handleExport(job, uploadDir, callback) {
             const clipPath = path.join(uploadDir, `temp_clip_${job.id}_${i}.mp4`);
             const args = [];
             
+            // Usamos os helpers para manter consistência nos argumentos base
             const commonOutputArgs = [
-                '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '20',
-                '-pix_fmt', 'yuv420p', '-r', '30',
+                ...getVideoArgs(),
                 '-video_track_timescale', '90000', 
-                '-c:a', 'aac', '-ar', '44100', '-ac', '2'
+                ...getAudioArgs(),
+                '-ac', '2'
             ];
             
             if (scene.visual) {
                 if (scene.visual.mimetype.includes('image')) {
-                    const moveFilter = getMovementFilter(movement);
+                    // Passa a duração correta para o gerador de movimentos
+                    const moveFilter = getMovementFilter(movement, FORCE_DURATION);
                     args.push('-framerate', '30', '-loop', '1', '-i', scene.visual.path);
 
                     if (scene.audio) {
@@ -310,8 +328,6 @@ async function handleExport(job, uploadDir, callback) {
             tempFiles.push(listPath);
 
             if (renderSubtitles && srtPath) {
-                // CORREÇÃO CRÍTICA DE CAMINHO PARA WINDOWS/FFMPEG
-                // Converte barras invertidas em barras normais e escapa dois pontos
                 const srtPathPosix = srtPath.split(path.sep).join('/').replace(/:/g, '\\:');
                 
                 finalArgs = [
@@ -337,7 +353,6 @@ async function handleExport(job, uploadDir, callback) {
             let { filterComplex, mapArgs } = buildTransitionFilter(clipPaths.length, transition, FORCE_DURATION, 1);
             
             if (renderSubtitles && srtPath) {
-                // CORREÇÃO CRÍTICA DE CAMINHO PARA WINDOWS/FFMPEG
                 const srtPathPosix = srtPath.split(path.sep).join('/').replace(/:/g, '\\:');
                 const lastLabel = `v${clipPaths.length - 1}`;
                 const rawLabel = `${lastLabel}_raw`;
