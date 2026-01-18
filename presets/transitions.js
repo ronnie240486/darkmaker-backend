@@ -41,7 +41,7 @@ export function getTransitionXfade(transId) {
         'blind-v': 'vblur', 
         'shutters': 'hblur', 
         'stripes-h': 'hblur', 
-        'stripes-v': 'vblur',
+        'stripes-v': 'vblur', 
         'barn-door-h': 'hl', 
         'barn-door-v': 'vu',
 
@@ -147,8 +147,7 @@ export function getTransitionXfade(transId) {
 }
 
 export function buildTransitionFilter(clipCount, transitionType, clipDuration, transitionDuration = 1) {
-    let videoFilter = "";
-    let audioFilter = "";
+    const filters = [];
     const offsetBase = clipDuration - transitionDuration;
 
     for (let i = 0; i < clipCount - 1; i++) {
@@ -158,19 +157,21 @@ export function buildTransitionFilter(clipCount, transitionType, clipDuration, t
         const vOut = `[v${i + 1}]`;
         const safeTrans = getTransitionXfade(transitionType);
         
-        videoFilter += `${vIn1}${vIn2}xfade=transition=${safeTrans}:duration=${transitionDuration}:offset=${offset},format=yuv420p${vOut};`;
+        // Push filter string to array without trailing semicolon
+        filters.push(`${vIn1}${vIn2}xfade=transition=${safeTrans}:duration=${transitionDuration}:offset=${offset},format=yuv420p${vOut}`);
 
         const aIn1 = i === 0 ? "[0:a]" : `[a${i}]`;
         const aIn2 = `[${i + 1}:a]`;
         const aOut = `[a${i + 1}]`;
-        audioFilter += `${aIn1}${aIn2}acrossfade=d=${transitionDuration}:c1=tri:c2=tri${aOut};`;
+        filters.push(`${aIn1}${aIn2}acrossfade=d=${transitionDuration}:c1=tri:c2=tri${aOut}`);
     }
 
     const mapV = `[v${clipCount - 1}]`;
     const mapA = `[a${clipCount - 1}]`;
 
+    // Join with ';' to create a valid complex filter chain
     return { 
-        filterComplex: videoFilter + audioFilter, 
+        filterComplex: filters.join(';'), 
         mapArgs: ['-map', mapV, '-map', mapA] 
     };
 }
