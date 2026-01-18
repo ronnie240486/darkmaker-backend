@@ -117,12 +117,17 @@ function runFFmpeg(args, jobId) {
         let stderr = '';
         proc.stderr.on('data', d => stderr += d.toString());
         
+        proc.on('error', (err) => {
+            console.error(`[Job ${jobId}] Failed to spawn ffmpeg:`, err);
+            reject(new Error(`Failed to spawn ffmpeg: ${err.message}`));
+        });
+
         proc.on('close', code => {
             if (code === 0) {
                 resolve();
             } else {
-                console.error(`[Job ${jobId}] Erro FFmpeg:\n${stderr}`);
-                reject(new Error(`FFmpeg error: ${stderr}`));
+                console.error(`[Job ${jobId}] Erro FFmpeg (code ${code}):\n${stderr}`);
+                reject(new Error(`FFmpeg error (code ${code}): ${stderr || 'Unknown error'}`));
             }
         });
     });
@@ -233,6 +238,13 @@ async function handleExport(job, uploadDir, callback) {
         // GERAÇÃO DOS CLIPES INDIVIDUAIS
         for (let i = 0; i < sortedScenes.length; i++) {
             const scene = sortedScenes[i];
+            
+            // Se tiver duração específica vinda do frontend (por causa do áudio), usa ela
+            let duration = FORCE_DURATION;
+            if (scenesData[i] && scenesData[i].duration) {
+                duration = parseFloat(scenesData[i].duration);
+            }
+
             const clipPath = path.join(uploadDir, `temp_clip_${job.id}_${i}.mp4`);
             const args = [];
             
@@ -247,7 +259,7 @@ async function handleExport(job, uploadDir, callback) {
             if (scene.visual) {
                 if (scene.visual.mimetype.includes('image')) {
                     // Passa a duração correta para o gerador de movimentos
-                    const moveFilter = getMovementFilter(movement, FORCE_DURATION);
+                    const moveFilter = getMovementFilter(movement, duration, true);
                     args.push('-framerate', '30', '-loop', '1', '-i', scene.visual.path);
 
                     if (scene.audio) {
@@ -255,14 +267,16 @@ async function handleExport(job, uploadDir, callback) {
                             '-i', scene.audio.path,
                             '-vf', moveFilter, 
                             '-af', 'apad', 
-                            '-t', FORCE_DURATION.toString(), 
+                            '-t', duration.toString(), 
                             '-fflags', '+genpts'
                         );
                     } else {
+                        // Importante: anullsrc como input deve ser mapeado ou colocado antes do filter se usar filter_complex
+                        // Mas aqui usamos -vf que aplica ao video stream.
                         args.push(
                             '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
                             '-vf', moveFilter,
-                            '-t', FORCE_DURATION.toString()
+                            '-t', duration.toString()
                         );
                     }
                     args.push(...commonOutputArgs, clipPath);
@@ -276,14 +290,14 @@ async function handleExport(job, uploadDir, callback) {
                         '-map', '0:v', '-map', '1:a',
                         '-vf', 'scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,setsar=1,fps=30,format=yuv420p',
                         '-af', 'apad', 
-                        '-t', FORCE_DURATION.toString(), 
+                        '-t', duration.toString(), 
                         ...commonOutputArgs,
                         clipPath
                     );
                 }
             } else { continue; }
 
-            console.log(`[Job ${job.id}] Clip ${i} OK.`);
+            console.log(`[Job ${job.id}] Clip ${i} (dur: ${duration}s) OK.`);
             await runFFmpeg(args, job.id);
             clipPaths.push(clipPath);
             tempFiles.push(clipPath);
@@ -297,18 +311,27 @@ async function handleExport(job, uploadDir, callback) {
         if (renderSubtitles && scenesData.length > 0) {
             let srtContent = "";
             const transitionDuration = transition === 'cut' ? 0 : 1;
-            const clipVisibleDuration = FORCE_DURATION - transitionDuration;
+            let currentTime = 0;
 
             sortedScenes.forEach((_, idx) => {
+                let sceneDur = FORCE_DURATION;
+                if (scenesData[idx] && scenesData[idx].duration) {
+                    sceneDur = parseFloat(scenesData[idx].duration);
+                }
+                
                 const text = scenesData[idx]?.narration || "";
                 if (text) {
-                    const start = idx * clipVisibleDuration; 
-                    const end = start + clipVisibleDuration;
+                    // Ajuste visual para transição
+                    const visibleDur = sceneDur - (idx < sortedScenes.length - 1 ? transitionDuration : 0);
+                    const start = currentTime;
+                    const end = start + visibleDur;
                     
                     srtContent += `${idx + 1}\n`;
                     srtContent += `${formatSrtTime(start)} --> ${formatSrtTime(end)}\n`;
                     srtContent += `${text}\n\n`;
                 }
+                // Avança o tempo
+                currentTime += (sceneDur - transitionDuration);
             });
 
             if (srtContent) {
@@ -350,25 +373,55 @@ async function handleExport(job, uploadDir, callback) {
             const inputs = [];
             clipPaths.forEach(p => inputs.push('-i', p));
             
-            let { filterComplex, mapArgs } = buildTransitionFilter(clipPaths.length, transition, FORCE_DURATION, 1);
-            
+            // Assume todos tem mesma duração base para simplificar transição complexa
+            // Se tiver durações variadas, xfade complexo requer offsets calculados
+            // Aqui usamos lógica simplificada:
+            let filterComplex = "";
+            let audioFilter = "";
+            let offsetAcc = 0;
+            const transitionDuration = 1;
+
+            for (let i = 0; i < clipPaths.length - 1; i++) {
+                let sceneDur = FORCE_DURATION;
+                if (scenesData[i] && scenesData[i].duration) sceneDur = parseFloat(scenesData[i].duration);
+                
+                const offset = offsetAcc + sceneDur - transitionDuration;
+                offsetAcc += (sceneDur - transitionDuration);
+
+                const vIn1 = i === 0 ? "[0:v]" : `[v${i}]`;
+                const vIn2 = `[${i + 1}:v]`;
+                const vOut = `[v${i + 1}]`;
+                const safeTrans = getTransitionXfade ? getTransitionXfade(transition) : 'fade';
+                
+                filterComplex += `${vIn1}${vIn2}xfade=transition=${safeTrans}:duration=${transitionDuration}:offset=${offset},format=yuv420p${vOut};`;
+
+                const aIn1 = i === 0 ? "[0:a]" : `[a${i}]`;
+                const aIn2 = `[${i + 1}:a]`;
+                const aOut = `[a${i + 1}]`;
+                audioFilter += `${aIn1}${aIn2}acrossfade=d=${transitionDuration}:c1=tri:c2=tri${aOut};`;
+            }
+
+            const mapV = `[v${clipPaths.length - 1}]`;
+            const mapA = `[a${clipPaths.length - 1}]`;
+            let completeFilter = filterComplex + audioFilter;
+
             if (renderSubtitles && srtPath) {
                 const srtPathPosix = srtPath.split(path.sep).join('/').replace(/:/g, '\\:');
                 const lastLabel = `v${clipPaths.length - 1}`;
                 const rawLabel = `${lastLabel}_raw`;
                 
                 // Hack seguro: Substitui a última saída do filtro complexo para injetar a legenda
-                const lastIndex = filterComplex.lastIndexOf(`[${lastLabel}]`);
+                const lastIndex = completeFilter.lastIndexOf(`[${lastLabel}]`);
                 if (lastIndex !== -1) {
-                    filterComplex = filterComplex.substring(0, lastIndex) + `[${rawLabel}]` + filterComplex.substring(lastIndex + lastLabel.length + 2);
-                    filterComplex += `;[${rawLabel}]subtitles='${srtPathPosix}':force_style='FontName=Arial,FontSize=20,PrimaryColour=&H00FFFF,BorderStyle=3,Outline=2,MarginV=30'[${lastLabel}]`;
+                    completeFilter = completeFilter.substring(0, lastIndex) + `[${rawLabel}]` + completeFilter.substring(lastIndex + lastLabel.length + 2);
+                    completeFilter += `;[${rawLabel}]subtitles='${srtPathPosix}':force_style='FontName=Arial,FontSize=20,PrimaryColour=&H00FFFF,BorderStyle=3,Outline=2,MarginV=30'[${lastLabel}]`;
                 }
             }
 
             finalArgs = [
                 ...inputs,
-                '-filter_complex', filterComplex,
-                ...mapArgs,
+                '-filter_complex', completeFilter,
+                '-map', mapV, '-map', mapA,
                 '-c:v', 'libx264', '-preset', 'medium', '-crf', '23',
                 '-c:a', 'aac', '-b:a', '192k',
                 '-pix_fmt', 'yuv420p', 
