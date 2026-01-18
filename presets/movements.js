@@ -2,6 +2,7 @@
 // Configurações do Filtro de Movimento
 const W = 1280;
 const H = 720;
+// Buffer aumentado para garantir suavidade
 const FRAMES_BUFFER = 900; 
 
 export function getMovementFilter(moveId, durationSec = 5, isImage = true, config = {}) {
@@ -9,8 +10,9 @@ export function getMovementFilter(moveId, durationSec = 5, isImage = true, confi
     const totalFrames = Math.ceil(d * 30);
     const uid = Math.floor(Math.random() * 1000000);
     
-    // Otimizado para 4K (3840x2160) e 30fps para evitar OOM e erro no ffmpeg
-    const base = `:d=1:s=3840x2160:fps=30`; 
+    // Configuração base: 2K interno (1920x1080) para super-sampling leve. 
+    // 8K causa estouro de memória em muitos ambientes.
+    const base = `:d=1:s=1920x1080:fps=30`; 
     
     // Helpers
     const esc = (s) => s.replace(/,/g, '\\,');
@@ -221,12 +223,8 @@ export function getMovementFilter(moveId, durationSec = 5, isImage = true, confi
             break;
         
         default:
-            // Fallback para Ken Burns suave se nada for selecionado
-            if (moveId && moveId.includes('zoom')) {
-                effect = `zoompan=z=${esc(`min(1.0+(on*0.3*${speed}/${totalFrames}),1.3)`)}:${center}${base}`;
-            } else {
-                return `${preProcess},fps=30,format=yuv420p`;
-            }
+            // Fallback: zoom suave
+            effect = `zoompan=z=${esc(`min(1.0+(on*0.2*${speed}/${totalFrames}),1.1)`)}:${center}${base}`;
     }
 
     return `${preProcess},${effect},${postProcess}`;
