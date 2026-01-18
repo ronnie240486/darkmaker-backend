@@ -68,39 +68,7 @@ export function getFFmpegFilterFromEffect(effectId) {
 
     if (effects[effectId]) return effects[effectId];
 
-    // Efeitos Procedurais
-    if (effectId.startsWith('cg-pro-')) {
-        const i = parseInt(effectId.split('-')[2]) || 1;
-        const c = 1 + (i % 5) * 0.1;
-        const s = 1 + (i % 3) * 0.2;
-        const h = (i * 15) % 360;
-        return `eq=contrast=${c.toFixed(2)}:saturation=${s.toFixed(2)},hue=h=${h}`;
-    }
-    if (effectId.startsWith('vintage-style-')) {
-        const i = parseInt(effectId.split('-')[2]) || 1;
-        const sepia = 0.1 + (i % 5) * 0.05;
-        return `colorbalance=rs=${sepia.toFixed(2)}:bs=-${sepia.toFixed(2)},eq=contrast=0.9`;
-    }
-    if (effectId.startsWith('cyber-neon-')) {
-         const i = parseInt(effectId.split('-')[2]) || 1;
-         return `eq=contrast=1.2:saturation=1.5,hue=h=${i*10}`;
-    }
-    if (effectId.startsWith('nature-fresh-')) {
-         const i = parseInt(effectId.split('-')[2]) || 1;
-         return `eq=saturation=1.3:brightness=0.05,hue=h=-${i*2}`;
-    }
-    if (effectId.startsWith('art-duo-')) {
-         const i = parseInt(effectId.split('-')[2]) || 1;
-         return `hue=s=0,colorbalance=rs=${0.1 * (i%3)}:bs=${0.1 * (i%2)}`;
-    }
-    if (effectId.startsWith('noir-style-')) {
-         const i = parseInt(effectId.split('-')[2]) || 1;
-         return `hue=s=0,eq=contrast=${(1 + i*0.05).toFixed(2)}`;
-    }
-    if (effectId.startsWith('film-stock-')) {
-         const i = parseInt(effectId.split('-')[2]) || 1;
-         return `eq=saturation=0.8:contrast=1.1`;
-    }
+    // Efeitos Procedurais (se precisar de lógica dinâmica)
     if (effectId.startsWith('leak-overlay-') || effectId.startsWith('light-leak-')) {
         return 'eq=brightness=0.1:gamma=1.1';
     }
