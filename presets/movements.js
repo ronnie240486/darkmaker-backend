@@ -2,7 +2,6 @@
 // Configurações do Filtro de Movimento
 const W = 1280;
 const H = 720;
-// Buffer aumentado para garantir suavidade em 60fps internos
 const FRAMES_BUFFER = 900; 
 
 export function getMovementFilter(moveId, durationSec = 5, isImage = true, config = {}) {
@@ -10,8 +9,8 @@ export function getMovementFilter(moveId, durationSec = 5, isImage = true, confi
     const totalFrames = Math.ceil(d * 30);
     const uid = Math.floor(Math.random() * 1000000);
     
-    // Configuração base: 8K interno para super-sampling (evita tremedeira no zoom lento)
-    const base = `:d=1:s=7680x4320:fps=60`; 
+    // Otimizado para 4K (3840x2160) e 30fps para evitar OOM e erro no ffmpeg
+    const base = `:d=1:s=3840x2160:fps=30`; 
     
     // Helpers
     const esc = (s) => s.replace(/,/g, '\\,');
@@ -27,20 +26,17 @@ export function getMovementFilter(moveId, durationSec = 5, isImage = true, confi
     // Helper para Blur com Zoom (usado em mov-blur-*)
     const blurDuration = Math.min(d, 8.0) / speed; 
     const blurWithZoom = (alphaFilter, zoomExpr = `(1.0+(0.1*${speed}*on/${totalFrames}))`) => {
-        // Zoompan gera o stream, split divide, um lado aplica blur, overlay junta com fade
         return `zoompan=z=${esc(zoomExpr)}:${center}${base},split=2[main${uid}][to_blur${uid}];[to_blur${uid}]boxblur=40:5,format=yuva420p,${alphaFilter}[blurred${uid}];[main${uid}][blurred${uid}]overlay=x=0:y=0:shortest=1`;
     };
 
     let effect = "";
 
     switch (moveId) {
-        // === 0. BLUR & FOCO ===
+        // === 0. BLUR (Focar/Desfocar com Movimento) ===
         case 'mov-blur-in':
-            // Começa desfocado e foca
             effect = blurWithZoom(`fade=t=out:st=0:d=${blurDuration}:alpha=1`);
             break;
         case 'mov-blur-out':
-            // Começa focado e desfoca no final
             const startTime = Math.max(0, d - blurDuration);
             effect = blurWithZoom(`fade=t=in:st=${startTime}:d=${blurDuration}:alpha=1`);
             break;
@@ -54,7 +50,7 @@ export function getMovementFilter(moveId, durationSec = 5, isImage = true, confi
              effect = `boxblur=luma_radius=${15*speed}:luma_power=2`;
              break;
 
-        // === 1. CINEMATIC PANS (Matemática Suave) ===
+        // === 1. CINEMATIC PANS (Smoother Math) ===
         case 'mov-pan-slow-l': 
         case 'pan-left':
             effect = `zoompan=z=${1.1 + (0.1 * speed)}:x=${esc(`(iw-iw/zoom)*(on/(${totalFrames}))`)}:y=ih/2-(ih/zoom/2)${base}`;
@@ -83,6 +79,12 @@ export function getMovementFilter(moveId, durationSec = 5, isImage = true, confi
         case 'mov-pan-diag-tr': 
             effect = `zoompan=z=${1.2 + (0.1 * speed)}:x=${esc(`(iw-iw/zoom)*(1-(on/(${totalFrames})))`)}:y=${esc(`(ih-ih/zoom)*(on/(${totalFrames}))`)}${base}`;
             break;
+        case 'mov-pan-diag-bl': 
+            effect = `zoompan=z=${1.2 + (0.1 * speed)}:x=${esc(`(iw-iw/zoom)*(on/(${totalFrames}))`)}:y=${esc(`(ih-ih/zoom)*(1-(on/(${totalFrames})))`)}${base}`;
+            break;
+        case 'mov-pan-diag-br': 
+            effect = `zoompan=z=${1.2 + (0.1 * speed)}:x=${esc(`(iw-iw/zoom)*(1-(on/(${totalFrames})))`)}:y=${esc(`(ih-ih/zoom)*(1-(on/(${totalFrames})))`)}${base}`;
+            break;
 
         // === 2. DYNAMIC ZOOMS ===
         case 'mov-zoom-crash-in': 
@@ -105,11 +107,15 @@ export function getMovementFilter(moveId, durationSec = 5, isImage = true, confi
              break;
         case 'mov-zoom-bounce-in':
         case 'zoom-bounce':
+        case 'mov-zoom-bounce':
              effect = `zoompan=z=${esc(`1.0+${0.1 * speed}*abs(sin(on*0.1*${speed}))`)}:${center}${base}`;
              break;
         case 'mov-zoom-pulse-slow':
         case 'pulse':
              effect = `zoompan=z=${esc(`1.0+${0.05 * speed}*sin(on*0.05*${speed})`)}:${center}${base}`;
+             break;
+        case 'mov-zoom-pulse-fast':
+             effect = `zoompan=z=${esc(`1.0+${0.1 * speed}*sin(on*0.2*${speed})`)}:${center}${base}`;
              break;
         case 'mov-dolly-vertigo':
         case 'dolly-zoom':
@@ -118,6 +124,9 @@ export function getMovementFilter(moveId, durationSec = 5, isImage = true, confi
         case 'mov-zoom-twist-in':
              effect = `rotate=a=${esc(`0.1*${speed}*t`)}:c=black,zoompan=z=${esc(`min(1.0+(on*1.0*${speed}/${totalFrames}),2.0)`)}:${center}${base}`;
              break;
+        case 'mov-zoom-twist-out':
+             effect = `rotate=a=${esc(`-0.1*${speed}*t`)}:c=black,zoompan=z=${esc(`max(2.0-(on*1.0*${speed}/${totalFrames}),1.0)`)}:${center}${base}`;
+             break;
         case 'mov-zoom-wobble':
              effect = `zoompan=z=${esc(`1.1+0.05*${speed}*sin(on*0.2)`)}:x=${esc(`iw/2-(iw/zoom/2)+10*${speed}*sin(on*0.3)`)}:y=${esc(`ih/2-(ih/zoom/2)+10*${speed}*cos(on*0.4)`)}${base}`;
              break;
@@ -125,7 +134,7 @@ export function getMovementFilter(moveId, durationSec = 5, isImage = true, confi
              effect = `zoompan=z=1.1:x=${esc(`iw/2-(iw/zoom/2)+(random(1)*20-10)*${speed}`)}:y=${esc(`ih/2-(ih/zoom/2)+(random(1)*20-10)*${speed}`)}${base}`;
              break;
 
-        // === 3. 3D TRANSFORMS (Simulados) ===
+        // === 3. 3D TRANSFORMS ===
         case 'mov-3d-flip-x': 
             effect = `scale=w=${esc(`iw*abs(cos(t*2*${speed}))`)}:h=ih,pad=1280:720:(1280-iw)/2:(720-ih)/2:black`;
             break;
@@ -139,6 +148,12 @@ export function getMovementFilter(moveId, durationSec = 5, isImage = true, confi
         case 'mov-3d-swing-l':
         case 'pendulum':
             effect = `rotate=${esc(`sin(t*2*${speed})*0.1*${speed}`)}:ow=iw:oh=ih:c=black`;
+            break;
+        case 'mov-3d-swing-r':
+            effect = `rotate=${esc(`-sin(t*2*${speed})*0.1*${speed}`)}:ow=iw:oh=ih:c=black`;
+            break;
+        case 'mov-3d-tumble':
+            effect = `rotate=t*${speed}:ow=iw:oh=ih:c=black`;
             break;
         case 'mov-3d-roll':
             effect = `rotate=${esc(`t*2*${speed}`)}:ow=iw:oh=ih:c=black`;
@@ -162,6 +177,9 @@ export function getMovementFilter(moveId, durationSec = 5, isImage = true, confi
         case 'jitter':
              effect = `zoompan=z=1.05:x=${esc(`iw/2-(iw/zoom/2)+(random(1)-0.5)*30*${speed}`)}:y=ih/2-(ih/zoom/2)${base}`;
              break;
+        case 'mov-jitter-y':
+             effect = `zoompan=z=1.05:x=iw/2-(iw/zoom/2):y=${esc(`ih/2-(ih/zoom/2)+(random(1)-0.5)*30*${speed}`)}${base}`;
+             break;
         case 'mov-rgb-shift-move':
              effect = `zoompan=z=1.1:x=${esc(`iw/2-(iw/zoom/2)+(random(1)-0.5)*20*${speed}`)}:y=ih/2-(ih/zoom/2)${base},colorchannelmixer=rr=1:gg=0:bb=0:rb=0:br=0:bg=0`;
              break;
@@ -182,10 +200,10 @@ export function getMovementFilter(moveId, durationSec = 5, isImage = true, confi
              effect = `zoompan=z=${esc(`if(lt(on,20/${speed}),1.0+0.2*${speed}*abs(cos(on*0.3*${speed})),1.0)`)}:${center}${base}`;
              break;
 
-        // === 6. HANDHELD (Câmera na mão) ===
+        // === 6. HANDHELD ===
         case 'handheld-1':
         case 'handheld':
-             effect = `zoompan=z=1.15:x=${esc(`(iw-iw/zoom)/2 + (sin(on/40)*6)`)}:y=${esc(`(ih-ih/zoom)/2 + (cos(on/55)*4)`)}:d=${FRAMES_BUFFER}:s=${W}x${H}`;
+             effect = `zoompan=z=1.05:x=${esc(`iw/2-(iw/zoom/2)+sin(on*0.05*${speed})*5`)}:y=${esc(`ih/2-(ih/zoom/2)+cos(on*0.07*${speed})*5`)}${base}`;
              break;
         case 'handheld-2':
              effect = `zoompan=z=1.1:x=${esc(`iw/2-(iw/zoom/2)+sin(on*0.1*${speed})*10`)}:y=${esc(`ih/2-(ih/zoom/2)+cos(on*0.15*${speed})*10`)}${base}`;
@@ -194,7 +212,7 @@ export function getMovementFilter(moveId, durationSec = 5, isImage = true, confi
              effect = `zoompan=z=1.1:x=${esc(`iw/2-(iw/zoom/2)+(random(1)-0.5)*40*${speed}`)}:y=${esc(`ih/2-(ih/zoom/2)+(random(1)-0.5)*40*${speed}`)}${base}`;
              break;
 
-        // === 7. ENTRADAS ===
+        // === 7. ENTRY ANIMATIONS ===
         case 'slide-in-left': 
             effect = `zoompan=z=1.0:x=${esc(`if(lte(on,30/${speed}),(iw/2-(iw/zoom/2)) - (iw)*(1-on*${speed}/30), iw/2-(iw/zoom/2))`)}:y=ih/2-(ih/zoom/2)${base}`;
             break;
@@ -202,12 +220,14 @@ export function getMovementFilter(moveId, durationSec = 5, isImage = true, confi
             effect = `zoompan=z=1.0:x=${esc(`if(lte(on,30/${speed}),(iw/2-(iw/zoom/2)) + (iw)*(1-on*${speed}/30), iw/2-(iw/zoom/2))`)}:y=ih/2-(ih/zoom/2)${base}`;
             break;
         
-        case 'static':
         default:
-            return `${preProcess},fps=30,format=yuv420p`;
+            // Fallback para Ken Burns suave se nada for selecionado
+            if (moveId && moveId.includes('zoom')) {
+                effect = `zoompan=z=${esc(`min(1.0+(on*0.3*${speed}/${totalFrames}),1.3)`)}:${center}${base}`;
+            } else {
+                return `${preProcess},fps=30,format=yuv420p`;
+            }
     }
 
-    // Se é vídeo e não imagem, normalmente não aplicamos zoompan agressivo, 
-    // mas se o efeito foi definido, aplicamos.
     return `${preProcess},${effect},${postProcess}`;
 }
