@@ -100,7 +100,7 @@ export function getTransitionXfade(transId) {
         'light-leak-tr': 'fadewhite', 
         'flare-pass': 'wipeleft', 
         'prism-split': 'dissolve', 
-        'god-rays': 'fadewhite',
+        'god-rays': 'fadewhite', 
         'flash-black': 'fadeblack', 
         'flash-white': 'fadewhite', 
         'flashback': 'fadewhite', 
@@ -146,19 +146,30 @@ export function getTransitionXfade(transId) {
     return map[transId] || 'fade';
 }
 
-export function buildTransitionFilter(clipCount, transitionType, clipDuration, transitionDuration = 1) {
+export function buildTransitionFilter(durations, transitionType, transitionDuration = 1) {
     const filters = [];
-    const offsetBase = clipDuration - transitionDuration;
+    let currentOffset = 0;
+    const clipCount = durations.length;
 
     for (let i = 0; i < clipCount - 1; i++) {
-        const offset = offsetBase * (i + 1);
+        const d = durations[i];
+        
+        // CORREÇÃO DE ÁUDIO CORTADO:
+        // A transição 'come' o tempo de duração da transição do vídeo atual.
+        // Se a duração da cena for 5s e transição 1s, o vídeo seguinte entra em 4s.
+        // O offset deve ser calculado com base nisso.
+        
+        currentOffset += (d - transitionDuration);
+        
+        // Segurança: Offset não pode ser negativo ou zero absoluto se for o primeiro
+        if (currentOffset < 0) currentOffset = 0;
+
         const vIn1 = i === 0 ? "[0:v]" : `[v${i}]`;
         const vIn2 = `[${i + 1}:v]`;
         const vOut = `[v${i + 1}]`;
         const safeTrans = getTransitionXfade(transitionType);
         
-        // Push filter string to array without trailing semicolon
-        filters.push(`${vIn1}${vIn2}xfade=transition=${safeTrans}:duration=${transitionDuration}:offset=${offset},format=yuv420p${vOut}`);
+        filters.push(`${vIn1}${vIn2}xfade=transition=${safeTrans}:duration=${transitionDuration}:offset=${currentOffset},format=yuv420p${vOut}`);
 
         const aIn1 = i === 0 ? "[0:a]" : `[a${i}]`;
         const aIn2 = `[${i + 1}:a]`;
@@ -169,7 +180,6 @@ export function buildTransitionFilter(clipCount, transitionType, clipDuration, t
     const mapV = `[v${clipCount - 1}]`;
     const mapA = `[a${clipCount - 1}]`;
 
-    // Join with ';' to create a valid complex filter chain
     return { 
         filterComplex: filters.join(';'), 
         mapArgs: ['-map', mapV, '-map', mapA] 
