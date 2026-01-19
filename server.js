@@ -9,10 +9,8 @@ import { spawn } from 'child_process';
 import ffmpegPath from 'ffmpeg-static';
 import * as esbuild from 'esbuild';
 
-// IMPORTAÇÃO DOS PRESETS
 import { getMovementFilter } from './presets/movements.js';
-import { buildTransitionFilter, getTransitionXfade } from './presets/transitions.js';
-import { getFFmpegFilterFromEffect } from './presets/effects.js';
+import { buildTransitionFilter } from './presets/transitions.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -82,13 +80,7 @@ function timeToSeconds(timeStr) {
     return (parseFloat(parts[0]) * 3600) + (parseFloat(parts[1]) * 60) + parseFloat(parts[2]);
 }
 
-function formatSrtTime(seconds) {
-    const date = new Date(0);
-    date.setMilliseconds(seconds * 1000);
-    return date.toISOString().substr(11, 8) + ',' + date.toISOString().substr(20, 3);
-}
-
-function runFFmpeg(args, jobId) {
+function runFFmpeg(args) {
     return new Promise((resolve, reject) => {
         const proc = spawn(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-y', ...args]);
         let stderr = '';
@@ -103,16 +95,10 @@ async function handleExport(job, uploadDir, callback) {
     
     const transition = job.params?.transition || 'cut'; 
     const movement = job.params?.movement || 'static';
-    const renderSubtitles = job.params?.renderSubtitles === 'true';
     const aspectRatio = job.params?.aspectRatio || '16:9';
 
-    // AJUSTE DE RESOLUÇÃO BASEADO NO ASPECT RATIO
-    let targetW = 1280;
-    let targetH = 720;
-    if (aspectRatio === '9:16') {
-        targetW = 720;
-        targetH = 1280;
-    }
+    let targetW = 1280; let targetH = 720;
+    if (aspectRatio === '9:16') { targetW = 720; targetH = 1280; }
 
     let scenesData = [];
     try { if (job.params?.scenesData) scenesData = JSON.parse(job.params.scenesData); } catch(e) {}
@@ -120,114 +106,73 @@ async function handleExport(job, uploadDir, callback) {
     try {
         const sceneMap = {};
         job.files.forEach(f => {
-            const match = f.originalname.match(/scene_(\d+)_(visual|audio)/);
+            const match = f.originalname.match(/scene_(\d+)/);
             if (match) {
                 const idx = parseInt(match[1]);
-                const type = match[2];
+                const type = f.originalname.includes('visual') ? 'visual' : 'audio';
                 if (!sceneMap[idx]) sceneMap[idx] = {};
                 sceneMap[idx][type] = f;
             }
         });
 
-        const sortedScenes = Object.keys(sceneMap).sort((a,b) => a - b).map(k => sceneMap[k]);
+        const sortedIndices = Object.keys(sceneMap).sort((a,b) => a - b);
         const clipPaths = [];
         const tempFiles = [];
-        const clipDurations = []; // Armazena durações reais para o builder de transição
 
-        for (let i = 0; i < sortedScenes.length; i++) {
-            const scene = sortedScenes[i];
+        for (let i = 0; i < sortedIndices.length; i++) {
+            const idx = sortedIndices[i];
+            const scene = sceneMap[idx];
             const clipPath = path.join(uploadDir, `temp_clip_${job.id}_${i}.mp4`);
-            const args = [];
-            
-            // Duração da cena individual (recebida do frontend já com margem de segurança)
             const sDuration = scenesData[i]?.duration || 5;
-            clipDurations.push(sDuration); 
 
+            const args = [];
             if (scene.visual) {
                 if (scene.visual.mimetype.includes('image')) {
-                    // Passa W e H para o preset de movimentos
                     const moveFilter = getMovementFilter(movement, sDuration, targetW, targetH);
                     args.push('-framerate', '30', '-loop', '1', '-i', scene.visual.path);
-                    if (scene.audio) args.push('-i', scene.audio.path, '-vf', moveFilter, '-af', 'apad', '-t', sDuration.toString(), '-fflags', '+genpts');
-                    else args.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100', '-vf', moveFilter, '-t', sDuration.toString());
-                    args.push(...getVideoArgs(), '-video_track_timescale', '90000', ...getAudioArgs(), '-ac', '2', clipPath);
+                    if (scene.audio) args.push('-i', scene.audio.path, '-vf', moveFilter, '-af', 'apad', '-t', sDuration.toString());
+                    else args.push('-f', 'lavfi', '-i', 'anullsrc=cl=stereo:sr=44100', '-vf', moveFilter, '-t', sDuration.toString());
+                    args.push(...getVideoArgs(), clipPath);
                 } else {
                     args.push('-stream_loop', '-1', '-i', scene.visual.path);
                     if (scene.audio) args.push('-i', scene.audio.path);
-                    else args.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
-                    args.push('-map', '0:v', '-map', '1:a', '-vf', `scale=${targetW}:${targetH}:force_original_aspect_ratio=increase,crop=${targetW}:${targetH},setsar=1,fps=30,format=yuv420p`, '-af', 'apad', '-t', sDuration.toString(), ...getVideoArgs(), ...getAudioArgs(), clipPath);
+                    else args.push('-f', 'lavfi', '-i', 'anullsrc=cl=stereo:sr=44100');
+                    args.push('-map', '0:v', '-map', '1:a', '-vf', `scale=${targetW}:${targetH}:force_original_aspect_ratio=increase,crop=${targetW}:${targetH},setsar=1,fps=30`, '-af', 'apad', '-t', sDuration.toString(), ...getVideoArgs(), clipPath);
                 }
             }
-            await runFFmpeg(args, job.id);
+            await runFFmpeg(args);
             clipPaths.push(clipPath);
             tempFiles.push(clipPath);
         }
 
-        let srtPath = "";
-        if (renderSubtitles && scenesData.length > 0) {
-            let srtContent = "";
-            let currentTime = 0;
-            const transitionDuration = transition === 'cut' ? 0 : 1;
-
-            scenesData.forEach((sd, idx) => {
-                const dur = sd.duration || 5;
-                // Legenda deve ser visível apenas durante a parte "limpa" do clipe
-                const visibleDur = dur - (idx < scenesData.length - 1 ? transitionDuration : 0);
-                srtContent += `${idx + 1}\n${formatSrtTime(currentTime)} --> ${formatSrtTime(currentTime + visibleDur)}\n${sd.narration || ""}\n\n`;
-                currentTime += (dur - transitionDuration);
-            });
-            srtPath = path.join(uploadDir, `subs_${job.id}.srt`);
-            fs.writeFileSync(srtPath, srtContent);
-            tempFiles.push(srtPath);
-        }
-
         let finalArgs = [];
         if (transition === 'cut' || clipPaths.length === 1) {
-            const listPath = path.join(uploadDir, `concat_list_${job.id}.txt`);
+            const listPath = path.join(uploadDir, `list_${job.id}.txt`);
             fs.writeFileSync(listPath, clipPaths.map(p => `file '${p}'`).join('\n'));
+            finalArgs = ['-f', 'concat', '-safe', '0', '-i', listPath, '-c', 'copy', outputPath];
             tempFiles.push(listPath);
-            if (renderSubtitles && srtPath) {
-                const srtPathPosix = srtPath.split(path.sep).join('/').replace(/:/g, '\\:');
-                finalArgs = ['-f', 'concat', '-safe', '0', '-i', listPath, '-vf', `subtitles='${srtPathPosix}':force_style='FontName=Arial,FontSize=20,PrimaryColour=&H00FFFF,BorderStyle=3,Outline=2,MarginV=30'`, ...getVideoArgs(), '-c:a', 'copy', outputPath];
-            } else {
-                finalArgs = ['-f', 'concat', '-safe', '0', '-i', listPath, '-c', 'copy', outputPath];
-            }
         } else {
             const inputs = []; clipPaths.forEach(p => inputs.push('-i', p));
-            
-            // AGORA PASSA O ARRAY DE DURAÇÕES PARA O BUILDER DE TRANSIÇÃO
-            let { filterComplex, mapArgs } = buildTransitionFilter(clipDurations, transition, 1);
-            
-            if (renderSubtitles && srtPath) {
-                const srtPathPosix = srtPath.split(path.sep).join('/').replace(/:/g, '\\:');
-                const lastLabel = `v${clipPaths.length - 1}`;
-                const rawLabel = `${lastLabel}_raw`;
-                const lastIndex = filterComplex.lastIndexOf(`[${lastLabel}]`);
-                if (lastIndex !== -1) {
-                    filterComplex = filterComplex.substring(0, lastIndex) + `[${rawLabel}]` + filterComplex.substring(lastIndex + lastLabel.length + 2);
-                    filterComplex += `;[${rawLabel}]subtitles='${srtPathPosix}':force_style='FontName=Arial,FontSize=20,PrimaryColour=&H00FFFF,BorderStyle=3,Outline=2,MarginV=30'[${lastLabel}]`;
-                }
-            }
-            finalArgs = [...inputs, '-filter_complex', filterComplex, ...mapArgs, ...getVideoArgs(), '-c:a', 'aac', '-b:a', '192k', outputPath];
+            // FIX: Passando scenesData para calcular offsets corretos das transições
+            let { filterComplex, mapArgs } = buildTransitionFilter(clipPaths.length, transition, scenesData, 1);
+            finalArgs = [...inputs, '-filter_complex', filterComplex, ...mapArgs, ...getVideoArgs(), outputPath];
         }
 
         const totalEstimated = scenesData.reduce((acc, s) => acc + (s.duration || 5), 0);
         callback(job.id, finalArgs, totalEstimated);
-        setTimeout(() => tempFiles.forEach(f => fs.existsSync(f) && fs.unlinkSync(f)), 300000); 
-    } catch (e) { console.error(e); jobs[job.id].status = 'failed'; jobs[job.id].error = e.message; }
+        setTimeout(() => tempFiles.forEach(f => fs.existsSync(f) && fs.unlinkSync(f)), 600000); 
+    } catch (e) { console.error(e); jobs[job.id].status = 'failed'; }
 }
 
-function createFFmpegJob(jobId, args, expectedDuration, res) {
+function createFFmpegJob(jobId, args, expectedDuration) {
     jobs[jobId].status = 'processing';
-    if (res && !res.headersSent) res.status(202).json({ jobId });
-    const ffmpeg = spawn(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-stats', '-y', ...args]);
+    const ffmpeg = spawn(ffmpegPath, ['-hide_banner', '-stats', '-y', ...args]);
     ffmpeg.stderr.on('data', d => {
         const line = d.toString();
         const timeMatch = line.match(/time=(\d{2}:\d{2}:\d{2}\.\d{2})/);
         if (timeMatch && expectedDuration > 0) {
             const cur = timeToSeconds(timeMatch[1]);
-            let p = Math.round((cur / expectedDuration) * 100);
-            if (jobs[jobId]) jobs[jobId].progress = 50 + (Math.min(p, 99) / 2);
+            jobs[jobId].progress = Math.min(Math.round((cur / expectedDuration) * 100), 99);
         }
     });
     ffmpeg.on('close', code => {
@@ -236,24 +181,15 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
             jobs[jobId].status = 'completed';
             jobs[jobId].progress = 100;
             jobs[jobId].downloadUrl = `/outputs/${path.basename(args[args.length - 1])}`;
-        } else {
-            jobs[jobId].status = 'failed';
-        }
+        } else { jobs[jobId].status = 'failed'; }
     });
 }
 
-app.post('/api/process/start/:action', uploadAny, (req, res) => {
-    const action = req.params.action;
-    const jobId = `${action}_${Date.now()}`;
-    jobs[jobId] = { id: jobId, status: 'pending', progress: 0, files: req.files, params: req.body, downloadUrl: null };
-    res.status(202).json({ jobId });
-});
-
 app.post('/api/export/start', uploadAny, (req, res) => {
     const jobId = `export_${Date.now()}`;
-    jobs[jobId] = { id: jobId, status: 'processing', progress: 5, files: req.files, params: req.body, downloadUrl: null };
+    jobs[jobId] = { id: jobId, status: 'processing', progress: 5, files: req.files, params: req.body };
     res.status(202).json({ jobId });
-    handleExport(jobs[jobId], UPLOAD_DIR, (id, args, dur) => createFFmpegJob(id, args, dur, null));
+    handleExport(jobs[jobId], UPLOAD_DIR, (id, args, dur) => createFFmpegJob(id, args, dur));
 });
 
 app.get('/api/process/status/:jobId', (req, res) => {
@@ -262,10 +198,4 @@ app.get('/api/process/status/:jobId', (req, res) => {
     res.json(job);
 });
 
-app.get('/api/process/download/:jobId', (req, res) => {
-    const job = jobs[req.params.jobId];
-    if (job && job.downloadUrl) return res.redirect(job.downloadUrl);
-    res.status(404).send("File not found");
-});
-
-app.listen(PORT, '0.0.0.0', () => console.log(`Server online on port ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => console.log(`Backend 9:16 Sync Online na porta ${PORT}`));
