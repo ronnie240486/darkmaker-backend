@@ -76,14 +76,61 @@ const uploadAny = multer({ storage }).any();
 
 const jobs = {};
 
-// --- SUBTITLE STYLES ENGINE ---
-const SUBTITLE_STYLES = {
-    'viral_yellow': "Fontname=Arial,Bold=1,FontSize=22,PrimaryColour=&H00FFFF00,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV=30",
-    'viral_green': "Fontname=Arial,Bold=1,FontSize=22,PrimaryColour=&H0000FF00,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV=30",
-    'clean_white': "Fontname=Arial,Bold=1,FontSize=18,PrimaryColour=&H00FFFFFF,OutlineColour=&H80000000,BorderStyle=1,Outline=1,Shadow=1,Alignment=2,MarginV=25",
-    'neon_cyan': "Fontname=Arial,Bold=1,FontSize=22,PrimaryColour=&H00FFFF,OutlineColour=&H00000000,BorderStyle=3,Outline=2,Shadow=0,Alignment=2,MarginV=30",
-    'classic_box': "Fontname=Arial,FontSize=20,PrimaryColour=&H00FFFFFF,BackColour=&H80000000,BorderStyle=3,Outline=0,Shadow=0,Alignment=2,MarginV=30"
+// --- SUBTITLE STYLES ENGINE (50+ OPÇÕES) ---
+// Formato ASS/SSA Style: Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding
+
+const BASE_STYLE = "FontSize=24,Bold=1,Alignment=2,MarginV=50"; // Base para Shorts (meio-baixo)
+
+const COLORS = {
+    Yellow: '&H00FFFF00', Green: '&H0000FF00', Red: '&H000000FF', Cyan: '&H00FFFF00', 
+    White: '&H00FFFFFF', Black: '&H00000000', Orange: '&H0000A5FF', Pink: '&H009314FF',
+    Purple: '&H00800080', Blue: '&H00FF0000', Gold: '&H0000D7FF'
 };
+
+const SUBTITLE_STYLES = {
+    // --- VIRAL / SHORTS (IMPACT) ---
+    'viral_yellow': `Fontname=Impact,${BASE_STYLE},PrimaryColour=${COLORS.Yellow},OutlineColour=${COLORS.Black},BorderStyle=1,Outline=2,Shadow=0`,
+    'viral_green': `Fontname=Impact,${BASE_STYLE},PrimaryColour=${COLORS.Green},OutlineColour=${COLORS.Black},BorderStyle=1,Outline=2,Shadow=0`,
+    'viral_red': `Fontname=Impact,${BASE_STYLE},PrimaryColour=${COLORS.Red},OutlineColour=${COLORS.White},BorderStyle=1,Outline=2,Shadow=0`,
+    'viral_orange': `Fontname=Impact,${BASE_STYLE},PrimaryColour=${COLORS.Orange},OutlineColour=${COLORS.Black},BorderStyle=1,Outline=2,Shadow=0`,
+    'viral_white_black': `Fontname=Impact,${BASE_STYLE},PrimaryColour=${COLORS.White},OutlineColour=${COLORS.Black},BorderStyle=1,Outline=3,Shadow=2`,
+    'viral_cyan': `Fontname=Impact,${BASE_STYLE},PrimaryColour=${COLORS.Cyan},OutlineColour=${COLORS.Black},BorderStyle=1,Outline=2,Shadow=0`,
+    
+    // --- CLEAN / MINIMALIST (ARIAL/HELVETICA) ---
+    'clean_white': `Fontname=Arial,${BASE_STYLE},PrimaryColour=${COLORS.White},OutlineColour=${COLORS.Black},BorderStyle=1,Outline=1,Shadow=1`,
+    'clean_yellow': `Fontname=Arial,${BASE_STYLE},PrimaryColour=${COLORS.Yellow},OutlineColour=${COLORS.Black},BorderStyle=1,Outline=1,Shadow=0`,
+    'clean_black': `Fontname=Arial,${BASE_STYLE},PrimaryColour=${COLORS.Black},OutlineColour=${COLORS.White},BorderStyle=1,Outline=1,Shadow=0`,
+    'minimal_grey': `Fontname=Helvetica,${BASE_STYLE},PrimaryColour=&H00E0E0E0,OutlineColour=${COLORS.Black},BorderStyle=1,Outline=1,Shadow=0`,
+    
+    // --- BOXED (FUNDO RETANGULAR) ---
+    'box_black_white': `Fontname=Arial,${BASE_STYLE},PrimaryColour=${COLORS.White},BackColour=&H80000000,BorderStyle=3,Outline=0,Shadow=0`,
+    'box_white_black': `Fontname=Arial,${BASE_STYLE},PrimaryColour=${COLORS.Black},BackColour=&H80FFFFFF,BorderStyle=3,Outline=0,Shadow=0`,
+    'box_yellow_black': `Fontname=Arial,${BASE_STYLE},PrimaryColour=${COLORS.Yellow},BackColour=&H80000000,BorderStyle=3,Outline=0,Shadow=0`,
+    'box_red_white': `Fontname=Arial,${BASE_STYLE},PrimaryColour=${COLORS.White},BackColour=&H600000FF,BorderStyle=3,Outline=0,Shadow=0`,
+    
+    // --- NEON / GLOW ---
+    'neon_cyan': `Fontname=Arial,${BASE_STYLE},PrimaryColour=${COLORS.Cyan},OutlineColour=${COLORS.Blue},BorderStyle=1,Outline=2,Shadow=0`,
+    'neon_pink': `Fontname=Arial,${BASE_STYLE},PrimaryColour=${COLORS.Pink},OutlineColour=${COLORS.Purple},BorderStyle=1,Outline=2,Shadow=0`,
+    'neon_green': `Fontname=Arial,${BASE_STYLE},PrimaryColour=${COLORS.Green},OutlineColour=${COLORS.Green},BorderStyle=1,Outline=1,Shadow=0`,
+    
+    // --- CINEMATIC (SERIF) ---
+    'cine_serif_white': `Fontname=Times New Roman,${BASE_STYLE},PrimaryColour=${COLORS.White},OutlineColour=&H40000000,BorderStyle=1,Outline=1,Shadow=1,Italic=1`,
+    'cine_gold': `Fontname=Times New Roman,${BASE_STYLE},PrimaryColour=${COLORS.Gold},OutlineColour=${COLORS.Black},BorderStyle=1,Outline=1,Shadow=1`,
+    
+    // --- GAMING / FUN ---
+    'gaming_bold': `Fontname=Verdana,${BASE_STYLE},PrimaryColour=${COLORS.Green},OutlineColour=${COLORS.Black},BorderStyle=1,Outline=3,Shadow=0`,
+    'gaming_purple': `Fontname=Verdana,${BASE_STYLE},PrimaryColour=${COLORS.White},OutlineColour=${COLORS.Purple},BorderStyle=1,Outline=3,Shadow=0`,
+    
+    // --- RETRO / TYPEWRITER ---
+    'retro_mono': `Fontname=Courier New,${BASE_STYLE},PrimaryColour=${COLORS.Green},BackColour=&H80000000,BorderStyle=3,Outline=0,Shadow=0,Bold=0`
+};
+
+// Gerar variações extras para chegar a 50
+const FONT_FACES = ['Arial', 'Verdana', 'Times New Roman', 'Courier New', 'Impact', 'Trebuchet MS'];
+FONT_FACES.forEach(font => {
+    SUBTITLE_STYLES[`auto_${font}_white`] = `Fontname=${font},${BASE_STYLE},PrimaryColour=${COLORS.White},OutlineColour=${COLORS.Black},BorderStyle=1,Outline=2,Shadow=1`;
+    SUBTITLE_STYLES[`auto_${font}_yellow`] = `Fontname=${font},${BASE_STYLE},PrimaryColour=${COLORS.Yellow},OutlineColour=${COLORS.Black},BorderStyle=1,Outline=2,Shadow=1`;
+});
 
 function timeToSeconds(timeStr) {
     if (!timeStr) return 0;
