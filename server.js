@@ -76,12 +76,22 @@ const uploadAny = multer({ storage }).any();
 
 const jobs = {};
 
-// --- SUBTITLE STYLES ENGINE (Expandido) ---
+// --- SUBTITLE STYLES ENGINE (Fixed BGR Hex Codes) ---
 const BASE_STYLE = "FontSize=24,Bold=1,Alignment=2,MarginV=50";
+// FFmpeg ASS uses &HBBGGRR format (Blue-Green-Red)
 const COLORS = {
-    Yellow: '&H00FFFF00', Green: '&H0000FF00', Red: '&H000000FF', Cyan: '&H00FFFF00', 
-    White: '&H00FFFFFF', Black: '&H00000000', Orange: '&H0000A5FF', Pink: '&H009314FF',
-    Purple: '&H00800080', Blue: '&H00FF0000', Gold: '&H0000D7FF', Grey: '&H00E0E0E0'
+    Yellow: '&H0000FFFF',  // B=00, G=FF, R=FF
+    Green: '&H0000FF00',   // B=00, G=FF, R=00
+    Red: '&H000000FF',     // B=00, G=00, R=FF
+    Cyan: '&H00FFFF00',    // B=00, G=FF, R=FF (Wait, standard Cyan is 00FFFF RGB -> FFFF00 BGR)
+    White: '&H00FFFFFF',   // B=FF, G=FF, R=FF
+    Black: '&H00000000',   // B=00, G=00, R=00
+    Orange: '&H0000A5FF',  // B=00, G=A5, R=FF
+    Pink: '&H009314FF',    // DeepPink FF1493 -> BGR 9314FF
+    Purple: '&H00800080',  // B=80, G=00, R=80
+    Blue: '&H00FF0000',    // B=FF, G=00, R=00
+    Gold: '&H0000D7FF',    // Gold FFD700 -> BGR 00D7FF
+    Grey: '&H00E0E0E0'
 };
 
 const SUBTITLE_STYLES = {
@@ -199,8 +209,8 @@ async function handleExport(job, uploadDir, callback) {
                         args.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
                     }
                     
-                    // -af apad: Preenche áudio se faltar
-                    // -t sDuration: Corta no tempo EXATO
+                    // -af apad: Preenche áudio se faltar (previne glitches)
+                    // -t sDuration: Corta no tempo EXATO (evita que a imagem mude antes ou depois)
                     args.push('-vf', moveFilter, '-af', 'apad', '-t', sDuration.toString(), ...getVideoArgs(), ...getAudioArgs(), '-ac', '2', clipPath);
                 } else {
                     args.push('-stream_loop', '-1', '-i', scene.visual.path);
@@ -224,14 +234,27 @@ async function handleExport(job, uploadDir, callback) {
         if (renderSubtitles && scenesData.length > 0) {
             let srtContent = "";
             let currentTime = 0;
+            // Reduzimos o buffer de transição do tempo de legenda para que ela não invada a próxima cena
             const transitionDuration = transition === 'cut' ? 0 : 1;
 
             scenesData.forEach((sd, idx) => {
                 const dur = sd.duration || 5;
                 if (!sd.narration) return;
-                // Ajuste fino: Legenda termina um pouco antes da transição
-                const visibleDur = dur - (idx < scenesData.length - 1 ? transitionDuration : 0);
+                
+                // A legenda deve sumir ANTES da transição começar para não cruzar
+                const visibleDur = dur - (idx < scenesData.length - 1 ? (transitionDuration * 0.8) : 0);
+                
                 srtContent += `${idx + 1}\n${formatSrtTime(currentTime)} --> ${formatSrtTime(currentTime + visibleDur)}\n${sd.narration}\n\n`;
+                // O tempo corrente avança pelo offset real da timeline
+                // Se temos transição, o próximo clipe começa 'transitionDuration' ANTES do fim deste
+                // Mas aqui calculamos tempo linear para o srt, que o concat ajusta?
+                // NÃO. Se usarmos xfade, os tempos se sobrepõem.
+                // Mas o SRT é aplicado no filtro global.
+                // Correção: Se usarmos xfade, a duração visual total é menor que a soma das partes.
+                // A legenda deve seguir a timeline VISUAL final.
+                
+                // Ajuste simplificado: Assumimos que o texto cabe no tempo 'limpo' da cena.
+                // Avançamos o tempo base subtraindo o overlap
                 currentTime += (dur - transitionDuration);
             });
             srtPath = path.join(uploadDir, `subs_${job.id}.srt`);
