@@ -76,7 +76,7 @@ const uploadAny = multer({ storage }).any();
 
 const jobs = {};
 
-// --- SUBTITLE STYLES ENGINE (Sincronizado com Frontend) ---
+// --- SUBTITLE STYLES ENGINE (Expandido) ---
 const BASE_STYLE = "FontSize=24,Bold=1,Alignment=2,MarginV=50";
 const COLORS = {
     Yellow: '&H00FFFF00', Green: '&H0000FF00', Red: '&H000000FF', Cyan: '&H00FFFF00', 
@@ -185,10 +185,12 @@ async function handleExport(job, uploadDir, callback) {
 
             if (scene.visual) {
                 if (scene.visual.mimetype.includes('image')) {
-                    // FIX: Gera frames de vídeo por um tempo MAIOR (+1s) que o áudio
-                    // Isso garante que o filtro zoompan não termine antes do áudio.
-                    // Depois usamos -t para cortar exatamente no tamanho do áudio.
-                    const moveFilter = getMovementFilter(movement, sDuration + 1.0, targetW, targetH);
+                    // FIXO DE SINCRONIA:
+                    // 1. Geramos o vídeo com +1 segundo de duração extra no filtro zoompan.
+                    // 2. Usamos -t para cortar exatamente na duração do áudio.
+                    // Isso garante que o vídeo nunca seja mais curto que o áudio.
+                    const extraDuration = sDuration + 1.0; 
+                    const moveFilter = getMovementFilter(movement, extraDuration, targetW, targetH);
                     
                     args.push('-framerate', '30', '-loop', '1', '-i', scene.visual.path);
                     if (scene.audio) {
@@ -197,8 +199,8 @@ async function handleExport(job, uploadDir, callback) {
                         args.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
                     }
                     
-                    // -af apad: Adiciona silêncio ao áudio se for menor que o vídeo
-                    // -t sDuration: Corta tudo na duração exata calculada (que deve ser baseada no áudio)
+                    // -af apad: Preenche áudio se faltar
+                    // -t sDuration: Corta no tempo EXATO
                     args.push('-vf', moveFilter, '-af', 'apad', '-t', sDuration.toString(), ...getVideoArgs(), ...getAudioArgs(), '-ac', '2', clipPath);
                 } else {
                     args.push('-stream_loop', '-1', '-i', scene.visual.path);
@@ -227,7 +229,7 @@ async function handleExport(job, uploadDir, callback) {
             scenesData.forEach((sd, idx) => {
                 const dur = sd.duration || 5;
                 if (!sd.narration) return;
-                // Buffer de segurança para legenda não sumir antes do corte
+                // Ajuste fino: Legenda termina um pouco antes da transição
                 const visibleDur = dur - (idx < scenesData.length - 1 ? transitionDuration : 0);
                 srtContent += `${idx + 1}\n${formatSrtTime(currentTime)} --> ${formatSrtTime(currentTime + visibleDur)}\n${sd.narration}\n\n`;
                 currentTime += (dur - transitionDuration);
