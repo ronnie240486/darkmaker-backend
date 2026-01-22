@@ -76,36 +76,45 @@ const uploadAny = multer({ storage }).any();
 
 const jobs = {};
 
-// --- SUBTITLE STYLES ENGINE ---
+// --- SUBTITLE STYLES ENGINE (Sincronizado com Frontend) ---
 const BASE_STYLE = "FontSize=24,Bold=1,Alignment=2,MarginV=50";
 const COLORS = {
     Yellow: '&H00FFFF00', Green: '&H0000FF00', Red: '&H000000FF', Cyan: '&H00FFFF00', 
     White: '&H00FFFFFF', Black: '&H00000000', Orange: '&H0000A5FF', Pink: '&H009314FF',
-    Purple: '&H00800080', Blue: '&H00FF0000', Gold: '&H0000D7FF'
+    Purple: '&H00800080', Blue: '&H00FF0000', Gold: '&H0000D7FF', Grey: '&H00E0E0E0'
 };
 
 const SUBTITLE_STYLES = {
+    // VIRAL
     'viral_yellow': `Fontname=Impact,${BASE_STYLE},PrimaryColour=${COLORS.Yellow},OutlineColour=${COLORS.Black},BorderStyle=1,Outline=2,Shadow=0`,
     'viral_green': `Fontname=Impact,${BASE_STYLE},PrimaryColour=${COLORS.Green},OutlineColour=${COLORS.Black},BorderStyle=1,Outline=2,Shadow=0`,
     'viral_red': `Fontname=Impact,${BASE_STYLE},PrimaryColour=${COLORS.Red},OutlineColour=${COLORS.White},BorderStyle=1,Outline=2,Shadow=0`,
     'viral_orange': `Fontname=Impact,${BASE_STYLE},PrimaryColour=${COLORS.Orange},OutlineColour=${COLORS.Black},BorderStyle=1,Outline=2,Shadow=0`,
     'viral_white_black': `Fontname=Impact,${BASE_STYLE},PrimaryColour=${COLORS.White},OutlineColour=${COLORS.Black},BorderStyle=1,Outline=3,Shadow=2`,
     'viral_cyan': `Fontname=Impact,${BASE_STYLE},PrimaryColour=${COLORS.Cyan},OutlineColour=${COLORS.Black},BorderStyle=1,Outline=2,Shadow=0`,
+    
+    // CLEAN
     'clean_white': `Fontname=Arial,${BASE_STYLE},PrimaryColour=${COLORS.White},OutlineColour=${COLORS.Black},BorderStyle=1,Outline=1,Shadow=1`,
     'clean_yellow': `Fontname=Arial,${BASE_STYLE},PrimaryColour=${COLORS.Yellow},OutlineColour=${COLORS.Black},BorderStyle=1,Outline=1,Shadow=0`,
     'clean_black': `Fontname=Arial,${BASE_STYLE},PrimaryColour=${COLORS.Black},OutlineColour=${COLORS.White},BorderStyle=1,Outline=1,Shadow=0`,
-    'minimal_grey': `Fontname=Helvetica,${BASE_STYLE},PrimaryColour=&H00E0E0E0,OutlineColour=${COLORS.Black},BorderStyle=1,Outline=1,Shadow=0`,
+    'minimal_grey': `Fontname=Helvetica,${BASE_STYLE},PrimaryColour=${COLORS.Grey},OutlineColour=${COLORS.Black},BorderStyle=1,Outline=1,Shadow=0`,
+    
+    // BOXED
     'box_black_white': `Fontname=Arial,${BASE_STYLE},PrimaryColour=${COLORS.White},BackColour=&H80000000,BorderStyle=3,Outline=0,Shadow=0`,
     'box_white_black': `Fontname=Arial,${BASE_STYLE},PrimaryColour=${COLORS.Black},BackColour=&H80FFFFFF,BorderStyle=3,Outline=0,Shadow=0`,
     'box_yellow_black': `Fontname=Arial,${BASE_STYLE},PrimaryColour=${COLORS.Yellow},BackColour=&H80000000,BorderStyle=3,Outline=0,Shadow=0`,
     'box_red_white': `Fontname=Arial,${BASE_STYLE},PrimaryColour=${COLORS.White},BackColour=&H600000FF,BorderStyle=3,Outline=0,Shadow=0`,
+    
+    // NEON & STYLIZED
     'neon_cyan': `Fontname=Arial,${BASE_STYLE},PrimaryColour=${COLORS.Cyan},OutlineColour=${COLORS.Blue},BorderStyle=1,Outline=2,Shadow=0`,
     'neon_pink': `Fontname=Arial,${BASE_STYLE},PrimaryColour=${COLORS.Pink},OutlineColour=${COLORS.Purple},BorderStyle=1,Outline=2,Shadow=0`,
     'neon_green': `Fontname=Arial,${BASE_STYLE},PrimaryColour=${COLORS.Green},OutlineColour=${COLORS.Green},BorderStyle=1,Outline=1,Shadow=0`,
-    'cine_serif_white': `Fontname=Times New Roman,${BASE_STYLE},PrimaryColour=${COLORS.White},OutlineColour=&H40000000,BorderStyle=1,Outline=1,Shadow=1,Italic=1`,
-    'cine_gold': `Fontname=Times New Roman,${BASE_STYLE},PrimaryColour=${COLORS.Gold},OutlineColour=${COLORS.Black},BorderStyle=1,Outline=1,Shadow=1`,
     'gaming_bold': `Fontname=Verdana,${BASE_STYLE},PrimaryColour=${COLORS.Green},OutlineColour=${COLORS.Black},BorderStyle=1,Outline=3,Shadow=0`,
     'gaming_purple': `Fontname=Verdana,${BASE_STYLE},PrimaryColour=${COLORS.White},OutlineColour=${COLORS.Purple},BorderStyle=1,Outline=3,Shadow=0`,
+    
+    // CINEMATIC
+    'cine_serif_white': `Fontname=Times New Roman,${BASE_STYLE},PrimaryColour=${COLORS.White},OutlineColour=&H40000000,BorderStyle=1,Outline=1,Shadow=1,Italic=1`,
+    'cine_gold': `Fontname=Times New Roman,${BASE_STYLE},PrimaryColour=${COLORS.Gold},OutlineColour=${COLORS.Black},BorderStyle=1,Outline=1,Shadow=1`,
     'retro_mono': `Fontname=Courier New,${BASE_STYLE},PrimaryColour=${COLORS.Green},BackColour=&H80000000,BorderStyle=3,Outline=0,Shadow=0,Bold=0`
 };
 
@@ -167,7 +176,7 @@ async function handleExport(job, uploadDir, callback) {
         const clipPaths = [];
         const tempFiles = [];
 
-        // PASSO 1: Gerar clipes individuais com SINCRONIA TOTAL
+        // PASSO 1: Gerar clipes individuais
         for (let i = 0; i < sortedScenes.length; i++) {
             const scene = sortedScenes[i];
             const clipPath = path.join(uploadDir, `temp_clip_${job.id}_${i}.mp4`);
@@ -176,16 +185,21 @@ async function handleExport(job, uploadDir, callback) {
 
             if (scene.visual) {
                 if (scene.visual.mimetype.includes('image')) {
-                    const moveFilter = getMovementFilter(movement, sDuration, targetW, targetH);
+                    // FIX: Gera frames de vídeo por um tempo MAIOR (+1s) que o áudio
+                    // Isso garante que o filtro zoompan não termine antes do áudio.
+                    // Depois usamos -t para cortar exatamente no tamanho do áudio.
+                    const moveFilter = getMovementFilter(movement, sDuration + 1.0, targetW, targetH);
+                    
                     args.push('-framerate', '30', '-loop', '1', '-i', scene.visual.path);
                     if (scene.audio) {
                         args.push('-i', scene.audio.path);
                     } else {
                         args.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
                     }
-                    // Sincronia: Garantimos que o vídeo e o áudio parem no tempo exato (-t)
-                    // e que o áudio seja preenchido com silêncio se for menor (-af apad)
-                    args.push('-vf', moveFilter, '-af', 'apad', '-t', sDuration.toString(), '-shortest', ...getVideoArgs(), ...getAudioArgs(), '-ac', '2', clipPath);
+                    
+                    // -af apad: Adiciona silêncio ao áudio se for menor que o vídeo
+                    // -t sDuration: Corta tudo na duração exata calculada (que deve ser baseada no áudio)
+                    args.push('-vf', moveFilter, '-af', 'apad', '-t', sDuration.toString(), ...getVideoArgs(), ...getAudioArgs(), '-ac', '2', clipPath);
                 } else {
                     args.push('-stream_loop', '-1', '-i', scene.visual.path);
                     if (scene.audio) {
@@ -193,7 +207,7 @@ async function handleExport(job, uploadDir, callback) {
                     } else {
                         args.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
                     }
-                    args.push('-map', '0:v', '-map', '1:a', '-vf', `scale=${targetW}:${targetH}:force_original_aspect_ratio=increase,crop=${targetW}:${targetH},setsar=1,fps=30,format=yuv420p`, '-af', 'apad', '-t', sDuration.toString(), '-shortest', ...getVideoArgs(), ...getAudioArgs(), clipPath);
+                    args.push('-map', '0:v', '-map', '1:a', '-vf', `scale=${targetW}:${targetH}:force_original_aspect_ratio=increase,crop=${targetW}:${targetH},setsar=1,fps=30,format=yuv420p`, '-af', 'apad', '-t', sDuration.toString(), ...getVideoArgs(), ...getAudioArgs(), clipPath);
                 }
             }
             await runFFmpeg(args, job.id);
@@ -201,7 +215,7 @@ async function handleExport(job, uploadDir, callback) {
             tempFiles.push(clipPath);
         }
 
-        // PASSO 2: Criar arquivo SRT se solicitado
+        // PASSO 2: Legendas
         let srtPath = "";
         let forceStyle = SUBTITLE_STYLES[subtitleStyleKey] || SUBTITLE_STYLES['viral_yellow'];
 
@@ -213,6 +227,7 @@ async function handleExport(job, uploadDir, callback) {
             scenesData.forEach((sd, idx) => {
                 const dur = sd.duration || 5;
                 if (!sd.narration) return;
+                // Buffer de segurança para legenda não sumir antes do corte
                 const visibleDur = dur - (idx < scenesData.length - 1 ? transitionDuration : 0);
                 srtContent += `${idx + 1}\n${formatSrtTime(currentTime)} --> ${formatSrtTime(currentTime + visibleDur)}\n${sd.narration}\n\n`;
                 currentTime += (dur - transitionDuration);
