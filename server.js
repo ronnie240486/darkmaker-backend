@@ -243,6 +243,9 @@ async function handleExport(job, uploadDir, callback) {
         let finalArgs = [];
         const absoluteSrtPath = srtPath ? path.resolve(srtPath).split(path.sep).join('/').replace(/:/g, '\\:') : "";
 
+        // Extract correct durations for sync
+        const sceneDurations = sortedScenes.map((_, i) => scenesData[i]?.duration || 5);
+
         if (transition === 'cut' || clipPaths.length === 1) {
             const listPath = path.join(uploadDir, `concat_list_${job.id}.txt`);
             fs.writeFileSync(listPath, clipPaths.map(p => `file '${path.resolve(p).split(path.sep).join('/')}'`).join('\n'));
@@ -260,7 +263,8 @@ async function handleExport(job, uploadDir, callback) {
         } else {
             const inputs = []; 
             clipPaths.forEach(p => inputs.push('-i', p));
-            let { filterComplex, mapArgs } = buildTransitionFilter(clipPaths.length, transition, 5, 1);
+            // FIXED: Pass specific scene durations to build correct offsets
+            let { filterComplex, mapArgs } = buildTransitionFilter(clipPaths.length, transition, sceneDurations, 1);
             
             if (renderSubtitles && srtPath) {
                 const lastLabel = `v${clipPaths.length - 1}`;
