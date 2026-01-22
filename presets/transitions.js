@@ -1,34 +1,80 @@
 
+// presets/transitions.js
+
 export function getTransitionXfade(transId) {
     const map = {
-        'fade-classic': 'fade', 'crossfade': 'fade', 'mix': 'fade', 'black': 'fadeblack', 'white': 'fadewhite', 'cut': 'cut',
-        'wipe-up': 'wipeup', 'wipe-down': 'wipedown', 'wipe-left': 'wipeleft', 'wipe-right': 'wiperight',
-        'slide-left': 'slideleft', 'slide-right': 'slideright', 'slide-up': 'slideup', 'slide-down': 'slidedown',
-        'push-left': 'slideleft', 'push-right': 'slideright',
-        'circle-open': 'circleopen', 'circle-close': 'circleclose',
-        'clock-wipe': 'clock', 'spiral-wipe': 'spiral', 'checker-wipe': 'checkerboard',
-        'glitch': 'glitchdisplace', 'pixelize': 'pixelize', 'datamosh': 'glitchdisplace',
-        'zoom-in': 'zoomin', 'zoom-out': 'zoomout', 'zoom-spin-fast': 'zoomin',
-        'whip-left': 'whipleft', 'whip-right': 'whipright', 'whip-up': 'whipup', 'whip-down': 'whipdown'
+        // --- CLÁSSICOS ---
+        'fade': 'fade',
+        'black': 'fadeblack',
+        'white': 'fadewhite',
+        'cut': 'cut',
+        'dissolve': 'dissolve',
+
+        // --- WIPES & SLIDES ---
+        'wipe-up': 'wipeup',
+        'wipe-down': 'wipedown',
+        'wipe-left': 'wipeleft',
+        'wipe-right': 'wiperight',
+        'slide-left': 'slideleft',
+        'slide-right': 'slideright',
+        'slide-up': 'slideup',
+        'slide-down': 'slidedown',
+        'push-left': 'slideleft',
+        'push-right': 'slideright',
+
+        // --- GEOMÉTRICOS ---
+        'circle-open': 'circleopen',
+        'circle-close': 'circleclose',
+        'checker-wipe': 'checkerboard',
+        'spiral-wipe': 'spiral',
+        'diamond-zoom': 'diagtl',
+        'clock-wipe': 'clock',
+        'rect-crop': 'revealleft',
+        'star-zoom': 'circleopen',
+
+        // --- GLITCH & DIGITAL ---
+        'glitch': 'glitchdisplace',
+        'datamosh': 'glitchdisplace',
+        'pixelize': 'pixelize',
+        'hologram': 'holographic',
+        'block-glitch': 'mosaic',
+        'rgb-split': 'glitchmem',
+
+        // --- ZOOM & WARP ---
+        'zoom-in': 'zoomin',
+        'zoom-out': 'zoomout',
+        'blur-warp': 'blur',
+        'elastic-left': 'slideleft',
+        'whip-left': 'whipleft',
+        'whip-right': 'whipright',
+
+        // --- 3D & PERSPECTIVA ---
+        'cube-rotate-l': 'slideleft',
+        'door-open': 'wipetl',
+        'flip-card': 'slideleft',
+        'room-fly': 'zoomin',
+        
+        // --- NATURAIS ---
+        'water-ripple': 'ripple',
+        'ink-splash': 'dissolve',
+        'smoke-reveal': 'dissolve'
     };
     return map[transId] || 'fade';
 }
 
-/**
- * Constrói o filtro complexo considerando durações variáveis para cada clipe.
- */
-export function buildTransitionFilter(clipCount, transitionType, scenesData, transitionDuration = 1) {
+export function buildTransitionFilter(clipCount, transitionType, durations, transitionDuration = 1) {
     const filters = [];
-    let accumulatedTime = 0;
+    let accumulatedDuration = 0;
+
+    const getDur = (i) => Array.isArray(durations) ? (durations[i] || 5) : durations;
+
+    // Start with the first clip duration
+    accumulatedDuration = getDur(0);
 
     for (let i = 0; i < clipCount - 1; i++) {
-        // Pega a duração real da cena atual vinda do frontend
-        const currentClipDuration = scenesData[i]?.duration || 5;
-        
-        // O offset da transição é o tempo acumulado até agora + duração da cena atual - tempo da transição
-        // accumulatedTime rastreia o ponto de início do "clipe combinado" atual
-        const offset = (accumulatedTime + currentClipDuration) - transitionDuration;
-        
+        // Offset is calculated based on the accumulated end time of the previous sequence minus transition overlap
+        const offset = accumulatedDuration - transitionDuration;
+
         const vIn1 = i === 0 ? "[0:v]" : `[v${i}]`;
         const vIn2 = `[${i + 1}:v]`;
         const vOut = `[v${i + 1}]`;
@@ -40,9 +86,9 @@ export function buildTransitionFilter(clipCount, transitionType, scenesData, tra
         const aIn2 = `[${i + 1}:a]`;
         const aOut = `[a${i + 1}]`;
         filters.push(`${aIn1}${aIn2}acrossfade=d=${transitionDuration}:c1=tri:c2=tri${aOut}`);
-        
-        // Atualiza o tempo acumulado descontando a sobreposição da transição
-        accumulatedTime += (currentClipDuration - transitionDuration);
+
+        // Update accumulated duration: add next clip duration, subtract the overlap consumed by transition
+        accumulatedDuration = accumulatedDuration + getDur(i + 1) - transitionDuration;
     }
 
     const mapV = `[v${clipCount - 1}]`;
