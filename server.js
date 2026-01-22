@@ -76,11 +76,8 @@ const uploadAny = multer({ storage }).any();
 
 const jobs = {};
 
-// --- SUBTITLE STYLES ENGINE (50+ OPÇÕES) ---
-// Formato ASS/SSA Style: Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding
-
-const BASE_STYLE = "FontSize=24,Bold=1,Alignment=2,MarginV=50"; // Base para Shorts (meio-baixo)
-
+// --- SUBTITLE STYLES ENGINE ---
+const BASE_STYLE = "FontSize=24,Bold=1,Alignment=2,MarginV=50";
 const COLORS = {
     Yellow: '&H00FFFF00', Green: '&H0000FF00', Red: '&H000000FF', Cyan: '&H00FFFF00', 
     White: '&H00FFFFFF', Black: '&H00000000', Orange: '&H0000A5FF', Pink: '&H009314FF',
@@ -88,49 +85,29 @@ const COLORS = {
 };
 
 const SUBTITLE_STYLES = {
-    // --- VIRAL / SHORTS (IMPACT) ---
     'viral_yellow': `Fontname=Impact,${BASE_STYLE},PrimaryColour=${COLORS.Yellow},OutlineColour=${COLORS.Black},BorderStyle=1,Outline=2,Shadow=0`,
     'viral_green': `Fontname=Impact,${BASE_STYLE},PrimaryColour=${COLORS.Green},OutlineColour=${COLORS.Black},BorderStyle=1,Outline=2,Shadow=0`,
     'viral_red': `Fontname=Impact,${BASE_STYLE},PrimaryColour=${COLORS.Red},OutlineColour=${COLORS.White},BorderStyle=1,Outline=2,Shadow=0`,
     'viral_orange': `Fontname=Impact,${BASE_STYLE},PrimaryColour=${COLORS.Orange},OutlineColour=${COLORS.Black},BorderStyle=1,Outline=2,Shadow=0`,
     'viral_white_black': `Fontname=Impact,${BASE_STYLE},PrimaryColour=${COLORS.White},OutlineColour=${COLORS.Black},BorderStyle=1,Outline=3,Shadow=2`,
     'viral_cyan': `Fontname=Impact,${BASE_STYLE},PrimaryColour=${COLORS.Cyan},OutlineColour=${COLORS.Black},BorderStyle=1,Outline=2,Shadow=0`,
-    
-    // --- CLEAN / MINIMALIST (ARIAL/HELVETICA) ---
     'clean_white': `Fontname=Arial,${BASE_STYLE},PrimaryColour=${COLORS.White},OutlineColour=${COLORS.Black},BorderStyle=1,Outline=1,Shadow=1`,
     'clean_yellow': `Fontname=Arial,${BASE_STYLE},PrimaryColour=${COLORS.Yellow},OutlineColour=${COLORS.Black},BorderStyle=1,Outline=1,Shadow=0`,
     'clean_black': `Fontname=Arial,${BASE_STYLE},PrimaryColour=${COLORS.Black},OutlineColour=${COLORS.White},BorderStyle=1,Outline=1,Shadow=0`,
     'minimal_grey': `Fontname=Helvetica,${BASE_STYLE},PrimaryColour=&H00E0E0E0,OutlineColour=${COLORS.Black},BorderStyle=1,Outline=1,Shadow=0`,
-    
-    // --- BOXED (FUNDO RETANGULAR) ---
     'box_black_white': `Fontname=Arial,${BASE_STYLE},PrimaryColour=${COLORS.White},BackColour=&H80000000,BorderStyle=3,Outline=0,Shadow=0`,
     'box_white_black': `Fontname=Arial,${BASE_STYLE},PrimaryColour=${COLORS.Black},BackColour=&H80FFFFFF,BorderStyle=3,Outline=0,Shadow=0`,
     'box_yellow_black': `Fontname=Arial,${BASE_STYLE},PrimaryColour=${COLORS.Yellow},BackColour=&H80000000,BorderStyle=3,Outline=0,Shadow=0`,
     'box_red_white': `Fontname=Arial,${BASE_STYLE},PrimaryColour=${COLORS.White},BackColour=&H600000FF,BorderStyle=3,Outline=0,Shadow=0`,
-    
-    // --- NEON / GLOW ---
     'neon_cyan': `Fontname=Arial,${BASE_STYLE},PrimaryColour=${COLORS.Cyan},OutlineColour=${COLORS.Blue},BorderStyle=1,Outline=2,Shadow=0`,
     'neon_pink': `Fontname=Arial,${BASE_STYLE},PrimaryColour=${COLORS.Pink},OutlineColour=${COLORS.Purple},BorderStyle=1,Outline=2,Shadow=0`,
     'neon_green': `Fontname=Arial,${BASE_STYLE},PrimaryColour=${COLORS.Green},OutlineColour=${COLORS.Green},BorderStyle=1,Outline=1,Shadow=0`,
-    
-    // --- CINEMATIC (SERIF) ---
     'cine_serif_white': `Fontname=Times New Roman,${BASE_STYLE},PrimaryColour=${COLORS.White},OutlineColour=&H40000000,BorderStyle=1,Outline=1,Shadow=1,Italic=1`,
     'cine_gold': `Fontname=Times New Roman,${BASE_STYLE},PrimaryColour=${COLORS.Gold},OutlineColour=${COLORS.Black},BorderStyle=1,Outline=1,Shadow=1`,
-    
-    // --- GAMING / FUN ---
     'gaming_bold': `Fontname=Verdana,${BASE_STYLE},PrimaryColour=${COLORS.Green},OutlineColour=${COLORS.Black},BorderStyle=1,Outline=3,Shadow=0`,
     'gaming_purple': `Fontname=Verdana,${BASE_STYLE},PrimaryColour=${COLORS.White},OutlineColour=${COLORS.Purple},BorderStyle=1,Outline=3,Shadow=0`,
-    
-    // --- RETRO / TYPEWRITER ---
     'retro_mono': `Fontname=Courier New,${BASE_STYLE},PrimaryColour=${COLORS.Green},BackColour=&H80000000,BorderStyle=3,Outline=0,Shadow=0,Bold=0`
 };
-
-// Gerar variações extras para chegar a 50
-const FONT_FACES = ['Arial', 'Verdana', 'Times New Roman', 'Courier New', 'Impact', 'Trebuchet MS'];
-FONT_FACES.forEach(font => {
-    SUBTITLE_STYLES[`auto_${font}_white`] = `Fontname=${font},${BASE_STYLE},PrimaryColour=${COLORS.White},OutlineColour=${COLORS.Black},BorderStyle=1,Outline=2,Shadow=1`;
-    SUBTITLE_STYLES[`auto_${font}_yellow`] = `Fontname=${font},${BASE_STYLE},PrimaryColour=${COLORS.Yellow},OutlineColour=${COLORS.Black},BorderStyle=1,Outline=2,Shadow=1`;
-});
 
 function timeToSeconds(timeStr) {
     if (!timeStr) return 0;
@@ -141,7 +118,8 @@ function timeToSeconds(timeStr) {
 function formatSrtTime(seconds) {
     const date = new Date(0);
     date.setMilliseconds(seconds * 1000);
-    return date.toISOString().substr(11, 8) + ',' + date.toISOString().substr(20, 3);
+    const iso = date.toISOString();
+    return iso.substr(11, 8) + ',' + iso.substr(20, 3);
 }
 
 function runFFmpeg(args, jobId) {
@@ -163,7 +141,6 @@ async function handleExport(job, uploadDir, callback) {
     const subtitleStyleKey = job.params?.subtitleStyle || 'viral_yellow';
     const aspectRatio = job.params?.aspectRatio || '16:9';
 
-    // AJUSTE DE RESOLUÇÃO BASEADO NO ASPECT RATIO
     let targetW = 1280;
     let targetH = 720;
     if (aspectRatio === '9:16') {
@@ -190,27 +167,33 @@ async function handleExport(job, uploadDir, callback) {
         const clipPaths = [];
         const tempFiles = [];
 
+        // PASSO 1: Gerar clipes individuais com SINCRONIA TOTAL
         for (let i = 0; i < sortedScenes.length; i++) {
             const scene = sortedScenes[i];
             const clipPath = path.join(uploadDir, `temp_clip_${job.id}_${i}.mp4`);
             const args = [];
-            
-            // Duração da cena individual
             const sDuration = scenesData[i]?.duration || 5;
 
             if (scene.visual) {
                 if (scene.visual.mimetype.includes('image')) {
-                    // Passa W e H para o preset de movimentos
                     const moveFilter = getMovementFilter(movement, sDuration, targetW, targetH);
                     args.push('-framerate', '30', '-loop', '1', '-i', scene.visual.path);
-                    if (scene.audio) args.push('-i', scene.audio.path, '-vf', moveFilter, '-af', 'apad', '-t', sDuration.toString(), '-fflags', '+genpts');
-                    else args.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100', '-vf', moveFilter, '-t', sDuration.toString());
-                    args.push(...getVideoArgs(), '-video_track_timescale', '90000', ...getAudioArgs(), '-ac', '2', clipPath);
+                    if (scene.audio) {
+                        args.push('-i', scene.audio.path);
+                    } else {
+                        args.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
+                    }
+                    // Sincronia: Garantimos que o vídeo e o áudio parem no tempo exato (-t)
+                    // e que o áudio seja preenchido com silêncio se for menor (-af apad)
+                    args.push('-vf', moveFilter, '-af', 'apad', '-t', sDuration.toString(), '-shortest', ...getVideoArgs(), ...getAudioArgs(), '-ac', '2', clipPath);
                 } else {
                     args.push('-stream_loop', '-1', '-i', scene.visual.path);
-                    if (scene.audio) args.push('-i', scene.audio.path);
-                    else args.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
-                    args.push('-map', '0:v', '-map', '1:a', '-vf', `scale=${targetW}:${targetH}:force_original_aspect_ratio=increase,crop=${targetW}:${targetH},setsar=1,fps=30,format=yuv420p`, '-af', 'apad', '-t', sDuration.toString(), ...getVideoArgs(), ...getAudioArgs(), clipPath);
+                    if (scene.audio) {
+                        args.push('-i', scene.audio.path);
+                    } else {
+                        args.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
+                    }
+                    args.push('-map', '0:v', '-map', '1:a', '-vf', `scale=${targetW}:${targetH}:force_original_aspect_ratio=increase,crop=${targetW}:${targetH},setsar=1,fps=30,format=yuv420p`, '-af', 'apad', '-t', sDuration.toString(), '-shortest', ...getVideoArgs(), ...getAudioArgs(), clipPath);
                 }
             }
             await runFFmpeg(args, job.id);
@@ -218,6 +201,7 @@ async function handleExport(job, uploadDir, callback) {
             tempFiles.push(clipPath);
         }
 
+        // PASSO 2: Criar arquivo SRT se solicitado
         let srtPath = "";
         let forceStyle = SUBTITLE_STYLES[subtitleStyleKey] || SUBTITLE_STYLES['viral_yellow'];
 
@@ -228,8 +212,9 @@ async function handleExport(job, uploadDir, callback) {
 
             scenesData.forEach((sd, idx) => {
                 const dur = sd.duration || 5;
+                if (!sd.narration) return;
                 const visibleDur = dur - (idx < scenesData.length - 1 ? transitionDuration : 0);
-                srtContent += `${idx + 1}\n${formatSrtTime(currentTime)} --> ${formatSrtTime(currentTime + visibleDur)}\n${sd.narration || ""}\n\n`;
+                srtContent += `${idx + 1}\n${formatSrtTime(currentTime)} --> ${formatSrtTime(currentTime + visibleDur)}\n${sd.narration}\n\n`;
                 currentTime += (dur - transitionDuration);
             });
             srtPath = path.join(uploadDir, `subs_${job.id}.srt`);
@@ -237,45 +222,59 @@ async function handleExport(job, uploadDir, callback) {
             tempFiles.push(srtPath);
         }
 
+        // PASSO 3: Junção Final
         let finalArgs = [];
+        const absoluteSrtPath = srtPath ? path.resolve(srtPath).split(path.sep).join('/').replace(/:/g, '\\:') : "";
+
         if (transition === 'cut' || clipPaths.length === 1) {
             const listPath = path.join(uploadDir, `concat_list_${job.id}.txt`);
-            fs.writeFileSync(listPath, clipPaths.map(p => `file '${p}'`).join('\n'));
+            fs.writeFileSync(listPath, clipPaths.map(p => `file '${path.resolve(p).split(path.sep).join('/')}'`).join('\n'));
             tempFiles.push(listPath);
+
             if (renderSubtitles && srtPath) {
-                const srtPathPosix = srtPath.split(path.sep).join('/').replace(/:/g, '\\:');
-                // USANDO O ESTILO PROFISSIONAL AQUI
-                finalArgs = ['-f', 'concat', '-safe', '0', '-i', listPath, '-vf', `subtitles='${srtPathPosix}':force_style='${forceStyle}'`, ...getVideoArgs(), '-c:a', 'copy', outputPath];
+                finalArgs = [
+                    '-f', 'concat', '-safe', '0', '-i', listPath, 
+                    '-vf', `subtitles='${absoluteSrtPath}':force_style='${forceStyle}'`, 
+                    ...getVideoArgs(), ...getAudioArgs(), outputPath
+                ];
             } else {
                 finalArgs = ['-f', 'concat', '-safe', '0', '-i', listPath, '-c', 'copy', outputPath];
             }
         } else {
-            const inputs = []; clipPaths.forEach(p => inputs.push('-i', p));
+            const inputs = []; 
+            clipPaths.forEach(p => inputs.push('-i', p));
             let { filterComplex, mapArgs } = buildTransitionFilter(clipPaths.length, transition, 5, 1);
+            
             if (renderSubtitles && srtPath) {
-                const srtPathPosix = srtPath.split(path.sep).join('/').replace(/:/g, '\\:');
                 const lastLabel = `v${clipPaths.length - 1}`;
                 const rawLabel = `${lastLabel}_raw`;
-                const lastIndex = filterComplex.lastIndexOf(`[${lastLabel}]`);
-                if (lastIndex !== -1) {
-                    filterComplex = filterComplex.substring(0, lastIndex) + `[${rawLabel}]` + filterComplex.substring(lastIndex + lastLabel.length + 2);
-                    // USANDO O ESTILO PROFISSIONAL AQUI NO FILTER COMPLEX
-                    filterComplex += `;[${rawLabel}]subtitles='${srtPathPosix}':force_style='${forceStyle}'[${lastLabel}]`;
+                const lastIdx = filterComplex.lastIndexOf(`[${lastLabel}]`);
+                if (lastIdx !== -1) {
+                    filterComplex = filterComplex.substring(0, lastIdx) + `[${rawLabel}]` + filterComplex.substring(lastIdx + lastLabel.length + 2);
+                    filterComplex += `;[${rawLabel}]subtitles='${absoluteSrtPath}':force_style='${forceStyle}'[${lastLabel}]`;
                 }
             }
-            finalArgs = [...inputs, '-filter_complex', filterComplex, ...mapArgs, ...getVideoArgs(), '-c:a', 'aac', '-b:a', '192k', outputPath];
+            
+            finalArgs = [...inputs, '-filter_complex', filterComplex, ...mapArgs, ...getVideoArgs(), ...getAudioArgs(), outputPath];
         }
 
         const totalEstimated = scenesData.reduce((acc, s) => acc + (s.duration || 5), 0);
         callback(job.id, finalArgs, totalEstimated);
         setTimeout(() => tempFiles.forEach(f => fs.existsSync(f) && fs.unlinkSync(f)), 300000); 
-    } catch (e) { console.error(e); jobs[job.id].status = 'failed'; jobs[job.id].error = e.message; }
+    } catch (e) { 
+        console.error("ERRO NO EXPORT:", e); 
+        if (jobs[job.id]) {
+            jobs[job.id].status = 'failed'; 
+            jobs[job.id].error = e.message; 
+        }
+    }
 }
 
 function createFFmpegJob(jobId, args, expectedDuration, res) {
     jobs[jobId].status = 'processing';
     if (res && !res.headersSent) res.status(202).json({ jobId });
     const ffmpeg = spawn(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-stats', '-y', ...args]);
+    
     ffmpeg.stderr.on('data', d => {
         const line = d.toString();
         const timeMatch = line.match(/time=(\d{2}:\d{2}:\d{2}\.\d{2})/);
@@ -285,6 +284,7 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
             if (jobs[jobId]) jobs[jobId].progress = 50 + (Math.min(p, 99) / 2);
         }
     });
+
     ffmpeg.on('close', code => {
         if (!jobs[jobId]) return;
         if (code === 0) {
@@ -292,6 +292,7 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
             jobs[jobId].progress = 100;
             jobs[jobId].downloadUrl = `/outputs/${path.basename(args[args.length - 1])}`;
         } else {
+            console.error(`FFmpeg falhou com código ${code}`);
             jobs[jobId].status = 'failed';
         }
     });
