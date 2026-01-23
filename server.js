@@ -114,7 +114,6 @@ viralColors.forEach(([name, color]) => {
 
 // 3. BOXED (Background Box) - 20 Styles
 viralColors.forEach(([name, color]) => {
-    // Box color is usually semi-transparent black (&H80000000) or contrasting
     SUBTITLE_STYLES[`box_${name.toLowerCase()}`] = genStyle(`Box ${name}`, FONTS.Verdana, color, C.Black, '&H80000000', 3, 0);
 });
 
@@ -202,9 +201,8 @@ async function handleExport(job, uploadDir, callback) {
         const sortedScenes = Object.keys(sceneMap).sort((a,b) => a - b).map(k => sceneMap[k]);
         const clipPaths = [];
         const tempFiles = [];
-        const videoClipDurations = []; // To track the actual length of generated video clips
+        const videoClipDurations = []; 
 
-        // DETERMINAR A DURAÇÃO DA TRANSIÇÃO
         const transitionDuration = transition === 'cut' ? 0 : 1.0;
 
         // PASSO 1: Gerar clipes individuais
@@ -213,16 +211,11 @@ async function handleExport(job, uploadDir, callback) {
             const clipPath = path.join(uploadDir, `temp_clip_${job.id}_${i}.mp4`);
             const args = [];
             
-            // Duração do áudio (base da cena)
             const audioDuration = scenesData[i]?.duration || 5;
-            
-            // Duração do Vídeo = Áudio + Transição (para overlap)
-            // Isso garante que a imagem mude APÓS o áudio terminar, durante a transição
             const videoClipDuration = audioDuration + transitionDuration;
             videoClipDurations.push(videoClipDuration);
 
-            // Filtro de Movimento com buffer extra para evitar frames congelados
-            const moveFilter = getMovementFilter(movement, videoClipDuration + 2.0, targetW, targetH); // +2s safe buffer
+            const moveFilter = getMovementFilter(movement, videoClipDuration + 2.0, targetW, targetH); 
 
             if (scene.visual) {
                 if (scene.visual.mimetype.includes('image')) {
@@ -233,11 +226,8 @@ async function handleExport(job, uploadDir, callback) {
                         args.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
                     }
                     
-                    // -af apad: Preenche áudio com silêncio se for mais curto que o vídeo (crucial para o overlap)
-                    // -t videoClipDuration: Corta o vídeo no tempo estendido (Audio + Transição)
                     args.push('-vf', moveFilter, '-af', 'apad', '-t', videoClipDuration.toString(), ...getVideoArgs(), ...getAudioArgs(), '-ac', '2', clipPath);
                 } else {
-                    // Se for vídeo, fazemos loop se necessário e cortamos
                     args.push('-stream_loop', '-1', '-i', scene.visual.path);
                     if (scene.audio) {
                         args.push('-i', scene.audio.path);
@@ -263,14 +253,6 @@ async function handleExport(job, uploadDir, callback) {
             scenesData.forEach((sd, idx) => {
                 const audioDur = sd.duration || 5;
                 if (!sd.narration) return;
-                
-                // Legenda deve aparecer durante a fala (Audio Duration)
-                // O vídeo se estende por +transitionDuration, mas o áudio principal acaba antes.
-                // currentTime avança pelo acumulado da timeline FINAL.
-                // Com xfade, o tempo visual avança por (VideoDuration - Overlap).
-                // VideoDuration = Audio + Overlap. 
-                // Avanço = (Audio + Overlap) - Overlap = Audio.
-                // Logo, a sincronia está correta se usarmos Audio Duration puro.
                 
                 srtContent += `${idx + 1}\n${formatSrtTime(currentTime)} --> ${formatSrtTime(currentTime + audioDur)}\n${sd.narration}\n\n`;
                 
@@ -303,17 +285,17 @@ async function handleExport(job, uploadDir, callback) {
             const inputs = []; 
             clipPaths.forEach(p => inputs.push('-i', p));
             
-            // FIXED: Pass the extended video clip durations to calculator
             let { filterComplex, mapArgs } = buildTransitionFilter(clipPaths.length, transition, videoClipDurations, transitionDuration);
             
             if (renderSubtitles && srtPath) {
                 const lastLabel = `v${clipPaths.length - 1}`;
-                const rawLabel = `${lastLabel}_raw`;
-                const lastIdx = filterComplex.lastIndexOf(`[${lastLabel}]`);
-                if (lastIdx !== -1) {
-                    filterComplex = filterComplex.substring(0, lastIdx) + `[${rawLabel}]` + filterComplex.substring(lastIdx + lastLabel.length + 2);
-                    filterComplex += `;[${rawLabel}]subtitles='${absoluteSrtPath}':force_style='${forceStyle}'[${lastLabel}]`;
-                }
+                const finalLabel = `v_subs`; 
+                
+                // Append subtitle filter cleanly to end of chain
+                filterComplex += `;[${lastLabel}]subtitles='${absoluteSrtPath}':force_style='${forceStyle}'[${finalLabel}]`;
+                
+                // Update mapArgs to use the subtitle output
+                mapArgs = ['-map', `[${finalLabel}]`, '-map', `[a${clipPaths.length - 1}]`];
             }
             
             finalArgs = [...inputs, '-filter_complex', filterComplex, ...mapArgs, ...getVideoArgs(), ...getAudioArgs(), outputPath];
