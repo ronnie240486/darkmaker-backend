@@ -9,6 +9,7 @@ export function getTransitionXfade(transId) {
         'white': 'fadewhite',
         'cut': 'cut',
         'dissolve': 'dissolve',
+        'mix': 'dissolve',
 
         // --- WIPES & SLIDES ---
         'wipe-up': 'wipeup',
@@ -29,8 +30,11 @@ export function getTransitionXfade(transId) {
         'spiral-wipe': 'spiral',
         'diamond-zoom': 'diagtl',
         'clock-wipe': 'clock',
-        'rect-crop': 'revealleft',
-        'star-zoom': 'circleopen',
+        'rect-crop': 'rectcrop',
+        'star-zoom': 'circleopen', // Fallback
+        'blind-h': 'horzopen',
+        'blind-v': 'vertopen',
+        'triangle-wipe': 'diagbl',
 
         // --- GLITCH & DIGITAL ---
         'glitch': 'glitchdisplace',
@@ -39,26 +43,50 @@ export function getTransitionXfade(transId) {
         'hologram': 'holographic',
         'block-glitch': 'mosaic',
         'rgb-split': 'glitchmem',
+        'color-glitch': 'glitchmem',
+        'cyber-zoom': 'zoomin',
+        'digital-noise': 'pixelize',
+        'scan-line-v': 'vuslice',
 
         // --- ZOOM & WARP ---
         'zoom-in': 'zoomin',
         'zoom-out': 'zoomout',
+        'zoom-spin-fast': 'radial',
         'blur-warp': 'blur',
         'elastic-left': 'slideleft',
         'whip-left': 'whipleft',
         'whip-right': 'whipright',
+        'whip-up': 'slideup', // Fallback if whipup not avail
+        'whip-down': 'slidedown',
 
         // --- 3D & PERSPECTIVA ---
-        'cube-rotate-l': 'slideleft',
-        'door-open': 'wipetl',
-        'flip-card': 'slideleft',
+        'cube-rotate-l': 'slideleft', // No 3d cube in std xfade
+        'cube-rotate-r': 'slideright',
+        'door-open': 'horzopen',
+        'flip-card': 'squeezev',
         'room-fly': 'zoomin',
+        'film-roll': 'slideup',
         
-        // --- NATURAIS ---
+        // --- NATURAIS & LUZ ---
         'water-ripple': 'ripple',
         'ink-splash': 'dissolve',
-        'smoke-reveal': 'dissolve'
+        'smoke-reveal': 'dissolve',
+        'flash-bang': 'fadewhite',
+        'burn': 'dissolve',
+        'light-leak-tr': 'fadewhite',
+        'lens-flare': 'dissolve',
+        'god-rays': 'dissolve',
+        'glow-intense': 'fadewhite',
+        'flash-black': 'fadeblack',
+        
+        // --- ARTISTIC ---
+        'oil-paint': 'dissolve',
+        'paper-rip': 'hblur',
+        'page-turn': 'slideleft',
+        'sketch-reveal': 'dissolve',
+        'liquid-melt': 'dissolve'
     };
+    // Default to fade if unknown
     return map[transId] || 'fade';
 }
 
@@ -80,6 +108,7 @@ export function buildTransitionFilter(clipCount, transitionType, durations, tran
         const vOut = `[v${i + 1}]`;
         const safeTrans = getTransitionXfade(transitionType);
         
+        // Always force format to yuv420p to avoid pixel format mismatch during xfade
         filters.push(`${vIn1}${vIn2}xfade=transition=${safeTrans}:duration=${transitionDuration}:offset=${offset},format=yuv420p${vOut}`);
 
         const aIn1 = i === 0 ? "[0:a]" : `[a${i}]`;
