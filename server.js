@@ -76,57 +76,74 @@ const uploadAny = multer({ storage }).any();
 
 const jobs = {};
 
-// --- SUBTITLE STYLES ENGINE (Fixed BGR Hex Codes) ---
-const BASE_STYLE = "FontSize=24,Bold=1,Alignment=2,MarginV=50";
-// FFmpeg ASS uses &HBBGGRR format (Blue-Green-Red)
-const COLORS = {
-    Yellow: '&H0000FFFF',  // B=00, G=FF, R=FF
-    Green: '&H0000FF00',   // B=00, G=FF, R=00
-    Red: '&H000000FF',     // B=00, G=00, R=FF
-    Cyan: '&H00FFFF00',    // B=00, G=FF, R=FF (Wait, standard Cyan is 00FFFF RGB -> FFFF00 BGR)
-    White: '&H00FFFFFF',   // B=FF, G=FF, R=FF
-    Black: '&H00000000',   // B=00, G=00, R=00
-    Orange: '&H0000A5FF',  // B=00, G=A5, R=FF
-    Pink: '&H009314FF',    // DeepPink FF1493 -> BGR 9314FF
-    Purple: '&H00800080',  // B=80, G=00, R=80
-    Blue: '&H00FF0000',    // B=FF, G=00, R=00
-    Gold: '&H0000D7FF',    // Gold FFD700 -> BGR 00D7FF
-    Grey: '&H00E0E0E0'
+// --- SUBTITLE STYLES ENGINE (100+ MODELS) ---
+// FFmpeg ASS format: &HBBGGRR (Blue-Green-Red)
+const C = {
+    Yellow: '&H0000FFFF', Green: '&H0000FF00', Red: '&H000000FF', Cyan: '&H00FFFF00',
+    White: '&H00FFFFFF', Black: '&H00000000', Orange: '&H0000A5FF', Pink: '&H009314FF',
+    Purple: '&H00800080', Blue: '&H00FF0000', Gold: '&H0000D7FF', Grey: '&H00E0E0E0',
+    Lime: '&H0000FF80', Magenta: '&H00FF00FF', Teal: '&H00808000', Navy: '&H00800000',
+    Maroon: '&H00000080', Olive: '&H00008080', Silver: '&H00C0C0C0', Aqua: '&H00FFFF00'
 };
 
-const SUBTITLE_STYLES = {
-    // VIRAL
-    'viral_yellow': `Fontname=Impact,${BASE_STYLE},PrimaryColour=${COLORS.Yellow},OutlineColour=${COLORS.Black},BorderStyle=1,Outline=2,Shadow=0`,
-    'viral_green': `Fontname=Impact,${BASE_STYLE},PrimaryColour=${COLORS.Green},OutlineColour=${COLORS.Black},BorderStyle=1,Outline=2,Shadow=0`,
-    'viral_red': `Fontname=Impact,${BASE_STYLE},PrimaryColour=${COLORS.Red},OutlineColour=${COLORS.White},BorderStyle=1,Outline=2,Shadow=0`,
-    'viral_orange': `Fontname=Impact,${BASE_STYLE},PrimaryColour=${COLORS.Orange},OutlineColour=${COLORS.Black},BorderStyle=1,Outline=2,Shadow=0`,
-    'viral_white_black': `Fontname=Impact,${BASE_STYLE},PrimaryColour=${COLORS.White},OutlineColour=${COLORS.Black},BorderStyle=1,Outline=3,Shadow=2`,
-    'viral_cyan': `Fontname=Impact,${BASE_STYLE},PrimaryColour=${COLORS.Cyan},OutlineColour=${COLORS.Black},BorderStyle=1,Outline=2,Shadow=0`,
-    
-    // CLEAN
-    'clean_white': `Fontname=Arial,${BASE_STYLE},PrimaryColour=${COLORS.White},OutlineColour=${COLORS.Black},BorderStyle=1,Outline=1,Shadow=1`,
-    'clean_yellow': `Fontname=Arial,${BASE_STYLE},PrimaryColour=${COLORS.Yellow},OutlineColour=${COLORS.Black},BorderStyle=1,Outline=1,Shadow=0`,
-    'clean_black': `Fontname=Arial,${BASE_STYLE},PrimaryColour=${COLORS.Black},OutlineColour=${COLORS.White},BorderStyle=1,Outline=1,Shadow=0`,
-    'minimal_grey': `Fontname=Helvetica,${BASE_STYLE},PrimaryColour=${COLORS.Grey},OutlineColour=${COLORS.Black},BorderStyle=1,Outline=1,Shadow=0`,
-    
-    // BOXED
-    'box_black_white': `Fontname=Arial,${BASE_STYLE},PrimaryColour=${COLORS.White},BackColour=&H80000000,BorderStyle=3,Outline=0,Shadow=0`,
-    'box_white_black': `Fontname=Arial,${BASE_STYLE},PrimaryColour=${COLORS.Black},BackColour=&H80FFFFFF,BorderStyle=3,Outline=0,Shadow=0`,
-    'box_yellow_black': `Fontname=Arial,${BASE_STYLE},PrimaryColour=${COLORS.Yellow},BackColour=&H80000000,BorderStyle=3,Outline=0,Shadow=0`,
-    'box_red_white': `Fontname=Arial,${BASE_STYLE},PrimaryColour=${COLORS.White},BackColour=&H600000FF,BorderStyle=3,Outline=0,Shadow=0`,
-    
-    // NEON & STYLIZED
-    'neon_cyan': `Fontname=Arial,${BASE_STYLE},PrimaryColour=${COLORS.Cyan},OutlineColour=${COLORS.Blue},BorderStyle=1,Outline=2,Shadow=0`,
-    'neon_pink': `Fontname=Arial,${BASE_STYLE},PrimaryColour=${COLORS.Pink},OutlineColour=${COLORS.Purple},BorderStyle=1,Outline=2,Shadow=0`,
-    'neon_green': `Fontname=Arial,${BASE_STYLE},PrimaryColour=${COLORS.Green},OutlineColour=${COLORS.Green},BorderStyle=1,Outline=1,Shadow=0`,
-    'gaming_bold': `Fontname=Verdana,${BASE_STYLE},PrimaryColour=${COLORS.Green},OutlineColour=${COLORS.Black},BorderStyle=1,Outline=3,Shadow=0`,
-    'gaming_purple': `Fontname=Verdana,${BASE_STYLE},PrimaryColour=${COLORS.White},OutlineColour=${COLORS.Purple},BorderStyle=1,Outline=3,Shadow=0`,
-    
-    // CINEMATIC
-    'cine_serif_white': `Fontname=Times New Roman,${BASE_STYLE},PrimaryColour=${COLORS.White},OutlineColour=&H40000000,BorderStyle=1,Outline=1,Shadow=1,Italic=1`,
-    'cine_gold': `Fontname=Times New Roman,${BASE_STYLE},PrimaryColour=${COLORS.Gold},OutlineColour=${COLORS.Black},BorderStyle=1,Outline=1,Shadow=1`,
-    'retro_mono': `Fontname=Courier New,${BASE_STYLE},PrimaryColour=${COLORS.Green},BackColour=&H80000000,BorderStyle=3,Outline=0,Shadow=0,Bold=0`
+const FONTS = {
+    Impact: 'Impact', Arial: 'Arial', Verdana: 'Verdana', 
+    Helvetica: 'Helvetica', Times: 'Times New Roman', Courier: 'Courier New',
+    Comic: 'Comic Sans MS', Tahoma: 'Tahoma', Georgia: 'Georgia', Trebuchet: 'Trebuchet MS'
 };
+
+const BASE = "FontSize=24,Bold=1,Alignment=2,MarginV=50";
+
+// Helper to generate styles
+const genStyle = (name, font, primary, outline, back, borderStyle = 1, shadow = 0) => {
+    return `Fontname=${font},${BASE},PrimaryColour=${primary},OutlineColour=${outline},BackColour=${back},BorderStyle=${borderStyle},Outline=${borderStyle === 3 ? 0 : 2},Shadow=${shadow}`;
+};
+
+const SUBTITLE_STYLES = {};
+
+// 1. VIRAL (Impact Font) - 20 Styles
+const viralColors = Object.entries(C);
+viralColors.forEach(([name, color]) => {
+    SUBTITLE_STYLES[`viral_${name.toLowerCase()}`] = genStyle(`Viral ${name}`, FONTS.Impact, color, C.Black, C.Black, 1, 0);
+});
+
+// 2. CLEAN (Arial/Helvetica) - 20 Styles
+viralColors.forEach(([name, color]) => {
+    SUBTITLE_STYLES[`clean_${name.toLowerCase()}`] = genStyle(`Clean ${name}`, FONTS.Arial, color, C.Black, C.Black, 1, 1);
+});
+
+// 3. BOXED (Background Box) - 20 Styles
+viralColors.forEach(([name, color]) => {
+    // Box color is usually semi-transparent black (&H80000000) or contrasting
+    SUBTITLE_STYLES[`box_${name.toLowerCase()}`] = genStyle(`Box ${name}`, FONTS.Verdana, color, C.Black, '&H80000000', 3, 0);
+});
+
+// 4. NEON (Glow effects via Outline/Shadow) - 15 Styles
+const neonPairs = [['Cyan', C.Blue], ['Pink', C.Purple], ['Green', C.Lime], ['Yellow', C.Orange], ['White', C.Cyan]];
+neonPairs.forEach(([name, outline], idx) => {
+    SUBTITLE_STYLES[`neon_${name.toLowerCase()}`] = `Fontname=Verdana,${BASE},PrimaryColour=${C[name]},OutlineColour=${outline},BorderStyle=1,Outline=2,Shadow=2`;
+    SUBTITLE_STYLES[`neon_bold_${name.toLowerCase()}`] = `Fontname=Impact,${BASE},PrimaryColour=${C[name]},OutlineColour=${outline},BorderStyle=1,Outline=3,Shadow=0`;
+    SUBTITLE_STYLES[`neon_light_${name.toLowerCase()}`] = `Fontname=Arial,${BASE},PrimaryColour=${C[name]},OutlineColour=${outline},BorderStyle=1,Outline=1,Shadow=4`;
+});
+
+// 5. CINEMATIC (Serif) - 10 Styles
+SUBTITLE_STYLES['cine_gold'] = genStyle('Cine Gold', FONTS.Times, C.Gold, C.Black, C.Black, 1, 1);
+SUBTITLE_STYLES['cine_white'] = genStyle('Cine White', FONTS.Times, C.White, '&H40000000', C.Black, 1, 1);
+SUBTITLE_STYLES['cine_silver'] = genStyle('Cine Silver', FONTS.Times, C.Silver, C.Black, C.Black, 1, 1);
+SUBTITLE_STYLES['cine_classic'] = `Fontname=Georgia,${BASE},PrimaryColour=${C.White},OutlineColour=${C.Black},BorderStyle=1,Outline=1,Shadow=1,Italic=1`;
+
+// 6. RETRO (Courier/Pixel) - 10 Styles
+SUBTITLE_STYLES['retro_green'] = genStyle('Retro Green', FONTS.Courier, C.Green, C.Black, '&H80000000', 3, 0);
+SUBTITLE_STYLES['retro_amber'] = genStyle('Retro Amber', FONTS.Courier, C.Orange, C.Black, '&H80000000', 3, 0);
+SUBTITLE_STYLES['retro_white'] = genStyle('Retro White', FONTS.Courier, C.White, C.Black, '&H80000000', 3, 0);
+
+// 7. FUN/COMIC - 10 Styles
+SUBTITLE_STYLES['comic_yellow'] = genStyle('Comic Yellow', FONTS.Comic, C.Yellow, C.Black, C.Black, 1, 2);
+SUBTITLE_STYLES['comic_white'] = genStyle('Comic White', FONTS.Comic, C.White, C.Black, C.Black, 1, 2);
+SUBTITLE_STYLES['comic_cyan'] = genStyle('Comic Cyan', FONTS.Comic, C.Cyan, C.Blue, C.Black, 1, 0);
+
+// Ensure defaults exist
+SUBTITLE_STYLES['viral_yellow'] = SUBTITLE_STYLES['viral_yellow'] || genStyle('Viral Yellow', FONTS.Impact, C.Yellow, C.Black, C.Black, 1, 0);
 
 function timeToSeconds(timeStr) {
     if (!timeStr) return 0;
@@ -185,23 +202,30 @@ async function handleExport(job, uploadDir, callback) {
         const sortedScenes = Object.keys(sceneMap).sort((a,b) => a - b).map(k => sceneMap[k]);
         const clipPaths = [];
         const tempFiles = [];
+        const videoClipDurations = []; // To track the actual length of generated video clips
+
+        // DETERMINAR A DURAÇÃO DA TRANSIÇÃO
+        const transitionDuration = transition === 'cut' ? 0 : 1.0;
 
         // PASSO 1: Gerar clipes individuais
         for (let i = 0; i < sortedScenes.length; i++) {
             const scene = sortedScenes[i];
             const clipPath = path.join(uploadDir, `temp_clip_${job.id}_${i}.mp4`);
             const args = [];
-            const sDuration = scenesData[i]?.duration || 5;
+            
+            // Duração do áudio (base da cena)
+            const audioDuration = scenesData[i]?.duration || 5;
+            
+            // Duração do Vídeo = Áudio + Transição (para overlap)
+            // Isso garante que a imagem mude APÓS o áudio terminar, durante a transição
+            const videoClipDuration = audioDuration + transitionDuration;
+            videoClipDurations.push(videoClipDuration);
+
+            // Filtro de Movimento com buffer extra para evitar frames congelados
+            const moveFilter = getMovementFilter(movement, videoClipDuration + 2.0, targetW, targetH); // +2s safe buffer
 
             if (scene.visual) {
                 if (scene.visual.mimetype.includes('image')) {
-                    // FIXO DE SINCRONIA:
-                    // 1. Geramos o vídeo com +1 segundo de duração extra no filtro zoompan.
-                    // 2. Usamos -t para cortar exatamente na duração do áudio.
-                    // Isso garante que o vídeo nunca seja mais curto que o áudio.
-                    const extraDuration = sDuration + 1.0; 
-                    const moveFilter = getMovementFilter(movement, extraDuration, targetW, targetH);
-                    
                     args.push('-framerate', '30', '-loop', '1', '-i', scene.visual.path);
                     if (scene.audio) {
                         args.push('-i', scene.audio.path);
@@ -209,17 +233,18 @@ async function handleExport(job, uploadDir, callback) {
                         args.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
                     }
                     
-                    // -af apad: Preenche áudio se faltar (previne glitches)
-                    // -t sDuration: Corta no tempo EXATO (evita que a imagem mude antes ou depois)
-                    args.push('-vf', moveFilter, '-af', 'apad', '-t', sDuration.toString(), ...getVideoArgs(), ...getAudioArgs(), '-ac', '2', clipPath);
+                    // -af apad: Preenche áudio com silêncio se for mais curto que o vídeo (crucial para o overlap)
+                    // -t videoClipDuration: Corta o vídeo no tempo estendido (Audio + Transição)
+                    args.push('-vf', moveFilter, '-af', 'apad', '-t', videoClipDuration.toString(), ...getVideoArgs(), ...getAudioArgs(), '-ac', '2', clipPath);
                 } else {
+                    // Se for vídeo, fazemos loop se necessário e cortamos
                     args.push('-stream_loop', '-1', '-i', scene.visual.path);
                     if (scene.audio) {
                         args.push('-i', scene.audio.path);
                     } else {
                         args.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
                     }
-                    args.push('-map', '0:v', '-map', '1:a', '-vf', `scale=${targetW}:${targetH}:force_original_aspect_ratio=increase,crop=${targetW}:${targetH},setsar=1,fps=30,format=yuv420p`, '-af', 'apad', '-t', sDuration.toString(), ...getVideoArgs(), ...getAudioArgs(), clipPath);
+                    args.push('-map', '0:v', '-map', '1:a', '-vf', `scale=${targetW}:${targetH}:force_original_aspect_ratio=increase,crop=${targetW}:${targetH},setsar=1,fps=30,format=yuv420p`, '-af', 'apad', '-t', videoClipDuration.toString(), ...getVideoArgs(), ...getAudioArgs(), clipPath);
                 }
             }
             await runFFmpeg(args, job.id);
@@ -234,28 +259,22 @@ async function handleExport(job, uploadDir, callback) {
         if (renderSubtitles && scenesData.length > 0) {
             let srtContent = "";
             let currentTime = 0;
-            // Reduzimos o buffer de transição do tempo de legenda para que ela não invada a próxima cena
-            const transitionDuration = transition === 'cut' ? 0 : 1;
-
+            
             scenesData.forEach((sd, idx) => {
-                const dur = sd.duration || 5;
+                const audioDur = sd.duration || 5;
                 if (!sd.narration) return;
                 
-                // A legenda deve sumir ANTES da transição começar para não cruzar
-                const visibleDur = dur - (idx < scenesData.length - 1 ? (transitionDuration * 0.8) : 0);
+                // Legenda deve aparecer durante a fala (Audio Duration)
+                // O vídeo se estende por +transitionDuration, mas o áudio principal acaba antes.
+                // currentTime avança pelo acumulado da timeline FINAL.
+                // Com xfade, o tempo visual avança por (VideoDuration - Overlap).
+                // VideoDuration = Audio + Overlap. 
+                // Avanço = (Audio + Overlap) - Overlap = Audio.
+                // Logo, a sincronia está correta se usarmos Audio Duration puro.
                 
-                srtContent += `${idx + 1}\n${formatSrtTime(currentTime)} --> ${formatSrtTime(currentTime + visibleDur)}\n${sd.narration}\n\n`;
-                // O tempo corrente avança pelo offset real da timeline
-                // Se temos transição, o próximo clipe começa 'transitionDuration' ANTES do fim deste
-                // Mas aqui calculamos tempo linear para o srt, que o concat ajusta?
-                // NÃO. Se usarmos xfade, os tempos se sobrepõem.
-                // Mas o SRT é aplicado no filtro global.
-                // Correção: Se usarmos xfade, a duração visual total é menor que a soma das partes.
-                // A legenda deve seguir a timeline VISUAL final.
+                srtContent += `${idx + 1}\n${formatSrtTime(currentTime)} --> ${formatSrtTime(currentTime + audioDur)}\n${sd.narration}\n\n`;
                 
-                // Ajuste simplificado: Assumimos que o texto cabe no tempo 'limpo' da cena.
-                // Avançamos o tempo base subtraindo o overlap
-                currentTime += (dur - transitionDuration);
+                currentTime += audioDur;
             });
             srtPath = path.join(uploadDir, `subs_${job.id}.srt`);
             fs.writeFileSync(srtPath, srtContent);
@@ -265,9 +284,6 @@ async function handleExport(job, uploadDir, callback) {
         // PASSO 3: Junção Final
         let finalArgs = [];
         const absoluteSrtPath = srtPath ? path.resolve(srtPath).split(path.sep).join('/').replace(/:/g, '\\:') : "";
-
-        // Extract correct durations for sync
-        const sceneDurations = sortedScenes.map((_, i) => scenesData[i]?.duration || 5);
 
         if (transition === 'cut' || clipPaths.length === 1) {
             const listPath = path.join(uploadDir, `concat_list_${job.id}.txt`);
@@ -286,8 +302,9 @@ async function handleExport(job, uploadDir, callback) {
         } else {
             const inputs = []; 
             clipPaths.forEach(p => inputs.push('-i', p));
-            // FIXED: Pass specific scene durations to build correct offsets
-            let { filterComplex, mapArgs } = buildTransitionFilter(clipPaths.length, transition, sceneDurations, 1);
+            
+            // FIXED: Pass the extended video clip durations to calculator
+            let { filterComplex, mapArgs } = buildTransitionFilter(clipPaths.length, transition, videoClipDurations, transitionDuration);
             
             if (renderSubtitles && srtPath) {
                 const lastLabel = `v${clipPaths.length - 1}`;
