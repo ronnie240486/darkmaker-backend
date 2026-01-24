@@ -283,40 +283,14 @@ async function handleExport(job, uploadDir, callback) {
                 if (!sd.narration) return;
                 
                 // AJUSTE DE TEMPO DA LEGENDA:
-                // O clipe começa com 'startPadding' de silêncio. A fala começa APÓS esse tempo.
-                // A transição come parte desse startPadding, mas o tempo global avança.
-                
-                // Se usamos transição, o 'offset' come o startPadding do próximo clipe.
-                // Mas no contexto global, a legenda deve aparecer quando a fala começa.
-                
-                // Início da fala neste clipe = currentTime + startPadding
-                // Fim da fala = Início + audioDur
-                
                 const startTime = currentTime + startPadding;
                 const endTime = startTime + audioDur;
 
                 srtContent += `${idx + 1}\n${formatSrtTime(startTime)} --> ${formatSrtTime(endTime)}\n${sd.narration}\n\n`;
                 
-                // O tempo global avança a duração da fala + os paddings, MENOS o overlap da transição
-                // Na concatenação com overlap: Duração Efetiva = Duração Total - Overlap
-                // Mas espere! Se overlap é 'transitionDuration', ele consome o endPadding do atual e startPadding do próximo.
-                // A duração "visível" exclusiva deste clipe é (startPad + audio + endPad) - overlap.
-                
-                // Simplificação: A próxima legenda começa quando a próxima fala começa.
-                // Próxima fala começa após: (startPad deste) + (audio deste) + (endPad deste - overlap) + (overlap) + (startPad do próximo - overlap)... complicado.
-                
-                // Abordagem Segura:
-                // O clipe 1 tem duração total T1.
-                // O clipe 2 começa em T1 - overlap.
-                // A fala do clipe 2 começa em (T1 - overlap) + startPadding.
-                
                 // Atualizamos currentTime para o "ponto de inserção" do próximo clipe
                 const totalClipDuration = startPadding + audioDur + endPadding;
-                const overlap = i === 0 ? 0 : transitionDuration; // O primeiro não tem overlap anterior
-                
-                // O próximo clipe será inserido em currentTime + totalClipDuration - transitionDuration
-                // Mas currentTime aqui é o INÍCIO deste clipe.
-                
+                // FIX: Removed incorrect usage of 'i', logic handled by accumulation
                 currentTime += totalClipDuration - transitionDuration;
             });
             srtPath = path.join(uploadDir, `subs_${job.id}.srt`);
