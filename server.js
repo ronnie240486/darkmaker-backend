@@ -77,7 +77,6 @@ const uploadAny = multer({ storage }).any();
 const jobs = {};
 
 // --- SUBTITLE STYLES ENGINE (100+ MODELS) ---
-// FFmpeg ASS format: &HBBGGRR (Blue-Green-Red)
 const C = {
     Yellow: '&H0000FFFF', Green: '&H0000FF00', Red: '&H000000FF', Cyan: '&H00FFFF00',
     White: '&H00FFFFFF', Black: '&H00000000', Orange: '&H0000A5FF', Pink: '&H009314FF',
@@ -94,55 +93,38 @@ const FONTS = {
 
 const BASE = "FontSize=24,Bold=1,Alignment=2,MarginV=50";
 
-// Helper to generate styles
 const genStyle = (name, font, primary, outline, back, borderStyle = 1, shadow = 0) => {
     return `Fontname=${font},${BASE},PrimaryColour=${primary},OutlineColour=${outline},BackColour=${back},BorderStyle=${borderStyle},Outline=${borderStyle === 3 ? 0 : 2},Shadow=${shadow}`;
 };
 
 const SUBTITLE_STYLES = {};
 
-// 1. VIRAL (Impact Font) - 20 Styles
 const viralColors = Object.entries(C);
 viralColors.forEach(([name, color]) => {
     SUBTITLE_STYLES[`viral_${name.toLowerCase()}`] = genStyle(`Viral ${name}`, FONTS.Impact, color, C.Black, C.Black, 1, 0);
 });
-
-// 2. CLEAN (Arial/Helvetica) - 20 Styles
 viralColors.forEach(([name, color]) => {
     SUBTITLE_STYLES[`clean_${name.toLowerCase()}`] = genStyle(`Clean ${name}`, FONTS.Arial, color, C.Black, C.Black, 1, 1);
 });
-
-// 3. BOXED (Background Box) - 20 Styles
 viralColors.forEach(([name, color]) => {
-    // Box color is usually semi-transparent black (&H80000000) or contrasting
     SUBTITLE_STYLES[`box_${name.toLowerCase()}`] = genStyle(`Box ${name}`, FONTS.Verdana, color, C.Black, '&H80000000', 3, 0);
 });
-
-// 4. NEON (Glow effects via Outline/Shadow) - 15 Styles
 const neonPairs = [['Cyan', C.Blue], ['Pink', C.Purple], ['Green', C.Lime], ['Yellow', C.Orange], ['White', C.Cyan]];
 neonPairs.forEach(([name, outline], idx) => {
     SUBTITLE_STYLES[`neon_${name.toLowerCase()}`] = `Fontname=Verdana,${BASE},PrimaryColour=${C[name]},OutlineColour=${outline},BorderStyle=1,Outline=2,Shadow=2`;
     SUBTITLE_STYLES[`neon_bold_${name.toLowerCase()}`] = `Fontname=Impact,${BASE},PrimaryColour=${C[name]},OutlineColour=${outline},BorderStyle=1,Outline=3,Shadow=0`;
     SUBTITLE_STYLES[`neon_light_${name.toLowerCase()}`] = `Fontname=Arial,${BASE},PrimaryColour=${C[name]},OutlineColour=${outline},BorderStyle=1,Outline=1,Shadow=4`;
 });
-
-// 5. CINEMATIC (Serif) - 10 Styles
 SUBTITLE_STYLES['cine_gold'] = genStyle('Cine Gold', FONTS.Times, C.Gold, C.Black, C.Black, 1, 1);
 SUBTITLE_STYLES['cine_white'] = genStyle('Cine White', FONTS.Times, C.White, '&H40000000', C.Black, 1, 1);
 SUBTITLE_STYLES['cine_silver'] = genStyle('Cine Silver', FONTS.Times, C.Silver, C.Black, C.Black, 1, 1);
 SUBTITLE_STYLES['cine_classic'] = `Fontname=Georgia,${BASE},PrimaryColour=${C.White},OutlineColour=${C.Black},BorderStyle=1,Outline=1,Shadow=1,Italic=1`;
-
-// 6. RETRO (Courier/Pixel) - 10 Styles
 SUBTITLE_STYLES['retro_green'] = genStyle('Retro Green', FONTS.Courier, C.Green, C.Black, '&H80000000', 3, 0);
 SUBTITLE_STYLES['retro_amber'] = genStyle('Retro Amber', FONTS.Courier, C.Orange, C.Black, '&H80000000', 3, 0);
 SUBTITLE_STYLES['retro_white'] = genStyle('Retro White', FONTS.Courier, C.White, C.Black, '&H80000000', 3, 0);
-
-// 7. FUN/COMIC - 10 Styles
 SUBTITLE_STYLES['comic_yellow'] = genStyle('Comic Yellow', FONTS.Comic, C.Yellow, C.Black, C.Black, 1, 2);
 SUBTITLE_STYLES['comic_white'] = genStyle('Comic White', FONTS.Comic, C.White, C.Black, C.Black, 1, 2);
 SUBTITLE_STYLES['comic_cyan'] = genStyle('Comic Cyan', FONTS.Comic, C.Cyan, C.Blue, C.Black, 1, 0);
-
-// Ensure defaults exist
 SUBTITLE_STYLES['viral_yellow'] = SUBTITLE_STYLES['viral_yellow'] || genStyle('Viral Yellow', FONTS.Impact, C.Yellow, C.Black, C.Black, 1, 0);
 
 function timeToSeconds(timeStr) {
@@ -202,55 +184,61 @@ async function handleExport(job, uploadDir, callback) {
         const sortedScenes = Object.keys(sceneMap).sort((a,b) => a - b).map(k => sceneMap[k]);
         const clipPaths = [];
         const tempFiles = [];
-        const videoClipDurations = []; // To track the actual length of generated video clips
+        const videoClipDurations = []; 
 
-        // DETERMINAR A DURAÇÃO DA TRANSIÇÃO E PADDING
-        // Se houver transição, precisamos de padding no áudio para que o overlap aconteça no silêncio
+        // === LÓGICA DE SINCRONIA PERFEITA (SANDUÍCHE DE SILÊNCIO) ===
+        // Se a transição for 1.0s, adicionamos 1.0s ANTES e 1.0s DEPOIS da fala real.
+        // Assim, o xfade consome apenas os buffers, e a fala fica 100% limpa no meio.
+        
         const transitionDuration = transition === 'cut' ? 0 : 1.0;
-        
-        // Start Padding: Adiciona silêncio no início do clipe igual à duração da transição.
-        // Isso permite que o 'xfade' do clipe anterior termine sobre este silêncio, sem comer a fala.
-        const startPadding = transition === 'cut' ? 0.1 : transitionDuration; 
-        
-        // End Padding: Adiciona silêncio no final.
-        const endPadding = transition === 'cut' ? 0.1 : transitionDuration;
+        const padding = transition === 'cut' ? 0 : transitionDuration; 
 
-        // PASSO 1: Gerar clipes individuais com Padding de Áudio e Vídeo Estendido
+        // 1. GERAR CLIPES ESTENDIDOS
         for (let i = 0; i < sortedScenes.length; i++) {
             const scene = sortedScenes[i];
             const clipPath = path.join(uploadDir, `temp_clip_${job.id}_${i}.mp4`);
             const args = [];
             
-            // Duração do áudio (fala real)
-            const audioDuration = scenesData[i]?.duration || 5;
+            // Duração EXATA da fala (vindo do frontend/metadata)
+            const exactAudioDuration = scenesData[i]?.duration || 5;
             
-            // Duração TOTAL do Clipe = StartPad + Audio + EndPad
-            // Isso garante que o vídeo dure tempo suficiente para acomodar os silêncios extras
-            const videoClipDuration = startPadding + audioDuration + endPadding;
-            videoClipDurations.push(videoClipDuration);
+            // Duração total do bloco de vídeo = Padding Inicial + Fala + Padding Final
+            const totalClipDuration = padding + exactAudioDuration + padding;
+            videoClipDurations.push(totalClipDuration);
 
-            // Filtro de Movimento com buffer extra
-            const moveFilter = getMovementFilter(movement, videoClipDuration + 2.0, targetW, targetH);
+            // Filtro de Movimento: deve durar o tempo todo
+            const moveFilter = getMovementFilter(movement, totalClipDuration + 2.0, targetW, targetH);
 
-            // Filtro de Áudio: Adiciona delay no início (silêncio inicial) e garante padding no final
-            // adelay=500|500 -> adiciona 500ms de silêncio no início (se startPadding for 0.5s)
-            // apad -> permite que o áudio seja estendido para combinar com o vídeo (cortado pelo -t)
-            const delayMs = Math.floor(startPadding * 1000);
-            const audioFilter = `adelay=${delayMs}|${delayMs},apad`;
+            // Filtro de Áudio:
+            // adelay: Adiciona silêncio no início (Padding Inicial)
+            // apad: Garante que o áudio continue (Padding Final) até ser cortado pelo -t
+            const delayMs = Math.floor(padding * 1000);
+            
+            // Se delay for 0, adelay quebra em algumas versões, então checamos
+            let audioFilter = "apad";
+            if (delayMs > 0) {
+                audioFilter = `adelay=${delayMs}|${delayMs},apad`;
+            }
 
             if (scene.visual) {
                 if (scene.visual.mimetype.includes('image')) {
                     args.push('-framerate', '30', '-loop', '1', '-i', scene.visual.path);
+                    
                     if (scene.audio) {
                         args.push('-i', scene.audio.path);
                     } else {
+                        // Gerar silêncio se não houver áudio
                         args.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
                     }
                     
-                    // Aplica movimento, filtro de áudio com delay, e corta no tempo total estendido
-                    args.push('-vf', moveFilter, '-af', audioFilter, '-t', videoClipDuration.toString(), ...getVideoArgs(), ...getAudioArgs(), '-ac', '2', clipPath);
+                    args.push(
+                        '-vf', moveFilter, 
+                        '-af', audioFilter, 
+                        '-t', totalClipDuration.toFixed(3), 
+                        ...getVideoArgs(), ...getAudioArgs(), '-ac', '2', clipPath
+                    );
                 } else {
-                    // Se for vídeo, fazemos loop e cortamos
+                    // Vídeo
                     args.push('-stream_loop', '-1', '-i', scene.visual.path);
                     if (scene.audio) {
                         args.push('-i', scene.audio.path);
@@ -260,7 +248,7 @@ async function handleExport(job, uploadDir, callback) {
                     args.push('-map', '0:v', '-map', '1:a', 
                         '-vf', `scale=${targetW}:${targetH}:force_original_aspect_ratio=increase,crop=${targetW}:${targetH},setsar=1,fps=30,format=yuv420p`, 
                         '-af', audioFilter, 
-                        '-t', videoClipDuration.toString(), 
+                        '-t', totalClipDuration.toFixed(3), 
                         ...getVideoArgs(), ...getAudioArgs(), clipPath
                     );
                 }
@@ -270,35 +258,59 @@ async function handleExport(job, uploadDir, callback) {
             tempFiles.push(clipPath);
         }
 
-        // PASSO 2: Legendas
+        // 2. GERAR LEGENDAS (Ajustado ao Padding)
         let srtPath = "";
         let forceStyle = SUBTITLE_STYLES[subtitleStyleKey] || SUBTITLE_STYLES['viral_yellow'];
 
         if (renderSubtitles && scenesData.length > 0) {
             let srtContent = "";
-            let currentTime = 0;
+            let globalTimelineCursor = 0; // Posição absoluta na timeline final
             
             scenesData.forEach((sd, idx) => {
                 const audioDur = sd.duration || 5;
                 if (!sd.narration) return;
                 
-                // AJUSTE DE TEMPO DA LEGENDA:
-                const startTime = currentTime + startPadding;
+                // Onde começa a fala neste clipe específico (relativo ao clipe)?
+                // Começa logo após o Padding Inicial.
+                // Mas na timeline global, precisamos considerar onde o clipe foi inserido.
+                
+                // Na lógica de xfade com offset:
+                // Clipe N começa em (Fim do Clipe N-1) - Transição.
+                
+                // Vamos calcular o tempo de início VISUAL deste clipe na timeline final:
+                // Se idx=0: Start=0.
+                // Se idx>0: Start = (Soma durações anteriores) - (idx * transitionDuration)
+                
+                // Dentro do clipe, a fala começa em +padding.
+                
+                // Simplificação Robusta:
+                // O tempo acumulado representa o ponto de corte.
+                
+                // Inicio da Fala = globalTimelineCursor + padding;
+                const startTime = globalTimelineCursor + padding;
                 const endTime = startTime + audioDur;
 
                 srtContent += `${idx + 1}\n${formatSrtTime(startTime)} --> ${formatSrtTime(endTime)}\n${sd.narration}\n\n`;
                 
-                // Atualizamos currentTime para o "ponto de inserção" do próximo clipe
-                const totalClipDuration = startPadding + audioDur + endPadding;
-                // FIX: Removed incorrect usage of 'i', logic handled by accumulation
-                currentTime += totalClipDuration - transitionDuration;
+                // Avança o cursor: Duração total deste clipe - Overlap com o próximo
+                // O overlap com o próximo será descontado no próximo loop ou ao final.
+                // Na verdade, o `offset` do xfade define onde o próximo começa.
+                // O próximo começa em: (CurrentStart + TotalDuration) - TransitionDuration.
+                
+                // TotalDuration = padding + audioDur + padding
+                const currentTotalDuration = padding + audioDur + padding;
+                
+                // Se houver próximo clipe, ele vai sobrepor o 'padding' final deste clipe.
+                // Portanto, o cursor avança (Total - Transição).
+                globalTimelineCursor += (currentTotalDuration - transitionDuration);
             });
+            
             srtPath = path.join(uploadDir, `subs_${job.id}.srt`);
             fs.writeFileSync(srtPath, srtContent);
             tempFiles.push(srtPath);
         }
 
-        // PASSO 3: Junção Final
+        // 3. CONCATENAÇÃO FINAL
         let finalArgs = [];
         const absoluteSrtPath = srtPath ? path.resolve(srtPath).split(path.sep).join('/').replace(/:/g, '\\:') : "";
 
@@ -320,7 +332,8 @@ async function handleExport(job, uploadDir, callback) {
             const inputs = []; 
             clipPaths.forEach(p => inputs.push('-i', p));
             
-            // Passa as durações estendidas para o calculador de transição
+            // A função de transição agora recebe os tempos estendidos (VideoClipDurations)
+            // O transitionDuration passado aqui deve bater com o padding calculado (1.0 ou 0)
             let { filterComplex, mapArgs } = buildTransitionFilter(clipPaths.length, transition, videoClipDurations, transitionDuration);
             
             if (renderSubtitles && srtPath) {
