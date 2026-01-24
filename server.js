@@ -204,28 +204,39 @@ async function handleExport(job, uploadDir, callback) {
         const tempFiles = [];
         const videoClipDurations = []; // To track the actual length of generated video clips
 
-        // DETERMINAR A DURAÇÃO DA TRANSIÇÃO
+        // DETERMINAR A DURAÇÃO DA TRANSIÇÃO E PADDING
+        // Se houver transição, precisamos de padding no áudio para que o overlap aconteça no silêncio
         const transitionDuration = transition === 'cut' ? 0 : 1.0;
+        
+        // Start Padding: Adiciona silêncio no início do clipe igual à duração da transição.
+        // Isso permite que o 'xfade' do clipe anterior termine sobre este silêncio, sem comer a fala.
+        const startPadding = transition === 'cut' ? 0.1 : transitionDuration; 
+        
+        // End Padding: Adiciona silêncio no final.
+        const endPadding = transition === 'cut' ? 0.1 : transitionDuration;
 
-        // PASSO 1: Gerar clipes individuais
+        // PASSO 1: Gerar clipes individuais com Padding de Áudio e Vídeo Estendido
         for (let i = 0; i < sortedScenes.length; i++) {
             const scene = sortedScenes[i];
             const clipPath = path.join(uploadDir, `temp_clip_${job.id}_${i}.mp4`);
             const args = [];
             
-            // Duração do áudio (base da cena)
+            // Duração do áudio (fala real)
             const audioDuration = scenesData[i]?.duration || 5;
             
-            // SAFETY PADDING: Garante que o áudio termine completamente antes da transição visual começar.
-            // Corrige o problema "cortando o audio nem terminou".
-            const safetyPadding = 0.5;
-
-            // Duração do Vídeo = Áudio + Transição (para overlap) + Segurança
-            const videoClipDuration = audioDuration + transitionDuration + safetyPadding;
+            // Duração TOTAL do Clipe = StartPad + Audio + EndPad
+            // Isso garante que o vídeo dure tempo suficiente para acomodar os silêncios extras
+            const videoClipDuration = startPadding + audioDuration + endPadding;
             videoClipDurations.push(videoClipDuration);
 
-            // Filtro de Movimento com buffer extra para evitar frames congelados
-            const moveFilter = getMovementFilter(movement, videoClipDuration + 2.0, targetW, targetH); // +2s safe buffer
+            // Filtro de Movimento com buffer extra
+            const moveFilter = getMovementFilter(movement, videoClipDuration + 2.0, targetW, targetH);
+
+            // Filtro de Áudio: Adiciona delay no início (silêncio inicial) e garante padding no final
+            // adelay=500|500 -> adiciona 500ms de silêncio no início (se startPadding for 0.5s)
+            // apad -> permite que o áudio seja estendido para combinar com o vídeo (cortado pelo -t)
+            const delayMs = Math.floor(startPadding * 1000);
+            const audioFilter = `adelay=${delayMs}|${delayMs},apad`;
 
             if (scene.visual) {
                 if (scene.visual.mimetype.includes('image')) {
@@ -236,18 +247,22 @@ async function handleExport(job, uploadDir, callback) {
                         args.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
                     }
                     
-                    // -af apad: Preenche áudio com silêncio se for mais curto que o vídeo (crucial para o overlap)
-                    // -t videoClipDuration: Corta o vídeo no tempo estendido (Audio + Transição)
-                    args.push('-vf', moveFilter, '-af', 'apad', '-t', videoClipDuration.toString(), ...getVideoArgs(), ...getAudioArgs(), '-ac', '2', clipPath);
+                    // Aplica movimento, filtro de áudio com delay, e corta no tempo total estendido
+                    args.push('-vf', moveFilter, '-af', audioFilter, '-t', videoClipDuration.toString(), ...getVideoArgs(), ...getAudioArgs(), '-ac', '2', clipPath);
                 } else {
-                    // Se for vídeo, fazemos loop se necessário e cortamos
+                    // Se for vídeo, fazemos loop e cortamos
                     args.push('-stream_loop', '-1', '-i', scene.visual.path);
                     if (scene.audio) {
                         args.push('-i', scene.audio.path);
                     } else {
                         args.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
                     }
-                    args.push('-map', '0:v', '-map', '1:a', '-vf', `scale=${targetW}:${targetH}:force_original_aspect_ratio=increase,crop=${targetW}:${targetH},setsar=1,fps=30,format=yuv420p`, '-af', 'apad', '-t', videoClipDuration.toString(), ...getVideoArgs(), ...getAudioArgs(), clipPath);
+                    args.push('-map', '0:v', '-map', '1:a', 
+                        '-vf', `scale=${targetW}:${targetH}:force_original_aspect_ratio=increase,crop=${targetW}:${targetH},setsar=1,fps=30,format=yuv420p`, 
+                        '-af', audioFilter, 
+                        '-t', videoClipDuration.toString(), 
+                        ...getVideoArgs(), ...getAudioArgs(), clipPath
+                    );
                 }
             }
             await runFFmpeg(args, job.id);
@@ -267,11 +282,42 @@ async function handleExport(job, uploadDir, callback) {
                 const audioDur = sd.duration || 5;
                 if (!sd.narration) return;
                 
-                // Legenda deve aparecer durante a fala (Audio Duration)
-                srtContent += `${idx + 1}\n${formatSrtTime(currentTime)} --> ${formatSrtTime(currentTime + audioDur)}\n${sd.narration}\n\n`;
+                // AJUSTE DE TEMPO DA LEGENDA:
+                // O clipe começa com 'startPadding' de silêncio. A fala começa APÓS esse tempo.
+                // A transição come parte desse startPadding, mas o tempo global avança.
                 
-                const safetyPadding = 0.5;
-                currentTime += audioDur + safetyPadding;
+                // Se usamos transição, o 'offset' come o startPadding do próximo clipe.
+                // Mas no contexto global, a legenda deve aparecer quando a fala começa.
+                
+                // Início da fala neste clipe = currentTime + startPadding
+                // Fim da fala = Início + audioDur
+                
+                const startTime = currentTime + startPadding;
+                const endTime = startTime + audioDur;
+
+                srtContent += `${idx + 1}\n${formatSrtTime(startTime)} --> ${formatSrtTime(endTime)}\n${sd.narration}\n\n`;
+                
+                // O tempo global avança a duração da fala + os paddings, MENOS o overlap da transição
+                // Na concatenação com overlap: Duração Efetiva = Duração Total - Overlap
+                // Mas espere! Se overlap é 'transitionDuration', ele consome o endPadding do atual e startPadding do próximo.
+                // A duração "visível" exclusiva deste clipe é (startPad + audio + endPad) - overlap.
+                
+                // Simplificação: A próxima legenda começa quando a próxima fala começa.
+                // Próxima fala começa após: (startPad deste) + (audio deste) + (endPad deste - overlap) + (overlap) + (startPad do próximo - overlap)... complicado.
+                
+                // Abordagem Segura:
+                // O clipe 1 tem duração total T1.
+                // O clipe 2 começa em T1 - overlap.
+                // A fala do clipe 2 começa em (T1 - overlap) + startPadding.
+                
+                // Atualizamos currentTime para o "ponto de inserção" do próximo clipe
+                const totalClipDuration = startPadding + audioDur + endPadding;
+                const overlap = i === 0 ? 0 : transitionDuration; // O primeiro não tem overlap anterior
+                
+                // O próximo clipe será inserido em currentTime + totalClipDuration - transitionDuration
+                // Mas currentTime aqui é o INÍCIO deste clipe.
+                
+                currentTime += totalClipDuration - transitionDuration;
             });
             srtPath = path.join(uploadDir, `subs_${job.id}.srt`);
             fs.writeFileSync(srtPath, srtContent);
@@ -300,7 +346,7 @@ async function handleExport(job, uploadDir, callback) {
             const inputs = []; 
             clipPaths.forEach(p => inputs.push('-i', p));
             
-            // Pass the extended video clip durations to calculator
+            // Passa as durações estendidas para o calculador de transição
             let { filterComplex, mapArgs } = buildTransitionFilter(clipPaths.length, transition, videoClipDurations, transitionDuration);
             
             if (renderSubtitles && srtPath) {
