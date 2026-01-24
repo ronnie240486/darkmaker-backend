@@ -3,13 +3,10 @@
 
 export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 720, config = {}) {
     const d = parseFloat(durationSec) || 5;
-    // TURBO MODE: Reduzido de 30 para 24 FPS (Cinema Standard) -> 20% mais rápido
+    // TURBO MODE: 24 FPS
     const fps = 24; 
     const totalFrames = Math.ceil(d * fps);
     
-    // TURBO FIX: Removido Super-Sampling de 5x.
-    // Antes: targetW * 5. Agora: targetW * 1.
-    // Isso reduz o processamento de pixel em 25 VEZES.
     const ssW = targetW; 
     const ssH = targetH;
     
@@ -17,10 +14,7 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
     const center = "x=iw/2-(iw/zoom/2):y=ih/2-(ih/zoom/2)";
     const speed = parseFloat(config.speed || 1.0);
 
-    // Simplificado para bilinear (mais rápido que lanczos) no pré-processo
     const preProcess = `scale=${ssW}:${ssH}:force_original_aspect_ratio=increase,crop=${ssW}:${ssH},setsar=1`;
-    
-    // Output final
     const postProcess = `scale=${targetW}:${targetH}:flags=bilinear,setpts=PTS-STARTPTS,fps=${fps},format=yuv420p`;
 
     let effect = "";
@@ -66,7 +60,8 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
             effect = `zoompan=z='1.0+0.003*on':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${base}`;
             break;
         case 'mov-zoom-twist-in':
-            effect = `zoompan=z='1.0+0.001*on':${center}:a='0.05*on'${base}`;
+            // CORRIGIDO: Removido parâmetro 'a' (rotação) que quebrava o FFmpeg
+            effect = `zoompan=z='1.0+0.001*on':${center}${base}`;
             break;
         case 'mov-scale-pulse':
             effect = `zoompan=z='1.2+0.1*cos(on*0.2)':${center}${base}`;
@@ -104,7 +99,8 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
 
         // --- 3D & GLITCH ---
         case 'mov-3d-spin-axis':
-            effect = `zoompan=z=1.1:${center}:a='on*0.02'${base}`;
+            // CORRIGIDO: Removido parâmetro 'a' (rotação)
+            effect = `zoompan=z=1.1:${center}${base}`;
             break;
         case 'mov-glitch-snap':
             effect = `zoompan=z='if(between(mod(on,20),0,2),1.4,1.1)':${center}${base}`;
