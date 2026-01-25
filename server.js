@@ -30,30 +30,22 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
 
-// ARGUMENTOS DE VÍDEO PADRÃO (Otimizados para compatibilidade)
+// TURBO ARGS: 24fps, ultrafast, zerolatency (inicia instantâneo)
 const getVideoArgs = () => [
     '-c:v', 'libx264',
-    '-preset', 'ultrafast', // Rápido para preview
+    '-preset', 'ultrafast',
     '-tune', 'zerolatency',
-    '-profile:v', 'main', 
+    '-profile:v', 'baseline', 
     '-pix_fmt', 'yuv420p',
     '-movflags', '+faststart',
     '-r', '24' 
 ];
 
-// ARGUMENTOS DE ÁUDIO PADRÃO (AAC Stereo 44.1k)
 const getAudioArgs = () => [
     '-c:a', 'aac',
-    '-b:a', '192k', 
-    '-ar', '44100',
-    '-ac', '2' // Força Stereo
+    '-b:a', '128k', 
+    '-ar', '44100'
 ];
-
-// Função auxiliar para normalizar áudio dentro do filter_complex
-// Converte qualquer input para Stereo 44100Hz para evitar falhas no amix
-const normalizeAudio = (labelIn, labelOut) => {
-    return `${labelIn}aformat=sample_rates=44100:channel_layouts=stereo[${labelOut}]`;
-};
 
 // PROBE: Obtém a duração exata do arquivo de mídia no disco
 const getExactDuration = (filePath) => {
@@ -108,12 +100,56 @@ const uploadAny = multer({ storage }).any();
 
 const jobs = {};
 
-// --- SUBTITLE STYLES ---
-const FONTS = { Impact: 'Impact', Arial: 'Arial' };
-const BASE = "FontSize=24,Bold=1,Alignment=2,MarginV=50";
-const SUBTITLE_STYLES = {
-    'viral_yellow': `Fontname=Impact,${BASE},PrimaryColour=&H0000FFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=0`
+// --- SUBTITLE STYLES ENGINE ---
+const C = {
+    Yellow: '&H0000FFFF', Green: '&H0000FF00', Red: '&H000000FF', Cyan: '&H00FFFF00',
+    White: '&H00FFFFFF', Black: '&H00000000', Orange: '&H0000A5FF', Pink: '&H009314FF',
+    Purple: '&H00800080', Blue: '&H00FF0000', Gold: '&H0000D7FF', Grey: '&H00E0E0E0',
+    Lime: '&H0000FF80', Magenta: '&H00FF00FF', Teal: '&H00808000', Navy: '&H00800000',
+    Maroon: '&H00000080', Olive: '&H00008080', Silver: '&H00C0C0C0', Aqua: '&H00FFFF00'
 };
+
+const FONTS = {
+    Impact: 'Impact', Arial: 'Arial', Verdana: 'Verdana', 
+    Helvetica: 'Helvetica', Times: 'Times New Roman', Courier: 'Courier New',
+    Comic: 'Comic Sans MS', Tahoma: 'Tahoma', Georgia: 'Georgia', Trebuchet: 'Trebuchet MS'
+};
+
+const BASE = "FontSize=24,Bold=1,Alignment=2,MarginV=50";
+
+const genStyle = (name, font, primary, outline, back, borderStyle = 1, shadow = 0) => {
+    return `Fontname=${font},${BASE},PrimaryColour=${primary},OutlineColour=${outline},BackColour=${back},BorderStyle=${borderStyle},Outline=${borderStyle === 3 ? 0 : 2},Shadow=${shadow}`;
+};
+
+const SUBTITLE_STYLES = {};
+
+const viralColors = Object.entries(C);
+viralColors.forEach(([name, color]) => {
+    SUBTITLE_STYLES[`viral_${name.toLowerCase()}`] = genStyle(`Viral ${name}`, FONTS.Impact, color, C.Black, C.Black, 1, 0);
+});
+viralColors.forEach(([name, color]) => {
+    SUBTITLE_STYLES[`clean_${name.toLowerCase()}`] = genStyle(`Clean ${name}`, FONTS.Arial, color, C.Black, C.Black, 1, 1);
+});
+viralColors.forEach(([name, color]) => {
+    SUBTITLE_STYLES[`box_${name.toLowerCase()}`] = genStyle(`Box ${name}`, FONTS.Verdana, color, C.Black, '&H80000000', 3, 0);
+});
+const neonPairs = [['Cyan', C.Blue], ['Pink', C.Purple], ['Green', C.Lime], ['Yellow', C.Orange], ['White', C.Cyan]];
+neonPairs.forEach(([name, outline], idx) => {
+    SUBTITLE_STYLES[`neon_${name.toLowerCase()}`] = `Fontname=Verdana,${BASE},PrimaryColour=${C[name]},OutlineColour=${outline},BorderStyle=1,Outline=2,Shadow=2`;
+    SUBTITLE_STYLES[`neon_bold_${name.toLowerCase()}`] = `Fontname=Impact,${BASE},PrimaryColour=${C[name]},OutlineColour=${outline},BorderStyle=1,Outline=3,Shadow=0`;
+    SUBTITLE_STYLES[`neon_light_${name.toLowerCase()}`] = `Fontname=Arial,${BASE},PrimaryColour=${C[name]},OutlineColour=${outline},BorderStyle=1,Outline=1,Shadow=4`;
+});
+SUBTITLE_STYLES['cine_gold'] = genStyle('Cine Gold', FONTS.Times, C.Gold, C.Black, C.Black, 1, 1);
+SUBTITLE_STYLES['cine_white'] = genStyle('Cine White', FONTS.Times, C.White, '&H40000000', C.Black, 1, 1);
+SUBTITLE_STYLES['cine_silver'] = genStyle('Cine Silver', FONTS.Times, C.Silver, C.Black, C.Black, 1, 1);
+SUBTITLE_STYLES['cine_classic'] = `Fontname=Georgia,${BASE},PrimaryColour=${C.White},OutlineColour=${C.Black},BorderStyle=1,Outline=1,Shadow=1,Italic=1`;
+SUBTITLE_STYLES['retro_green'] = genStyle('Retro Green', FONTS.Courier, C.Green, C.Black, '&H80000000', 3, 0);
+SUBTITLE_STYLES['retro_amber'] = genStyle('Retro Amber', FONTS.Courier, C.Orange, C.Black, '&H80000000', 3, 0);
+SUBTITLE_STYLES['retro_white'] = genStyle('Retro White', FONTS.Courier, C.White, C.Black, '&H80000000', 3, 0);
+SUBTITLE_STYLES['comic_yellow'] = genStyle('Comic Yellow', FONTS.Comic, C.Yellow, C.Black, C.Black, 1, 2);
+SUBTITLE_STYLES['comic_white'] = genStyle('Comic White', FONTS.Comic, C.White, C.Black, C.Black, 1, 2);
+SUBTITLE_STYLES['comic_cyan'] = genStyle('Comic Cyan', FONTS.Comic, C.Cyan, C.Blue, C.Black, 1, 0);
+SUBTITLE_STYLES['viral_yellow'] = SUBTITLE_STYLES['viral_yellow'] || genStyle('Viral Yellow', FONTS.Impact, C.Yellow, C.Black, C.Black, 1, 0);
 
 function timeToSeconds(timeStr) {
     if (!timeStr) return 0;
@@ -133,13 +169,7 @@ function runFFmpeg(args, jobId) {
         const proc = spawn(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-y', ...args]);
         let stderr = '';
         proc.stderr.on('data', d => stderr += d.toString());
-        proc.on('close', code => {
-            if (code === 0) resolve();
-            else {
-                console.error(`FFmpeg Error Job ${jobId}:`, stderr);
-                reject(new Error(stderr));
-            }
-        });
+        proc.on('close', code => code === 0 ? resolve() : reject(new Error(stderr)));
     });
 }
 
@@ -152,6 +182,12 @@ async function handleExport(job, uploadDir, callback) {
     const renderSubtitles = job.params?.renderSubtitles === 'true';
     const subtitleStyleKey = job.params?.subtitleStyle || 'viral_yellow';
     const aspectRatio = job.params?.aspectRatio || '16:9';
+    
+    let musicVolume = parseFloat(job.params?.musicVolume);
+    if (isNaN(musicVolume)) musicVolume = 0.2;
+    
+    let sfxVolume = parseFloat(job.params?.sfxVolume);
+    if (isNaN(sfxVolume)) sfxVolume = 0.5;
 
     let targetW = 1280;
     let targetH = 720;
@@ -167,7 +203,6 @@ async function handleExport(job, uploadDir, callback) {
         const sceneMap = {};
         let bgMusicFile = null;
 
-        // Mapear arquivos enviados
         job.files.forEach(f => {
             if (f.originalname.includes('background_music')) {
                 bgMusicFile = f;
@@ -184,113 +219,74 @@ async function handleExport(job, uploadDir, callback) {
 
         const sortedScenes = Object.keys(sceneMap).sort((a,b) => a - b).map(k => sceneMap[k]);
         const clipPaths = [];
+        const tempFiles = [];
         const videoClipDurations = []; 
 
         const transitionDuration = transition === 'cut' ? 0 : 1.0;
-        // Padding extra para transições
         const padding = transition === 'cut' ? 0 : transitionDuration; 
 
-        // PASSO 1: GERAR CLIPES INDIVIDUAIS (Normalizando áudio aqui)
+        // PASSO 1: GERAR CLIPES INDIVIDUAIS
         for (let i = 0; i < sortedScenes.length; i++) {
             const scene = sortedScenes[i];
             
             if(jobs[job.id]) {
-                const percentPerScene = 75 / (sortedScenes.length || 1);
+                const percentPerScene = 75 / sortedScenes.length;
                 jobs[job.id].progress = Math.floor(5 + (i * percentPerScene));
             }
 
             const clipPath = path.join(uploadDir, `temp_clip_${job.id}_${i}.mp4`);
             const args = [];
             
-            // Duração baseada no áudio (TTS)
+            // DURAÇÃO DO ÁUDIO COM MARGEM DE SEGURANÇA
+            // Default 5s se não tiver audio. Se tiver, usa probe + 0.5s para evitar cortes.
             let exactAudioDuration = scenesData[i]?.duration || 5;
+            
             if (scene.audio) {
                 const probeDur = await getExactDuration(scene.audio.path);
-                if (probeDur > 0) exactAudioDuration = probeDur;
+                if (probeDur > 0) exactAudioDuration = probeDur + 0.5; // +0.5s Buffer
             }
 
             const totalClipDuration = padding + exactAudioDuration + padding;
             videoClipDurations.push(totalClipDuration);
 
-            // Filtro de Movimento (Zoom/Pan)
             const moveFilter = getMovementFilter(movement, totalClipDuration + 2.0, targetW, targetH);
-            const delayMs = Math.floor(padding * 1000); // Delay em ms para o áudio começar na hora certa
+            const delayMs = Math.floor(padding * 1000);
             
-            // --- CONSTRUÇÃO DO FILTER COMPLEX ---
-            let filterComplex = "";
-            let inputCount = 0;
-
-            // 1. INPUT VISUAL (0)
+            // Mixagem SFX + Voz
             if (scene.visual) {
                 if (scene.visual.mimetype.includes('image')) {
                     args.push('-framerate', '24', '-loop', '1', '-i', scene.visual.path);
                 } else {
                     args.push('-stream_loop', '-1', '-i', scene.visual.path);
                 }
-                inputCount++; // Index 0
-            } else {
-                // Fallback preto
-                args.push('-f', 'lavfi', '-i', `color=c=black:s=${targetW}x${targetH}:d=${totalClipDuration}`);
-                inputCount++;
+                
+                if (scene.audio) {
+                    args.push('-i', scene.audio.path);
+                } else {
+                    args.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
+                }
+
+                if (scene.sfx) {
+                    args.push('-i', scene.sfx.path);
+                    const mixFilter = `[1:a]volume=1.5[voice];[2:a]volume=${sfxVolume}[sfx];[voice][sfx]amix=inputs=2:duration=first:dropout_transition=2,adelay=${delayMs}|${delayMs},apad`;
+                    
+                    if (scene.visual.mimetype.includes('image')) {
+                         args.push('-vf', moveFilter, '-filter_complex', mixFilter, '-t', totalClipDuration.toFixed(3), ...getVideoArgs(), ...getAudioArgs(), '-ac', '2', clipPath);
+                    } else {
+                         args.push('-map', '0:v', '-filter_complex', `${mixFilter};[0:v]scale=${targetW}:${targetH}:force_original_aspect_ratio=increase,crop=${targetW}:${targetH},setsar=1,fps=24,format=yuv420p`, '-t', totalClipDuration.toFixed(3), ...getVideoArgs(), ...getAudioArgs(), clipPath);
+                    }
+                } else {
+                    const audioFilter = delayMs > 0 ? `volume=1.5,adelay=${delayMs}|${delayMs},apad` : 'volume=1.5,apad';
+                    if (scene.visual.mimetype.includes('image')) {
+                        args.push('-vf', moveFilter, '-af', audioFilter, '-t', totalClipDuration.toFixed(3), ...getVideoArgs(), ...getAudioArgs(), '-ac', '2', clipPath);
+                    } else {
+                        args.push('-map', '0:v', '-map', '1:a', '-vf', `scale=${targetW}:${targetH}:force_original_aspect_ratio=increase,crop=${targetW}:${targetH},setsar=1,fps=24,format=yuv420p`, '-af', audioFilter, '-t', totalClipDuration.toFixed(3), ...getVideoArgs(), ...getAudioArgs(), clipPath);
+                    }
+                }
             }
-
-            // 2. INPUT ÁUDIO TTS (1)
-            let hasVoice = false;
-            if (scene.audio) {
-                args.push('-i', scene.audio.path);
-                hasVoice = true;
-                inputCount++; // Index 1
-            } else {
-                args.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
-                inputCount++; // Index 1 (silêncio)
-            }
-
-            // 3. INPUT SFX (2)
-            let hasSfx = false;
-            if (scene.sfx) {
-                args.push('-i', scene.sfx.path);
-                hasSfx = true;
-                inputCount++; // Index 2
-            }
-
-            // --- LÓGICA DE MIXAGEM ---
-            
-            // Visual Filter chain
-            filterComplex += `[0:v]${moveFilter}[v_out];`;
-
-            // Áudio Filter chain
-            // Normalizar TTS
-            filterComplex += `[1:a]aformat=sample_rates=44100:channel_layouts=stereo,volume=1.5[voice_norm];`;
-            
-            let audioMixNode = `[voice_norm]`;
-
-            if (hasSfx) {
-                // Normalizar SFX
-                filterComplex += `[2:a]aformat=sample_rates=44100:channel_layouts=stereo,volume=0.6[sfx_norm];`;
-                // Mixar
-                filterComplex += `[voice_norm][sfx_norm]amix=inputs=2:duration=first:dropout_transition=0[mix1];`;
-                audioMixNode = `[mix1]`;
-            }
-
-            // Aplicar Delay (Padding) e Pad (para preencher vídeo)
-            const audioFinalNode = `[a_final]`;
-            const delayFilter = delayMs > 0 ? `adelay=${delayMs}|${delayMs},` : '';
-            filterComplex += `${audioMixNode}${delayFilter}apad[a_padded];[a_padded]atrim=0:${totalClipDuration}${audioFinalNode}`;
-
-            // --- EXECUTAR FFMPEG CENA ---
-            const finalSceneArgs = [
-                ...args,
-                '-filter_complex', filterComplex,
-                '-map', '[v_out]',
-                '-map', audioFinalNode,
-                '-t', totalClipDuration.toFixed(3),
-                ...getVideoArgs(),
-                ...getAudioArgs(),
-                clipPath
-            ];
-
-            await runFFmpeg(finalSceneArgs, job.id);
+            await runFFmpeg(args, job.id);
             clipPaths.push(clipPath);
+            tempFiles.push(clipPath);
         }
 
         // PASSO 2: LEGENDAS
@@ -303,11 +299,12 @@ async function handleExport(job, uploadDir, callback) {
             
             for(let idx = 0; idx < scenesData.length; idx++) {
                 const sd = scenesData[idx];
+                // Usar duração REAL (incluindo buffer) menos paddings para a legenda
                 const realAudioDuration = videoClipDurations[idx] - (padding * 2); 
                 
                 if (sd.narration) {
                     const startTime = globalTimelineCursor + padding;
-                    const endTime = startTime + realAudioDuration;
+                    const endTime = startTime + realAudioDuration - 0.5; // Termina antes do buffer
                     srtContent += `${idx + 1}\n${formatSrtTime(startTime)} --> ${formatSrtTime(endTime)}\n${sd.narration}\n\n`;
                 }
                 
@@ -316,104 +313,77 @@ async function handleExport(job, uploadDir, callback) {
             
             srtPath = path.join(uploadDir, `subs_${job.id}.srt`);
             fs.writeFileSync(srtPath, srtContent);
+            tempFiles.push(srtPath);
         }
 
-        // PASSO 3: CONCATENAÇÃO FINAL COM MÚSICA
+        // PASSO 3: CONCATENAÇÃO FINAL
         if(jobs[job.id]) jobs[job.id].progress = 80;
 
         let finalArgs = [];
         const absoluteSrtPath = srtPath ? path.resolve(srtPath).split(path.sep).join('/').replace(/:/g, '\\:') : "";
         const hasBgMusic = !!bgMusicFile;
 
-        // Se usar CUT, usamos concat demuxer (mais rápido e seguro)
         if (transition === 'cut' || clipPaths.length === 1) {
             const listPath = path.join(uploadDir, `concat_list_${job.id}.txt`);
             fs.writeFileSync(listPath, clipPaths.map(p => `file '${path.resolve(p).split(path.sep).join('/')}'`).join('\n'));
+            tempFiles.push(listPath);
 
-            // Input 0: Concat List
-            let inputsArgs = ['-f', 'concat', '-safe', '0', '-i', listPath];
-            let filterComplex = "";
-            let mapArgs = [];
+            const filters = [];
+            let baseArgs = ['-f', 'concat', '-safe', '0', '-i', listPath];
+            if (hasBgMusic) baseArgs.push('-i', bgMusicFile.path);
 
-            // Input 1: Música (Se houver)
-            if (hasBgMusic) {
-                // IMPORTANTE: -stream_loop -1 deve vir ANTES do -i
-                inputsArgs.push('-stream_loop', '-1', '-i', bgMusicFile.path);
-            }
-
-            // Filtros de Vídeo (Legendas)
             if (renderSubtitles && srtPath) {
-                filterComplex += `[0:v]subtitles='${absoluteSrtPath}':force_style='${forceStyle}'[v_out];`;
-                mapArgs.push('-map', '[v_out]');
+                filters.push(`[0:v]subtitles='${absoluteSrtPath}':force_style='${forceStyle}'[v_sub]`);
             } else {
-                mapArgs.push('-map', '0:v');
+                filters.push(`[0:v]null[v_sub]`);
             }
 
-            // Filtros de Áudio (Mix Música)
             if (hasBgMusic) {
-                // Normalizar canais antes do mix final
-                filterComplex += `[0:a]aformat=sample_rates=44100:channel_layouts=stereo[main_a];`;
-                filterComplex += `[1:a]aformat=sample_rates=44100:channel_layouts=stereo,volume=0.2[bgm];`;
-                filterComplex += `[main_a][bgm]amix=inputs=2:duration=first:dropout_transition=0[a_out]`;
-                mapArgs.push('-map', '[a_out]');
+                filters.push(`[1:a]volume=${musicVolume}[bgm];[0:a][bgm]amix=inputs=2:duration=first[a_out]`);
+                finalArgs = [...baseArgs, '-filter_complex', filters.join(';'), '-map', '[v_sub]', '-map', '[a_out]', ...getVideoArgs(), ...getAudioArgs(), outputPath];
             } else {
-                mapArgs.push('-map', '0:a');
-            }
-
-            if (filterComplex) {
-                finalArgs = [...inputsArgs, '-filter_complex', filterComplex, ...mapArgs, ...getVideoArgs(), ...getAudioArgs(), outputPath];
-            } else {
-                finalArgs = [...inputsArgs, ...mapArgs, ...getVideoArgs(), ...getAudioArgs(), outputPath];
+                finalArgs = [
+                    '-f', 'concat', '-safe', '0', '-i', listPath, 
+                    '-vf', renderSubtitles && srtPath ? `subtitles='${absoluteSrtPath}':force_style='${forceStyle}'` : 'null', 
+                    ...getVideoArgs(), ...getAudioArgs(), outputPath
+                ];
             }
 
         } else {
-            // XFADE TRANSITIONS
             const inputs = []; 
             clipPaths.forEach(p => inputs.push('-i', p));
+            if (hasBgMusic) inputs.push('-i', bgMusicFile.path);
             
-            if (hasBgMusic) {
-                inputs.push('-stream_loop', '-1', '-i', bgMusicFile.path);
-            }
+            let { filterComplex, mapArgs } = buildTransitionFilter(clipPaths.length, transition, videoClipDurations, transitionDuration);
             
-            let { filterComplex: transFilter, mapArgs } = buildTransitionFilter(clipPaths.length, transition, videoClipDurations, transitionDuration);
-            
-            // O buildTransitionFilter retorna o grafo de transição. Precisamos interceptar o output dele.
-            // mapArgs[1] é o label de vídeo final (ex: [v4]), mapArgs[3] é o áudio final (ex: [a4])
             const lastVLabel = mapArgs[1]; 
             const lastALabel = mapArgs[3]; 
             
             let finalVLabel = lastVLabel;
             let finalALabel = lastALabel;
 
-            // Add Subtitles
             if (renderSubtitles && srtPath) {
                 const subLabel = `[v_subs]`;
-                transFilter += `;${lastVLabel}subtitles='${absoluteSrtPath}':force_style='${forceStyle}'${subLabel}`;
+                filterComplex += `;${lastVLabel}subtitles='${absoluteSrtPath}':force_style='${forceStyle}'${subLabel}`;
                 finalVLabel = subLabel;
             }
 
-            // Add Music Mix
             if (hasBgMusic) {
-                const bgmIndex = clipPaths.length; // Música é o último input
+                const bgmIndex = clipPaths.length; 
                 const mixedLabel = `[a_mixed]`;
-                transFilter += `;[${bgmIndex}:a]aformat=sample_rates=44100:channel_layouts=stereo,volume=0.2[bgm];${lastALabel}aformat=sample_rates=44100:channel_layouts=stereo[main_a];[main_a][bgm]amix=inputs=2:duration=first:dropout_transition=0${mixedLabel}`;
+                filterComplex += `;[${bgmIndex}:a]volume=${musicVolume}[bgm];${lastALabel}[bgm]amix=inputs=2:duration=first${mixedLabel}`;
                 finalALabel = mixedLabel;
             }
             
-            finalArgs = [...inputs, '-filter_complex', transFilter, '-map', finalVLabel, '-map', finalALabel, ...getVideoArgs(), ...getAudioArgs(), outputPath];
+            finalArgs = [...inputs, '-filter_complex', filterComplex, '-map', finalVLabel, '-map', finalALabel, ...getVideoArgs(), ...getAudioArgs(), outputPath];
         }
 
         const totalEstimated = scenesData.reduce((acc, s) => acc + (s.duration || 5), 0);
         callback(job.id, finalArgs, totalEstimated);
         
-        // Limpeza (após 5 min)
-        setTimeout(() => {
-            clipPaths.forEach(p => fs.unlink(p, () => {}));
-            if(srtPath) fs.unlink(srtPath, () => {});
-        }, 300000); 
-
+        setTimeout(() => tempFiles.forEach(f => fs.existsSync(f) && fs.unlinkSync(f)), 300000); 
     } catch (e) { 
-        console.error("ERRO CRÍTICO NO EXPORT:", e); 
+        console.error("ERRO NO EXPORT:", e); 
         if (jobs[job.id]) {
             jobs[job.id].status = 'failed'; 
             jobs[job.id].error = e.message; 
@@ -424,18 +394,15 @@ async function handleExport(job, uploadDir, callback) {
 function createFFmpegJob(jobId, args, expectedDuration, res) {
     jobs[jobId].status = 'processing';
     if (res && !res.headersSent) res.status(202).json({ jobId });
-    
     const ffmpeg = spawn(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-stats', '-y', ...args]);
     
     ffmpeg.stderr.on('data', d => {
         const line = d.toString();
-        // Progresso baseado no tempo
         const timeMatch = line.match(/time=(\d{2}:\d{2}:\d{2}\.\d{2})/);
         if (timeMatch && expectedDuration > 0) {
             const cur = timeToSeconds(timeMatch[1]);
             let p = Math.round((cur / expectedDuration) * 20); 
-            // Os últimos 20% são do passo final
-            if (jobs[jobId]) jobs[jobId].progress = Math.min(99, 80 + p);
+            if (jobs[jobId]) jobs[jobId].progress = 80 + p;
         }
     });
 
@@ -446,9 +413,8 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
             jobs[jobId].progress = 100;
             jobs[jobId].downloadUrl = `/outputs/${path.basename(args[args.length - 1])}`;
         } else {
-            console.error(`FFmpeg falhou (Código ${code})`);
+            console.error(`FFmpeg falhou com código ${code}`);
             jobs[jobId].status = 'failed';
-            jobs[jobId].error = "Erro na renderização final.";
         }
     });
 }
