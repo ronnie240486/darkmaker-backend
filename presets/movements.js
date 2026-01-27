@@ -118,25 +118,25 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
             break;
 
         // --- FOCO & BLUR (Gaussian Blur) ---
-        // Updated to use gblur instead of scale to avoid crash on odd dimensions and provide better visual quality
+        // UPDATED: Replaced 't' (time) with 'n' (frame number) logic to fix evaluation errors in some FFmpeg versions.
         case 'mov-blur-in':
             // Start blurry (sigma 20) -> End sharp (sigma 0)
             effect = `zoompan=z='min(1.0+(0.001*on),1.1)':${center}${base}`;
-            extraFilter = `,gblur=sigma='20*(1-t/${d})':steps=2`;
+            extraFilter = `,gblur=sigma='20*(1-n/${totalFrames})':steps=2`;
             break;
         case 'mov-blur-out':
             // Start sharp (sigma 0) -> End blurry (sigma 20)
             effect = `zoompan=z='min(1.0+(0.001*on),1.1)':${center}${base}`;
-            extraFilter = `,gblur=sigma='20*(t/${d})':steps=2`;
+            extraFilter = `,gblur=sigma='20*(n/${totalFrames})':steps=2`;
             break;
         case 'mov-blur-pulse':
             // Oscillate blur
             effect = `zoompan=z='1.05+0.01*sin(on*0.05)':${center}${base}`;
-            extraFilter = `,gblur=sigma='10*abs(sin(t*3))':steps=2`;
+            extraFilter = `,gblur=sigma='10*abs(sin((n/${fps})*3))':steps=2`;
             break;
         case 'mov-tilt-shift':
             effect = `zoompan=z=1.1:${center}${base}`;
-            extraFilter = `,vignette='PI/4+0.1*sin(t)'`;
+            extraFilter = `,vignette='PI/4+0.1*sin(n/${fps})'`;
             break;
 
         // --- ELÁSTICO & DIVERTIDO ---
