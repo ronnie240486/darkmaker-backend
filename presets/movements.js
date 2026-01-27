@@ -84,7 +84,6 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
             break;
         case 'mov-3d-flip-x':
             effect = `zoompan=z=1.1:${center}${base}`;
-            // Simpler flip/rotation
             extraFilter = `,rotate='PI*sin(on/20)'`; 
             break;
         case 'mov-3d-flip-y':
@@ -112,27 +111,31 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
             break;
         case 'mov-rgb-shift-move':
             effect = `zoompan=z=1.1:${center}${base}`;
-            // rgbashift is often not available in standard builds, simplified to noise
             extraFilter = `,noise=alls=20:allf=t+u`;
             break;
         case 'mov-vibrate':
             effect = `zoompan=z=1.05:x='iw/2-(iw/zoom/2)+2*random(0)':y='ih/2-(ih/zoom/2)+2*random(1)'${base}`;
             break;
 
-        // --- FOCO & BLUR (Fixed: Removed invalid boxblur expressions) ---
+        // --- FOCO & BLUR (Gradual Blur Fix) ---
         case 'mov-blur-in':
-            // Simulates blur-in by starting zoomed in/shaky and stabilizing, or just a dynamic zoom
-            effect = `zoompan=z='min(1.0+(0.005*on),1.2)':${center}${base}`;
+            // Começa desfocado (Radius 20) e foca (Radius 0) gradualmente
+            effect = `zoompan=z='min(1.0+(0.001*on),1.1)':${center}${base}`;
+            extraFilter = `,boxblur=luma_radius='max(0,20*(1-t/${d}))':luma_power=1`;
             break;
         case 'mov-blur-out':
-            effect = `zoompan=z='max(1.2-(0.005*on),1.0)':${center}${base}`;
+            // Começa focado (Radius 0) e desfoca (Radius 20) gradualmente
+            effect = `zoompan=z='min(1.0+(0.001*on),1.1)':${center}${base}`;
+            extraFilter = `,boxblur=luma_radius='min(20,20*t/${d})':luma_power=1`;
             break;
         case 'mov-blur-pulse':
-            effect = `zoompan=z='1.1+0.05*sin(on*0.1)':${center}${base}`;
+            // Pulsação de foco
+            effect = `zoompan=z='1.05+0.01*sin(on*0.05)':${center}${base}`;
+            extraFilter = `,boxblur=luma_radius='10+10*sin(t*3)':luma_power=1`;
             break;
         case 'mov-tilt-shift':
             effect = `zoompan=z=1.1:${center}${base}`;
-            // Using vignette to simulate focus interest instead of unsupported complex boxblur
+            // Vignette para simular foco central
             extraFilter = `,vignette='PI/4+0.1*sin(t)'`;
             break;
 
