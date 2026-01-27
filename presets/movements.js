@@ -1,5 +1,5 @@
 // presets/movements.js
-// 100% compatível com ffmpeg-static
+// 100% compatível com ffmpeg-static (sem sigma dinâmico)
 
 export function getMovementFilter(
     moveId,
@@ -75,26 +75,23 @@ export function getMovementFilter(
                 `y='ih/2-(ih/zoom/2)+20*rand()-10'${base}`;
             break;
 
-        // --- BLUR (VERSÃO SEGURA COM GBLUR) ---
+        // --- BLUR (FIXO E SEGURO) ---
         case 'mov-blur-in':
             effect =
                 `zoompan=z='min(1.0+(0.001*on),1.1)':${center}${base}`;
-            extraFilter =
-                `,gblur=sigma='20*(1-(t/${d}))'`;
+            extraFilter = `,gblur=sigma=12`;
             break;
 
         case 'mov-blur-out':
             effect =
                 `zoompan=z='min(1.0+(0.001*on),1.1)':${center}${base}`;
-            extraFilter =
-                `,gblur=sigma='20*(t/${d})'`;
+            extraFilter = `,gblur=sigma=8`;
             break;
 
         case 'mov-blur-pulse':
             effect =
                 `zoompan=z='1.05+0.01*sin(on*0.05)':${center}${base}`;
-            extraFilter =
-                `,gblur=sigma='10*abs(sin(t*3))'`;
+            extraFilter = `,gblur=sigma=6`;
             break;
 
         default:
