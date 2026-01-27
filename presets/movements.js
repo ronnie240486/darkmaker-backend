@@ -117,22 +117,22 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
             effect = `zoompan=z=1.05:x='iw/2-(iw/zoom/2)+2*random(0)':y='ih/2-(ih/zoom/2)+2*random(1)'${base}`;
             break;
 
-        // --- FOCO & BLUR (Scale Blur - Universal Compatibility) ---
-        // Uses pixelation technique (scale down -> scale up) to simulate blur
+        // --- FOCO & BLUR (Gaussian Blur) ---
+        // Updated to use gblur instead of scale to avoid crash on odd dimensions and provide better visual quality
         case 'mov-blur-in':
-            // Start very blurry (1/20 scale) -> End sharp (1/1 scale)
+            // Start blurry (sigma 20) -> End sharp (sigma 0)
             effect = `zoompan=z='min(1.0+(0.001*on),1.1)':${center}${base}`;
-            extraFilter = `,scale=w='iw/max(1,20-19*t/${d})':h='ih/max(1,20-19*t/${d})':eval=frame`;
+            extraFilter = `,gblur=sigma='20*(1-t/${d})':steps=2`;
             break;
         case 'mov-blur-out':
-            // Start sharp (1/1 scale) -> End very blurry (1/20 scale)
+            // Start sharp (sigma 0) -> End blurry (sigma 20)
             effect = `zoompan=z='min(1.0+(0.001*on),1.1)':${center}${base}`;
-            extraFilter = `,scale=w='iw/max(1,1+19*t/${d})':h='ih/max(1,1+19*t/${d})':eval=frame`;
+            extraFilter = `,gblur=sigma='20*(t/${d})':steps=2`;
             break;
         case 'mov-blur-pulse':
             // Oscillate blur
             effect = `zoompan=z='1.05+0.01*sin(on*0.05)':${center}${base}`;
-            extraFilter = `,scale=w='iw/max(1,1+10*abs(sin(t*3)))':h='ih/max(1,1+10*abs(sin(t*3)))':eval=frame`;
+            extraFilter = `,gblur=sigma='10*abs(sin(t*3))':steps=2`;
             break;
         case 'mov-tilt-shift':
             effect = `zoompan=z=1.1:${center}${base}`;
