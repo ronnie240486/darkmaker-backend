@@ -1,4 +1,5 @@
 // presets/movements.js
+// 100% compatível com ffmpeg-static
 
 export function getMovementFilter(
     moveId,
@@ -74,32 +75,26 @@ export function getMovementFilter(
                 `y='ih/2-(ih/zoom/2)+20*rand()-10'${base}`;
             break;
 
-        // --- FOCO / BLUR (BOXBLUR – OPÇÃO FINAL) ---
+        // --- BLUR (VERSÃO SEGURA COM GBLUR) ---
         case 'mov-blur-in':
             effect =
                 `zoompan=z='min(1.0+(0.001*on),1.1)':${center}${base}`;
             extraFilter =
-                `,boxblur=` +
-                `luma_radius='20*(1-(t/${d}))':` +
-                `luma_power=1:eval=frame`;
+                `,gblur=sigma='20*(1-(t/${d}))'`;
             break;
 
         case 'mov-blur-out':
             effect =
                 `zoompan=z='min(1.0+(0.001*on),1.1)':${center}${base}`;
             extraFilter =
-                `,boxblur=` +
-                `luma_radius='20*(t/${d})':` +
-                `luma_power=1:eval=frame`;
+                `,gblur=sigma='20*(t/${d})'`;
             break;
 
         case 'mov-blur-pulse':
             effect =
                 `zoompan=z='1.05+0.01*sin(on*0.05)':${center}${base}`;
             extraFilter =
-                `,boxblur=` +
-                `luma_radius='10*abs(sin(t*3))':` +
-                `luma_power=1:eval=frame`;
+                `,gblur=sigma='10*abs(sin(t*3))'`;
             break;
 
         default:
