@@ -117,17 +117,20 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
             effect = `zoompan=z=1.05:x='iw/2-(iw/zoom/2)+2*random(0)':y='ih/2-(ih/zoom/2)+2*random(1)'${base}`;
             break;
 
-        // --- FOCO & BLUR (Correção: Scale Blur para compatibilidade universal) ---
+        // --- FOCO & BLUR (Scale Blur - Universal Compatibility) ---
+        // Uses pixelation technique (scale down -> scale up) to simulate blur
         case 'mov-blur-in':
-            // Reduz resolução drasticamente (1/20) e deixa o postProcess esticar de volta -> Efeito Blur
+            // Start very blurry (1/20 scale) -> End sharp (1/1 scale)
             effect = `zoompan=z='min(1.0+(0.001*on),1.1)':${center}${base}`;
             extraFilter = `,scale=w='iw/max(1,20-19*t/${d})':h='ih/max(1,20-19*t/${d})':eval=frame`;
             break;
         case 'mov-blur-out':
+            // Start sharp (1/1 scale) -> End very blurry (1/20 scale)
             effect = `zoompan=z='min(1.0+(0.001*on),1.1)':${center}${base}`;
             extraFilter = `,scale=w='iw/max(1,1+19*t/${d})':h='ih/max(1,1+19*t/${d})':eval=frame`;
             break;
         case 'mov-blur-pulse':
+            // Oscillate blur
             effect = `zoompan=z='1.05+0.01*sin(on*0.05)':${center}${base}`;
             extraFilter = `,scale=w='iw/max(1,1+10*abs(sin(t*3)))':h='ih/max(1,1+10*abs(sin(t*3)))':eval=frame`;
             break;
