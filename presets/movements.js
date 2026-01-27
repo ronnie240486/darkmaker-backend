@@ -1,5 +1,4 @@
 // presets/movements.js
-// 100% compatível com ffmpeg-static (sem sigma dinâmico)
 
 export function getMovementFilter(
     moveId,
@@ -19,6 +18,7 @@ export function getMovementFilter(
     const center = "x=iw/2-(iw/zoom/2):y=ih/2-(ih/zoom/2)";
     const speed = parseFloat(config.speed || 1.0);
 
+    // Pré-processamento padrão (seguro)
     const preProcess =
         `scale=${ssW}:${ssH}:force_original_aspect_ratio=increase,` +
         `crop=${ssW}:${ssH},setsar=1`;
@@ -32,7 +32,9 @@ export function getMovementFilter(
 
     switch (moveId) {
 
-        // --- ESTÁTICOS ---
+        // ─────────────────────────────
+        // ESTÁTICOS
+        // ─────────────────────────────
         case 'static':
             effect = `zoompan=z=1.0:x=0:y=0${base}`;
             break;
@@ -41,18 +43,22 @@ export function getMovementFilter(
             effect = `zoompan=z='min(1.0+(0.0003*on),1.15)':${center}${base}`;
             break;
 
-        // --- ZOOM ---
+        // ─────────────────────────────
+        // ZOOM
+        // ─────────────────────────────
         case 'zoom-in':
             effect =
-                `zoompan=z='min(zoom+0.001*${speed},1.5)':${center}${base}`;
+                `zoompan=z='min(1.0+(0.001*${speed}*on),1.5)':${center}${base}`;
             break;
 
         case 'zoom-out':
             effect =
-                `zoompan=z='max(1.5-0.001*${speed}*on,1.0)':${center}${base}`;
+                `zoompan=z='max(1.5-(0.001*${speed}*on),1.0)':${center}${base}`;
             break;
 
-        // --- PAN ---
+        // ─────────────────────────────
+        // PAN
+        // ─────────────────────────────
         case 'mov-pan-slow-l':
             effect =
                 `zoompan=z=1.2:` +
@@ -67,7 +73,9 @@ export function getMovementFilter(
                 `y='ih/2-(ih/zoom/2)'${base}`;
             break;
 
-        // --- SHAKE ---
+        // ─────────────────────────────
+        // SHAKE
+        // ─────────────────────────────
         case 'mov-shake-violent':
             effect =
                 `zoompan=z=1.2:` +
@@ -75,25 +83,40 @@ export function getMovementFilter(
                 `y='ih/2-(ih/zoom/2)+20*rand()-10'${base}`;
             break;
 
-        // --- BLUR (FIXO E SEGURO) ---
+        // ─────────────────────────────
+        // FOCO / DESFOCO (ZOOM + BLUR FIXO)
+        // ─────────────────────────────
+
+        // DESFOCADO → FOCA
         case 'mov-blur-in':
             effect =
-                `zoompan=z='min(1.0+(0.001*on),1.1)':${center}${base}`;
-            extraFilter = `,gblur=sigma=12`;
+                `zoompan=` +
+                `z='1.08-(0.0008*on)':` +
+                `${center}${base}`;
+            extraFilter = `,gblur=sigma=3`;
             break;
 
+        // FOCA → DESFOCA
         case 'mov-blur-out':
             effect =
-                `zoompan=z='min(1.0+(0.001*on),1.1)':${center}${base}`;
-            extraFilter = `,gblur=sigma=8`;
+                `zoompan=` +
+                `z='1.0+(0.0008*on)':` +
+                `${center}${base}`;
+            extraFilter = `,gblur=sigma=3`;
             break;
 
+        // PULSAÇÃO SUAVE
         case 'mov-blur-pulse':
             effect =
-                `zoompan=z='1.05+0.01*sin(on*0.05)':${center}${base}`;
-            extraFilter = `,gblur=sigma=6`;
+                `zoompan=` +
+                `z='1.02+0.003*sin(on*0.08)':` +
+                `${center}${base}`;
+            extraFilter = `,gblur=sigma=2`;
             break;
 
+        // ─────────────────────────────
+        // FALLBACK
+        // ─────────────────────────────
         default:
             effect =
                 `zoompan=z='min(1.0+(0.0003*on),1.15)':${center}${base}`;
