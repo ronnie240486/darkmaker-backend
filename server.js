@@ -100,6 +100,153 @@ const uploadAny = multer({ storage }).any();
 
 const jobs = {};
 
+// --- VIDEO TOOLS LOGIC (17 FERRAMENTAS) ---
+function getToolCommand(action, inputFiles, params, outputPath) {
+    const input = inputFiles[0]?.path;
+    const args = [];
+
+    // Base inputs
+    if (action !== 'join') {
+        args.push('-i', input);
+    }
+
+    switch (action) {
+        case 'upscale':
+            const targetRes = params.upscaleTarget === '4k' ? '3840:2160' : params.upscaleTarget === '2k' ? '2560:1440' : '1920:1080';
+            // Usa Lanczos para upscale de alta qualidade e unsharp mask para nitidez
+            args.push('-vf', `scale=${targetRes}:flags=lanczos,unsharp=5:5:1.0:5:5:0.0`, '-c:v', 'libx264', '-crf', '18', '-preset', 'slow', '-c:a', 'copy');
+            break;
+
+        case 'interpolation':
+            const fps = params.targetFps || '60';
+            const slowMo = params.slowMo === 'true';
+            // Usa minterpolate para gerar frames intermediários (Optical Flow via CPU)
+            const filter = `minterpolate='mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1:fps=${fps}'`;
+            if (slowMo) {
+                args.push('-vf', `${filter},setpts=2.0*PTS`, '-r', fps, '-c:v', 'libx264', '-preset', 'medium');
+            } else {
+                args.push('-vf', filter, '-r', fps, '-c:v', 'libx264', '-preset', 'medium');
+            }
+            break;
+
+        case 'colorize':
+            const style = params.style || 'realistic';
+            let colorFilter = "";
+            if (style === 'vintage') colorFilter = "colorbalance=rs=0.2:bs=-0.2,eq=gamma=1.2:saturation=0.8";
+            else if (style === 'vibrant') colorFilter = "eq=contrast=1.1:saturation=1.5";
+            else colorFilter = "eq=saturation=1.1,colorbalance=rm=0.1:gm=0.05:bm=-0.1"; // Tentativa de realismo
+            args.push('-vf', colorFilter, '-c:v', 'libx264', '-c:a', 'copy');
+            break;
+
+        case 'stabilize':
+            // Deshake filter (estabilização single-pass simples no ffmpeg)
+            args.push('-vf', 'deshake', '-c:v', 'libx264', '-preset', 'medium', '-c:a', 'copy');
+            break;
+
+        case 'motion-blur':
+            const shutter = params.shutter || '180';
+            // Simula motion blur misturando frames (tblend) ou minterpolate
+            args.push('-vf', `minterpolate=fps=60:mi_mode=mci:mc_mode=aobmc:shutter_angle=${shutter}`, '-c:v', 'libx264', '-preset', 'medium');
+            break;
+
+        case 'clean-video':
+            // Denoise filters
+            const strength = params.strength === 'high' ? '6.0' : params.strength === 'low' ? '2.0' : '4.0';
+            args.push('-vf', `hqdn3d=${strength}:${strength}:3.0:3.0`, '-c:v', 'libx264', '-preset', 'medium', '-c:a', 'copy');
+            break;
+
+        case 'cut':
+            const start = params.start || '0';
+            const end = params.end;
+            args.push('-ss', start);
+            if (end) args.push('-to', end);
+            args.push('-c', 'copy'); // Fast cut
+            break;
+
+        case 'join':
+            // Cria arquivo de lista para concatenação
+            const listPath = path.join(path.dirname(inputFiles[0].path), `join_list_${Date.now()}.txt`);
+            const fileLines = inputFiles.map(f => `file '${f.path}'`).join('\n');
+            fs.writeFileSync(listPath, fileLines);
+            
+            // Concat demuxer (rápido, mas requer formatos iguais)
+            // Se falhar, poderia usar filter_complex concat, mas assumimos formatos similares
+            args.push('-f', 'concat', '-safe', '0', '-i', listPath, '-c', 'copy');
+            break;
+
+        case 'compress':
+            const crf = params.crf || '28';
+            args.push('-c:v', 'libx264', '-crf', crf, '-preset', 'medium', '-c:a', 'aac', '-b:a', '128k');
+            break;
+
+        case 'convert':
+            // Formato é definido pela extensão de saída, args genéricos de compatibilidade
+            args.push('-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac');
+            break;
+
+        case 'reverse':
+            // Reverte vídeo e áudio
+            args.push('-vf', 'reverse', '-af', 'areverse', '-c:v', 'libx264', '-preset', 'medium');
+            break;
+
+        case 'speed':
+            const speed = parseFloat(params.speed || '1.0');
+            const setpts = (1 / speed).toFixed(4);
+            const atempo = speed;
+            
+            // Filtro de áudio atempo suporta 0.5 a 2.0. Para valores maiores, encadear.
+            let aFilter = `atempo=${atempo}`;
+            if (speed > 2.0) aFilter = `atempo=2.0,atempo=${(speed/2).toFixed(2)}`;
+            if (speed < 0.5) aFilter = `atempo=0.5,atempo=${(speed*2).toFixed(2)}`;
+
+            args.push('-filter_complex', `[0:v]setpts=${setpts}*PTS[v];[0:a]${aFilter}[a]`, '-map', '[v]', '-map', '[a]', '-c:v', 'libx264');
+            break;
+
+        case 'resize':
+            const ratio = params.ratio || '16:9';
+            let scaleFilter = "scale=1280:720";
+            if (ratio === '9:16') scaleFilter = "scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280";
+            if (ratio === '1:1') scaleFilter = "scale=1080:1080:force_original_aspect_ratio=increase,crop=1080:1080";
+            if (ratio === '4:3') scaleFilter = "scale=1024:768:force_original_aspect_ratio=increase,crop=1024:768";
+            
+            args.push('-vf', scaleFilter, '-c:v', 'libx264', '-c:a', 'copy');
+            break;
+
+        case 'watermark':
+            const text = params.text || "Watermark";
+            const pos = params.position || "bottom-right";
+            let posExp = "x=w-tw-10:y=h-th-10"; // bottom-right default
+            if (pos === 'bottom-left') posExp = "x=10:y=h-th-10";
+            if (pos === 'top-right') posExp = "x=w-tw-10:y=10";
+            if (pos === 'center') posExp = "x=(w-text_w)/2:y=(h-text_h)/2";
+            
+            args.push('-vf', `drawtext=text='${text}':fontcolor=white:fontsize=24:box=1:boxcolor=black@0.5:boxborderw=5:${posExp}`, '-c:v', 'libx264', '-c:a', 'copy');
+            break;
+
+        case 'gif':
+            const gifW = params.width || '480';
+            const gifFps = params.fps || '15';
+            // Paleta otimizada para GIF de alta qualidade
+            args.push('-vf', `fps=${gifFps},scale=${gifW}:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse`);
+            break;
+
+        case 'remove-audio':
+            args.push('-c:v', 'copy', '-an');
+            break;
+
+        case 'extract-audio':
+            args.push('-vn', '-c:a', 'libmp3lame', '-q:a', '2');
+            break;
+
+        default: // Fallback copy
+            args.push('-c', 'copy');
+    }
+
+    // Output filename push
+    args.push(outputPath);
+    return args;
+}
+
 // --- SUBTITLE STYLES ENGINE ---
 const C = {
     Yellow: '&H0000FFFF', Green: '&H0000FF00', Red: '&H000000FF', Cyan: '&H00FFFF00',
@@ -164,15 +311,42 @@ function formatSrtTime(seconds) {
     return iso.substr(11, 8) + ',' + iso.substr(20, 3);
 }
 
-function runFFmpeg(args, jobId) {
-    return new Promise((resolve, reject) => {
-        const proc = spawn(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-y', ...args]);
-        let stderr = '';
-        proc.stderr.on('data', d => stderr += d.toString());
-        proc.on('close', code => code === 0 ? resolve() : reject(new Error(stderr)));
+function createFFmpegJob(jobId, args, expectedDuration, res) {
+    jobs[jobId].status = 'processing';
+    if (res && !res.headersSent) res.status(202).json({ jobId });
+    
+    console.log(`[JOB ${jobId}] Spawning FFmpeg: ${args.join(' ')}`);
+    const ffmpeg = spawn(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-stats', '-y', ...args]);
+    
+    ffmpeg.stderr.on('data', d => {
+        const line = d.toString();
+        // Log progress slightly
+        if(line.includes('time=')) {
+             const timeMatch = line.match(/time=(\d{2}:\d{2}:\d{2}\.\d{2})/);
+             if (timeMatch && expectedDuration > 0) {
+                const cur = timeToSeconds(timeMatch[1]);
+                let p = Math.round((cur / expectedDuration) * 100);
+                if (p > 100) p = 99;
+                if (jobs[jobId]) jobs[jobId].progress = p;
+            }
+        }
+    });
+
+    ffmpeg.on('close', code => {
+        if (!jobs[jobId]) return;
+        if (code === 0) {
+            jobs[jobId].status = 'completed';
+            jobs[jobId].progress = 100;
+            jobs[jobId].downloadUrl = `/outputs/${path.basename(args[args.length - 1])}`;
+        } else {
+            console.error(`FFmpeg failed with code ${code}`);
+            jobs[jobId].status = 'failed';
+            jobs[jobId].error = 'FFmpeg processing failed';
+        }
     });
 }
 
+// Handler para Video Turbo / Shorts / Magic Workflow
 async function handleExport(job, uploadDir, callback) {
     const outputName = `render_${job.id}.mp4`;
     const outputPath = path.join(OUTPUT_DIR, outputName);
@@ -237,13 +411,11 @@ async function handleExport(job, uploadDir, callback) {
             const clipPath = path.join(uploadDir, `temp_clip_${job.id}_${i}.mp4`);
             const args = [];
             
-            // DURAÇÃO DO ÁUDIO COM MARGEM DE SEGURANÇA
-            // Default 5s se não tiver audio. Se tiver, usa probe + 0.5s para evitar cortes.
             let exactAudioDuration = scenesData[i]?.duration || 5;
             
             if (scene.audio) {
                 const probeDur = await getExactDuration(scene.audio.path);
-                if (probeDur > 0) exactAudioDuration = probeDur + 0.5; // +0.5s Buffer
+                if (probeDur > 0) exactAudioDuration = probeDur + 0.5; 
             }
 
             const totalClipDuration = padding + exactAudioDuration + padding;
@@ -284,7 +456,13 @@ async function handleExport(job, uploadDir, callback) {
                     }
                 }
             }
-            await runFFmpeg(args, job.id);
+            
+            // Execute FFmpeg for clip
+            await new Promise((resolve, reject) => {
+                const proc = spawn(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-y', ...args]);
+                proc.on('close', code => code === 0 ? resolve() : reject(new Error(`Clip ${i} failed`)));
+            });
+            
             clipPaths.push(clipPath);
             tempFiles.push(clipPath);
         }
@@ -299,12 +477,11 @@ async function handleExport(job, uploadDir, callback) {
             
             for(let idx = 0; idx < scenesData.length; idx++) {
                 const sd = scenesData[idx];
-                // Usar duração REAL (incluindo buffer) menos paddings para a legenda
                 const realAudioDuration = videoClipDurations[idx] - (padding * 2); 
                 
                 if (sd.narration) {
                     const startTime = globalTimelineCursor + padding;
-                    const endTime = startTime + realAudioDuration - 0.5; // Termina antes do buffer
+                    const endTime = startTime + realAudioDuration - 0.5; 
                     srtContent += `${idx + 1}\n${formatSrtTime(startTime)} --> ${formatSrtTime(endTime)}\n${sd.narration}\n\n`;
                 }
                 
@@ -391,39 +568,24 @@ async function handleExport(job, uploadDir, callback) {
     }
 }
 
-function createFFmpegJob(jobId, args, expectedDuration, res) {
-    jobs[jobId].status = 'processing';
-    if (res && !res.headersSent) res.status(202).json({ jobId });
-    const ffmpeg = spawn(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-stats', '-y', ...args]);
-    
-    ffmpeg.stderr.on('data', d => {
-        const line = d.toString();
-        const timeMatch = line.match(/time=(\d{2}:\d{2}:\d{2}\.\d{2})/);
-        if (timeMatch && expectedDuration > 0) {
-            const cur = timeToSeconds(timeMatch[1]);
-            let p = Math.round((cur / expectedDuration) * 20); 
-            if (jobs[jobId]) jobs[jobId].progress = 80 + p;
-        }
-    });
-
-    ffmpeg.on('close', code => {
-        if (!jobs[jobId]) return;
-        if (code === 0) {
-            jobs[jobId].status = 'completed';
-            jobs[jobId].progress = 100;
-            jobs[jobId].downloadUrl = `/outputs/${path.basename(args[args.length - 1])}`;
-        } else {
-            console.error(`FFmpeg falhou com código ${code}`);
-            jobs[jobId].status = 'failed';
-        }
-    });
-}
-
 app.post('/api/process/start/:action', uploadAny, (req, res) => {
     const action = req.params.action;
     const jobId = `${action}_${Date.now()}`;
+    const outputName = `processed_${jobId}.${action === 'extract-audio' ? 'mp3' : action === 'gif' ? 'gif' : 'mp4'}`;
+    const outputPath = path.join(OUTPUT_DIR, outputName);
+    
     jobs[jobId] = { id: jobId, status: 'pending', progress: 0, files: req.files, params: req.body, downloadUrl: null };
-    res.status(202).json({ jobId });
+    
+    // Construct specific tool command
+    try {
+        const args = getToolCommand(action, req.files, req.body, outputPath);
+        // Estimate 30s processing for generic tools if not specified
+        createFFmpegJob(jobId, args, 30, res);
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: e.message });
+        jobs[jobId].status = 'failed';
+    }
 });
 
 app.post('/api/export/start', uploadAny, (req, res) => {
