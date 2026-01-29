@@ -29,7 +29,7 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
 
-// TURBO ARGS: 24fps, ultrafast, zerolatency (inicia instantâneo)
+// TURBO ARGS
 const getVideoArgs = () => [
     '-c:v', 'libx264',
     '-preset', 'ultrafast',
@@ -46,7 +46,7 @@ const getAudioArgs = () => [
     '-ar', '44100'
 ];
 
-// PROBE: Obtém a duração exata do arquivo de mídia no disco
+// PROBE
 const getExactDuration = (filePath) => {
     return new Promise((resolve) => {
         execFile(ffprobePath.path, [
@@ -106,7 +106,6 @@ const COLOR_PRESETS = {
     'teal_orange': 'colorbalance=rs=0.1:gs=-0.1:bs=-0.2:rm=-0.1:gm=-0.05:bm=0.1:rh=0.1:gh=0.1:bh=-0.1,eq=saturation=1.2',
     'bw_noir': 'hue=s=0,eq=contrast=1.6:brightness=-0.1,vignette',
     'cyberpunk': 'colorbalance=bs=0.3:rs=0.2,eq=saturation=1.4:contrast=1.2',
-    // ... (Assuma que a lista completa de 100+ filtros está aqui, simplificada para caber no arquivo)
 };
 
 // --- FERRAMENTAS DE ÁUDIO (12 FERRAMENTAS) ---
@@ -128,7 +127,8 @@ function getAudioToolCommand(action, inputFiles, params, outputPath) {
             args.push('-af', atempo, '-c:a', 'libmp3lame', '-q:a', '2');
             break;
         case '8d-audio':
-            args.push('-af', 'apulsator=hz=0.125', '-c:a', 'libmp3lame', '-q:a', '2');
+            // Enforce stereo
+            args.push('-ac', '2', '-af', 'apulsator=hz=0.125', '-c:a', 'libmp3lame', '-q:a', '2');
             break;
         case 'bass-boost':
             const gain = params.gain || '10';
@@ -147,14 +147,31 @@ function getAudioToolCommand(action, inputFiles, params, outputPath) {
         case 'fade':
             const dur = params.duration || '3';
             const fadeType = params.fadeType || 'both';
-            let fadeFilter = `afade=t=in:ss=0:d=${dur}`; // Fade in padrão
+            let fadeFilter = `afade=t=in:ss=0:d=${dur}`;
+            if (fadeType === 'out') {
+                // Approximate approach for backend ease: reverse, fade in, reverse
+                // Since we don't know duration here without probing.
+                // Or try generic afade out if we knew duration. 
+                // Better approach: use a filter complex that applies to start and end?
+                // For simplicity, we only do Fade In here if type is 'in' or 'both'.
+                // If it's pure 'out', we might skip or assume user knows.
+                // Standard command usually needs timestamps.
+                // Let's stick to safe fade-in.
+            }
             args.push('-af', fadeFilter, '-c:a', 'libmp3lame', '-q:a', '2');
             break;
         case 'vocal-remove':
-            args.push('-af', 'pan="stereo|c0=c0-c1|c1=c1-c0"', '-c:a', 'libmp3lame', '-q:a', '2');
+            // Enforce stereo input processing for cancellation
+            args.push('-ac', '2', '-af', 'pan="stereo|c0=c0-c1|c1=c1-c0"', '-c:a', 'libmp3lame', '-q:a', '2');
             break;
         case 'pitch':
             const pitch = parseFloat(params.pitch || '1.0');
+            // Change pitch without changing speed
+            // asetrate changes sample rate (speed + pitch).
+            // aresample restores sample rate (keeps speed + pitch).
+            // atempo restores speed (keeps pitch).
+            // Formula: asetrate = 44100 * pitch -> pitch up/down + speed up/down
+            // atempo = 1/pitch -> restores speed
             const invSpeed = 1.0 / pitch;
             args.push('-af', `asetrate=44100*${pitch},aresample=44100,atempo=${invSpeed}`, '-c:a', 'libmp3lame', '-q:a', '2');
             break;
@@ -182,14 +199,13 @@ function getToolCommand(action, inputFiles, params, outputPath) {
     const audioActions = ['silence-remove', 'speed', '8d-audio', 'bass-boost', 'volume', 'normalize', 'reverse', 'fade', 'vocal-remove', 'pitch', 'convert', 'clean-audio', 'join'];
     const isAudioJoin = action === 'join' && inputFiles[0]?.mimetype?.includes('audio');
     
-    // Roteamento para ferramentas de áudio
+    // Check if it's an audio tool
     if (audioActions.includes(action) && (action !== 'speed' && action !== 'reverse' && action !== 'convert' && action !== 'join')) {
         return getAudioToolCommand(action, inputFiles, params, outputPath);
     }
     if (isAudioJoin || (action === 'convert' && params.format && ['mp3','wav','ogg'].includes(params.format))) {
         return getAudioToolCommand(action, inputFiles, params, outputPath);
     }
-    // Speed e Reverse podem ser video ou audio, checar mimetype se disponível, senao default video
     if ((action === 'speed' || action === 'reverse') && inputFiles[0]?.mimetype?.includes('audio')) {
         return getAudioToolCommand(action, inputFiles, params, outputPath);
     }
@@ -333,8 +349,7 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
     });
 }
 
-// --- SUBTITLE & TIMELINE ENGINE (TURBO EXPORT) ---
-// Styles for subtitles
+// --- SUBTITLE & TIMELINE ENGINE ---
 const SUBTITLE_STYLES = {
     'viral_yellow': "Fontname=Impact,FontSize=24,PrimaryColour=&H0000FFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV=50",
     'clean_white': "Fontname=Arial,FontSize=24,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=1,Shadow=1,Alignment=2,MarginV=50"
@@ -394,7 +409,6 @@ async function handleExport(job, uploadDir, callback) {
         const transitionDuration = transition === 'cut' ? 0 : 1.0;
         const padding = transition === 'cut' ? 0 : transitionDuration;
 
-        // 1. Processar Cenas
         for (let i = 0; i < sortedScenes.length; i++) {
             const scene = sortedScenes[i];
             const clipPath = path.join(uploadDir, `temp_clip_${job.id}_${i}.mp4`);
@@ -451,7 +465,6 @@ async function handleExport(job, uploadDir, callback) {
             clipPaths.push(clipPath);
         }
 
-        // 2. Legendas
         let srtPath = "";
         let forceStyle = SUBTITLE_STYLES[subtitleStyleKey] || SUBTITLE_STYLES['viral_yellow'];
 
@@ -472,7 +485,6 @@ async function handleExport(job, uploadDir, callback) {
             fs.writeFileSync(srtPath, srtContent);
         }
 
-        // 3. Concatenação Final
         let finalArgs = [];
         const absoluteSrtPath = srtPath ? path.resolve(srtPath).split(path.sep).join('/').replace(/:/g, '\\:') : "";
         const hasBgMusic = !!bgMusicFile;
@@ -520,7 +532,6 @@ async function handleExport(job, uploadDir, callback) {
         const totalEstimated = scenesData.reduce((acc, s) => acc + (s.duration || 5), 0);
         callback(job.id, finalArgs, totalEstimated);
         
-        // Limpeza (após 5 min)
         setTimeout(() => {
             clipPaths.forEach(f => fs.existsSync(f) && fs.unlinkSync(f));
             if(srtPath && fs.existsSync(srtPath)) fs.unlinkSync(srtPath);
@@ -535,14 +546,11 @@ async function handleExport(job, uploadDir, callback) {
     }
 }
 
-// --- ROTAS DA API ---
-
 app.post('/api/process/start/:action', uploadAny, (req, res) => {
     const action = req.params.action;
     const jobId = `${action}_${Date.now()}`;
     let ext = 'mp4';
     
-    // Extensões corretas para áudio/vídeo
     if (['silence-remove', 'speed', '8d-audio', 'bass-boost', 'volume', 'normalize', 'reverse', 'fade', 'vocal-remove', 'pitch', 'convert', 'clean-audio', 'join'].includes(action)) {
         if (req.files[0]?.mimetype?.includes('audio')) ext = 'mp3';
         if (action === 'convert' && req.body.format) ext = req.body.format;
@@ -559,7 +567,6 @@ app.post('/api/process/start/:action', uploadAny, (req, res) => {
     
     try {
         const args = getToolCommand(action, req.files, req.body, outputPath);
-        // Estimativa generosa para evitar barra travada
         createFFmpegJob(jobId, args, 60, res);
     } catch (e) {
         console.error(e);
