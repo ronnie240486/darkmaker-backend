@@ -117,18 +117,27 @@ function getAudioToolCommand(action, inputFiles, params, outputPath) {
 
     switch (action) {
         case 'silence-remove':
-            args.push('-af', 'silenceremove=start_periods=1:start_duration=1:start_threshold=-50dB:stop_periods=-1:stop_duration=1:stop_threshold=-50dB', '-c:a', 'libmp3lame', '-q:a', '2');
+            args.push('-af', 'silenceremove=stop_periods=-1:stop_duration=1:stop_threshold=-50dB', '-c:a', 'libmp3lame', '-q:a', '2');
             break;
         case 'speed':
             const speed = parseFloat(params.speed || '1.0');
-            let atempo = `atempo=${speed}`;
-            if (speed > 2.0) atempo = `atempo=2.0,atempo=${(speed/2).toFixed(2)}`;
-            if (speed < 0.5) atempo = `atempo=0.5,atempo=${(speed*2).toFixed(2)}`;
-            args.push('-af', atempo, '-c:a', 'libmp3lame', '-q:a', '2');
+            // Chaining atempo for values outside 0.5 - 2.0
+            let atempoChain = "";
+            let currentSpeed = speed;
+            while (currentSpeed > 2.0) {
+                atempoChain += "atempo=2.0,";
+                currentSpeed /= 2.0;
+            }
+            while (currentSpeed < 0.5) {
+                atempoChain += "atempo=0.5,";
+                currentSpeed *= 2.0;
+            }
+            atempoChain += `atempo=${currentSpeed}`;
+            args.push('-af', atempoChain, '-c:a', 'libmp3lame', '-q:a', '2');
             break;
         case '8d-audio':
-            // Enforce stereo
-            args.push('-ac', '2', '-af', 'apulsator=hz=0.125', '-c:a', 'libmp3lame', '-q:a', '2');
+            // Garante entrada estéreo para o efeito funcionar
+            args.push('-af', 'aformat=channel_layouts=stereo,apulsator=hz=0.125', '-c:a', 'libmp3lame', '-q:a', '2');
             break;
         case 'bass-boost':
             const gain = params.gain || '10';
@@ -146,34 +155,36 @@ function getAudioToolCommand(action, inputFiles, params, outputPath) {
             break;
         case 'fade':
             const dur = params.duration || '3';
-            const fadeType = params.fadeType || 'both';
-            let fadeFilter = `afade=t=in:ss=0:d=${dur}`;
-            if (fadeType === 'out') {
-                // Approximate approach for backend ease: reverse, fade in, reverse
-                // Since we don't know duration here without probing.
-                // Or try generic afade out if we knew duration. 
-                // Better approach: use a filter complex that applies to start and end?
-                // For simplicity, we only do Fade In here if type is 'in' or 'both'.
-                // If it's pure 'out', we might skip or assume user knows.
-                // Standard command usually needs timestamps.
-                // Let's stick to safe fade-in.
-            }
-            args.push('-af', fadeFilter, '-c:a', 'libmp3lame', '-q:a', '2');
+            // Simple Fade In
+            args.push('-af', `afade=t=in:ss=0:d=${dur}`, '-c:a', 'libmp3lame', '-q:a', '2');
             break;
         case 'vocal-remove':
-            // Enforce stereo input processing for cancellation
-            args.push('-ac', '2', '-af', 'pan="stereo|c0=c0-c1|c1=c1-c0"', '-c:a', 'libmp3lame', '-q:a', '2');
+            // Correção Crítica: Remover aspas da string do filtro ao usar spawn
+            // pan=stereo|c0=c0-c1|c1=c1-c0 (Center cancel)
+            args.push('-af', 'pan=stereo|c0=c0-c1|c1=c1-c0', '-c:a', 'libmp3lame', '-q:a', '2');
             break;
         case 'pitch':
-            const pitch = parseFloat(params.pitch || '1.0');
-            // Change pitch without changing speed
-            // asetrate changes sample rate (speed + pitch).
-            // aresample restores sample rate (keeps speed + pitch).
-            // atempo restores speed (keeps pitch).
-            // Formula: asetrate = 44100 * pitch -> pitch up/down + speed up/down
-            // atempo = 1/pitch -> restores speed
-            const invSpeed = 1.0 / pitch;
-            args.push('-af', `asetrate=44100*${pitch},aresample=44100,atempo=${invSpeed}`, '-c:a', 'libmp3lame', '-q:a', '2');
+            const pVal = parseFloat(params.pitch || '1.0');
+            // asetrate muda velocidade e tom.
+            // atempo restaura velocidade (inverso do pitch).
+            const newRate = Math.round(44100 * pVal);
+            const tempoVal = 1.0 / pVal;
+            
+            // Chain atempo limits
+            let tempoFilter = "";
+            let remaining = tempoVal;
+            while (remaining > 2.0) {
+                tempoFilter += ",atempo=2.0";
+                remaining /= 2.0;
+            }
+            while (remaining < 0.5) {
+                tempoFilter += ",atempo=0.5";
+                remaining *= 2.0;
+            }
+            tempoFilter += `,atempo=${remaining}`;
+
+            const filter = `asetrate=${newRate},aresample=44100${tempoFilter}`;
+            args.push('-af', filter, '-c:a', 'libmp3lame', '-q:a', '2');
             break;
         case 'convert':
             const format = params.format || 'mp3';
@@ -199,7 +210,6 @@ function getToolCommand(action, inputFiles, params, outputPath) {
     const audioActions = ['silence-remove', 'speed', '8d-audio', 'bass-boost', 'volume', 'normalize', 'reverse', 'fade', 'vocal-remove', 'pitch', 'convert', 'clean-audio', 'join'];
     const isAudioJoin = action === 'join' && inputFiles[0]?.mimetype?.includes('audio');
     
-    // Check if it's an audio tool
     if (audioActions.includes(action) && (action !== 'speed' && action !== 'reverse' && action !== 'convert' && action !== 'join')) {
         return getAudioToolCommand(action, inputFiles, params, outputPath);
     }
