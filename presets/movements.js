@@ -4,113 +4,152 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
     const fps = 24; 
     const totalFrames = Math.ceil(d * fps);
     
-    // Escala inicial 2x para garantir qualidade no zoom (evita pixelização)
-    // setsar=1 garante pixel quadrado
+    // Configuração de Escala:
+    // Upscale inicial para 2x para permitir movimentação (Pan/Tilt) sem bordas pretas
+    // O zoompan trabalha cortando uma janela desse upscale.
     const preProcess = `scale=${targetW*2}:${targetH*2}:force_original_aspect_ratio=increase,crop=${targetW*2}:${targetH*2},setsar=1`;
-    
-    // Escala final para o formato de saída
     const postProcess = `scale=${targetW}:${targetH}:flags=lanczos,fps=${fps},format=yuv420p`;
-
-    // Configuração base do zoompan
-    const base = `:d=${totalFrames}:s=${targetW}x${targetH}:fps=${fps}`; 
     
-    // Fórmulas de Centralização Padrão
-    const centerX = "iw/2-(iw/zoom/2)";
-    const centerY = "ih/2-(ih/zoom/2)";
+    // Duração do filtro
+    const base = `:d=${totalFrames}:s=${targetW}x${targetH}:fps=${fps}`; 
 
-    // Variável de progresso linear (0.0 -> 1.0) baseada no frame atual
-    // Garante movimento perfeitamente liso e previsível
-    const p = `(on/${totalFrames})`;
+    // VARIÁVEIS ÚTEIS DO FFMPEG:
+    // iw, ih = largura e altura da entrada (o upscale 2x)
+    // zoom = nível de zoom atual
+    // on = número do frame atual
+    // x, y = coordenadas do canto superior esquerdo da janela
+    
+    // Centro da imagem (ponto de equilíbrio)
+    // Usamos um zoom base de 1.2 ou 1.5 para ter margem para tremer a câmera sem sair da imagem
+    const centerX = "(iw-iw/zoom)/2";
+    const centerY = "(ih-ih/zoom)/2";
 
     let z = "1.0";
     let x = centerX;
     let y = centerY;
 
     switch (moveId) {
-        // --- ZOOMS ESTÁVEIS ---
+        // =================================================================
+        // 1. MOVIMENTOS LINEARES (Suaves e Diretos)
+        // =================================================================
         case 'static':
             z = "1.0";
+            x = "0"; 
+            y = "0";
             break;
             
-        case 'kenBurns':
-            // Zoom suave e lento (1.0 -> 1.25)
-            z = `1.0+(${p}*0.25)`;
+        case 'kenBurns': // Zoom In Suave Padrão
+            z = `1.0+(on/${totalFrames})*0.3`; // Vai de 1.0 a 1.3
             break;
             
-        case 'zoom-in':
-            // Zoom padrão (1.0 -> 1.5)
-            z = `1.0+(${p}*0.5)`;
+        case 'zoom-in': // Zoom In Mais Agressivo
+            z = `1.0+(on/${totalFrames})*0.6`; // Vai de 1.0 a 1.6
             break;
             
-        case 'zoom-out':
-            // Zoom Out Linear (1.5 -> 1.0)
-            z = `1.5-(${p}*0.5)`;
+        case 'zoom-out': // Zoom Out
+            z = `1.6-(on/${totalFrames})*0.6`; // Vai de 1.6 a 1.0
             break;
 
-        // --- ELASTICIDADE & PULSO (SUAVE) ---
-        case 'mov-rubber-band':
-        case 'mov-scale-pulse':
-        case 'mov-zoom-pulse-slow':
-        case 'mov-jelly-wobble':
-            // Pulso Senoidal Suave: Vai até 1.3x e volta para 1.0x (Uma respiração completa)
-            // Sem tremedeira, apenas um movimento fluido de "ir e vir"
-            z = `1.0+(0.3*sin(${p}*3.14159))`;
-            break;
-
-        case 'mov-pop-up':
-            // Zoom rápido inicial e depois estabiliza
-            z = `min(1.0+(${p}*2), 1.2)`;
-            break;
-
-        // --- PANS (MOVIMENTOS LATERAIS/VERTICAIS) ---
-        // Mantém zoom fixo em 1.2x para ter margem de movimento sem bordas pretas
+        // =================================================================
+        // 2. PANORÂMICAS REAIS (Tilt / Pan)
+        // Nota: Fixamos o zoom em 1.4 para ter "sobra" de imagem para percorrer
+        // =================================================================
         
-        case 'mov-pan-slow-l': // Panorâmica para Esquerda (Câmera move para direita)
-            z = "1.2";
-            x = `(${p}) * (iw-iw/zoom)`; 
+        case 'mov-pan-slow-l': // Panorâmica para Esquerda (Câmera vai p/ direita)
+            z = "1.4";
+            x = `(on/${totalFrames}) * (iw-iw/zoom)`; // X vai de 0 até o máximo
+            y = centerY;
             break;
             
         case 'mov-pan-slow-r': // Panorâmica para Direita
-            z = "1.2";
-            x = `(1-${p}) * (iw-iw/zoom)`;
+            z = "1.4";
+            x = `(1-(on/${totalFrames})) * (iw-iw/zoom)`; // X vai do máximo até 0
+            y = centerY;
             break;
             
-        case 'mov-pan-slow-u': // Tilt Up (Câmera sobe)
-            z = "1.2";
-            y = `(1-${p}) * (ih-ih/zoom)`;
+        case 'mov-pan-slow-u': // Tilt Up (Câmera sobe -> mostra de baixo p/ cima)
+            z = "1.4";
+            x = centerX;
+            y = `(1-(on/${totalFrames})) * (ih-ih/zoom)`; 
             break;
             
-        case 'mov-pan-slow-d': // Tilt Down (Câmera desce)
-            z = "1.2";
-            y = `(${p}) * (ih-ih/zoom)`;
+        case 'mov-pan-slow-d': // Tilt Down (Descida -> mostra de cima p/ baixo)
+            z = "1.4";
+            x = centerX;
+            y = `(on/${totalFrames}) * (ih-ih/zoom)`;
             break;
 
         case 'mov-pan-diag-tl': // Diagonal Top-Left
-            z = "1.2";
-            x = `(1-${p}) * (iw-iw/zoom)`;
-            y = `(1-${p}) * (ih-ih/zoom)`;
+            z = "1.4";
+            x = `(1-(on/${totalFrames})) * (iw-iw/zoom)`;
+            y = `(1-(on/${totalFrames})) * (ih-ih/zoom)`;
             break;
 
-        // --- SUBSTITUIÇÃO DE TREMORES POR MOVIMENTOS ESTÁVEIS ---
-        // O usuário pediu "sem tremer", então substituímos efeitos de shake/jitter
-        // por movimentos suaves ou pulsos lentos.
-        case 'mov-shake-violent':
+        // =================================================================
+        // 3. MOVIMENTOS DINÂMICOS & ORGÂNICOS
+        // =================================================================
+
+        // ELÁSTICO / RUBBER BAND:
+        // Usa seno para criar um efeito de "boing" (zoom in e out cíclico)
+        case 'mov-rubber-band':
+        case 'mov-scale-pulse':
+        case 'mov-zoom-pulse-slow':
+            // 1.2 base + oscilação de 0.3. Velocidade controlada pelo 'on'.
+            // Sinusoide que faz o zoom pulsar
+            z = `1.2 + 0.3*sin(on/20)`; 
+            x = centerX;
+            y = centerY;
+            break;
+
+        // FLUTUAR 3D / FLOAT:
+        // Simula um drone parado no ar ou movimento "underwater".
+        // Zoom fixo, X e Y oscilam em frequências diferentes (figura de 8).
+        case 'mov-3d-float':
+        case 'mov-3d-swing-l':
+            z = "1.2";
+            x = `${centerX} + (iw/zoom/10)*sin(on/40)`; // Oscila X lentamente
+            y = `${centerY} + (ih/zoom/15)*cos(on/50)`; // Oscila Y em outro ritmo
+            break;
+
+        // CÂMERA DE MÃO / HANDHELD (REALISMO):
+        // Simula o tremor natural da mão humana.
+        // Frequência mais alta que o float, amplitude menor e mais caótica.
+        case 'handheld-1':
+        case 'handheld-2':
+        case 'mov-walk':
+            z = "1.1"; // Zoom leve p/ ter borda
+            // Soma de dois senos para criar irregularidade "orgânica"
+            x = `${centerX} + (iw/zoom/40)*sin(on/10) + (iw/zoom/80)*sin(on/4)`; 
+            y = `${centerY} + (ih/zoom/40)*cos(on/12)`;
+            break;
+
+        // TERREMOTO / SHAKE / JITTER:
+        // Movimento rápido e agressivo.
         case 'earthquake':
+        case 'mov-shake-violent':
         case 'mov-jitter-x':
         case 'mov-glitch-snap':
-            // Substituído por um pulso duplo suave para simular impacto sem destruir a estabilidade
-            z = `1.1+(0.1*sin(${p}*3.14159*4))`; 
+            z = "1.1";
+            // Multiplicadores altos na frequência (on/2) causam vibração rápida
+            x = `${centerX} + (iw/zoom/20)*sin(on*10)`; 
+            y = `${centerY} + (ih/zoom/20)*cos(on*13)`;
             break;
 
-        // Padrão (Ken Burns Suave) para qualquer ID desconhecido
+        // POP UP (Zoom rápido no início e para):
+        case 'mov-pop-up':
+            // Se frame < 24 (1seg), zoom rápido. Depois mantém.
+            z = `if(lte(on,24), 1.0+(on/24)*0.4, 1.4)`;
+            break;
+
+        // Padrão (Ken Burns Lento)
         default:
-            z = `1.0+(${p}*0.2)`;
+            z = `1.0+(on/${totalFrames})*0.15`;
             x = centerX;
             y = centerY;
             break;
     }
 
-    // Montagem do filtro final
+    // Monta o filtro final
     const effect = `zoompan=z='${z}':x='${x}':y='${y}'${base}`;
 
     return `${preProcess},${effect},${postProcess}`;
