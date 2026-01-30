@@ -1,126 +1,117 @@
-// presets/movements.js
 
-export function getMovementFilter(
-    moveId,
-    durationSec = 5,
-    targetW = 1280,
-    targetH = 720,
-    config = {}
-) {
+export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 720, config = {}) {
     const d = parseFloat(durationSec) || 5;
-    const fps = 24;
+    const fps = 24; 
     const totalFrames = Math.ceil(d * fps);
+    
+    // Escala inicial 2x para garantir qualidade no zoom (evita pixelização)
+    // setsar=1 garante pixel quadrado
+    const preProcess = `scale=${targetW*2}:${targetH*2}:force_original_aspect_ratio=increase,crop=${targetW*2}:${targetH*2},setsar=1`;
+    
+    // Escala final para o formato de saída
+    const postProcess = `scale=${targetW}:${targetH}:flags=lanczos,fps=${fps},format=yuv420p`;
 
-    const ssW = targetW;
-    const ssH = targetH;
+    // Configuração base do zoompan
+    const base = `:d=${totalFrames}:s=${targetW}x${targetH}:fps=${fps}`; 
+    
+    // Fórmulas de Centralização Padrão
+    const centerX = "iw/2-(iw/zoom/2)";
+    const centerY = "ih/2-(ih/zoom/2)";
 
-    const base = `:d=${totalFrames}:s=${ssW}x${ssH}:fps=${fps}`;
-    const center = "x=iw/2-(iw/zoom/2):y=ih/2-(ih/zoom/2)";
-    const speed = parseFloat(config.speed || 1.0);
+    // Variável de progresso linear (0.0 -> 1.0) baseada no frame atual
+    // Garante movimento perfeitamente liso e previsível
+    const p = `(on/${totalFrames})`;
 
-    // Pré-processamento padrão (seguro)
-    const preProcess =
-        `scale=${ssW}:${ssH}:force_original_aspect_ratio=increase,` +
-        `crop=${ssW}:${ssH},setsar=1`;
-
-    const postProcess =
-        `scale=${targetW}:${targetH}:flags=bilinear,` +
-        `setpts=PTS-STARTPTS,format=yuv420p`;
-
-    let effect = "";
-    let extraFilter = "";
+    let z = "1.0";
+    let x = centerX;
+    let y = centerY;
 
     switch (moveId) {
-
-        // ─────────────────────────────
-        // ESTÁTICOS
-        // ─────────────────────────────
+        // --- ZOOMS ESTÁVEIS ---
         case 'static':
-            effect = `zoompan=z=1.0:x=0:y=0${base}`;
+            z = "1.0";
             break;
-
+            
         case 'kenBurns':
-            effect = `zoompan=z='min(1.0+(0.0003*on),1.15)':${center}${base}`;
+            // Zoom suave e lento (1.0 -> 1.25)
+            z = `1.0+(${p}*0.25)`;
             break;
-
-        // ─────────────────────────────
-        // ZOOM
-        // ─────────────────────────────
+            
         case 'zoom-in':
-            effect =
-                `zoompan=z='min(1.0+(0.001*${speed}*on),1.5)':${center}${base}`;
+            // Zoom padrão (1.0 -> 1.5)
+            z = `1.0+(${p}*0.5)`;
             break;
-
+            
         case 'zoom-out':
-            effect =
-                `zoompan=z='max(1.5-(0.001*${speed}*on),1.0)':${center}${base}`;
+            // Zoom Out Linear (1.5 -> 1.0)
+            z = `1.5-(${p}*0.5)`;
             break;
 
-        // ─────────────────────────────
-        // PAN
-        // ─────────────────────────────
-        case 'mov-pan-slow-l':
-            effect =
-                `zoompan=z=1.2:` +
-                `x='(iw-iw/zoom)*(on/${totalFrames})':` +
-                `y='ih/2-(ih/zoom/2)'${base}`;
+        // --- ELASTICIDADE & PULSO (SUAVE) ---
+        case 'mov-rubber-band':
+        case 'mov-scale-pulse':
+        case 'mov-zoom-pulse-slow':
+        case 'mov-jelly-wobble':
+            // Pulso Senoidal Suave: Vai até 1.3x e volta para 1.0x (Uma respiração completa)
+            // Sem tremedeira, apenas um movimento fluido de "ir e vir"
+            z = `1.0+(0.3*sin(${p}*3.14159))`;
             break;
 
-        case 'mov-pan-slow-r':
-            effect =
-                `zoompan=z=1.2:` +
-                `x='(iw-iw/zoom)*(1-(on/${totalFrames}))':` +
-                `y='ih/2-(ih/zoom/2)'${base}`;
+        case 'mov-pop-up':
+            // Zoom rápido inicial e depois estabiliza
+            z = `min(1.0+(${p}*2), 1.2)`;
             break;
 
-        // ─────────────────────────────
-        // SHAKE
-        // ─────────────────────────────
+        // --- PANS (MOVIMENTOS LATERAIS/VERTICAIS) ---
+        // Mantém zoom fixo em 1.2x para ter margem de movimento sem bordas pretas
+        
+        case 'mov-pan-slow-l': // Panorâmica para Esquerda (Câmera move para direita)
+            z = "1.2";
+            x = `(${p}) * (iw-iw/zoom)`; 
+            break;
+            
+        case 'mov-pan-slow-r': // Panorâmica para Direita
+            z = "1.2";
+            x = `(1-${p}) * (iw-iw/zoom)`;
+            break;
+            
+        case 'mov-pan-slow-u': // Tilt Up (Câmera sobe)
+            z = "1.2";
+            y = `(1-${p}) * (ih-ih/zoom)`;
+            break;
+            
+        case 'mov-pan-slow-d': // Tilt Down (Câmera desce)
+            z = "1.2";
+            y = `(${p}) * (ih-ih/zoom)`;
+            break;
+
+        case 'mov-pan-diag-tl': // Diagonal Top-Left
+            z = "1.2";
+            x = `(1-${p}) * (iw-iw/zoom)`;
+            y = `(1-${p}) * (ih-ih/zoom)`;
+            break;
+
+        // --- SUBSTITUIÇÃO DE TREMORES POR MOVIMENTOS ESTÁVEIS ---
+        // O usuário pediu "sem tremer", então substituímos efeitos de shake/jitter
+        // por movimentos suaves ou pulsos lentos.
         case 'mov-shake-violent':
-            effect =
-                `zoompan=z=1.2:` +
-                `x='iw/2-(iw/zoom/2)+20*rand()-10':` +
-                `y='ih/2-(ih/zoom/2)+20*rand()-10'${base}`;
+        case 'earthquake':
+        case 'mov-jitter-x':
+        case 'mov-glitch-snap':
+            // Substituído por um pulso duplo suave para simular impacto sem destruir a estabilidade
+            z = `1.1+(0.1*sin(${p}*3.14159*4))`; 
             break;
 
-        // ─────────────────────────────
-        // FOCO / DESFOCO (ZOOM + BLUR FIXO)
-        // ─────────────────────────────
-
-        // DESFOCADO → FOCA
-        case 'mov-blur-in':
-            effect =
-                `zoompan=` +
-                `z='1.08-(0.0008*on)':` +
-                `${center}${base}`;
-            extraFilter = `,gblur=sigma=3`;
-            break;
-
-        // FOCA → DESFOCA
-        case 'mov-blur-out':
-            effect =
-                `zoompan=` +
-                `z='1.0+(0.0008*on)':` +
-                `${center}${base}`;
-            extraFilter = `,gblur=sigma=3`;
-            break;
-
-        // PULSAÇÃO SUAVE
-        case 'mov-blur-pulse':
-            effect =
-                `zoompan=` +
-                `z='1.02+0.003*sin(on*0.08)':` +
-                `${center}${base}`;
-            extraFilter = `,gblur=sigma=2`;
-            break;
-
-        // ─────────────────────────────
-        // FALLBACK
-        // ─────────────────────────────
+        // Padrão (Ken Burns Suave) para qualquer ID desconhecido
         default:
-            effect =
-                `zoompan=z='min(1.0+(0.0003*on),1.15)':${center}${base}`;
+            z = `1.0+(${p}*0.2)`;
+            x = centerX;
+            y = centerY;
+            break;
     }
 
-    return `${preProcess},${effect}${extraFilter},${postProcess}`;
+    // Montagem do filtro final
+    const effect = `zoompan=z='${z}':x='${x}':y='${y}'${base}`;
+
+    return `${preProcess},${effect},${postProcess}`;
 }
