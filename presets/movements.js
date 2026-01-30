@@ -4,153 +4,164 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
     const fps = 24; 
     const totalFrames = Math.ceil(d * fps);
     
-    // Configuração de Escala:
-    // Upscale inicial para 2x para permitir movimentação (Pan/Tilt) sem bordas pretas
-    // O zoompan trabalha cortando uma janela desse upscale.
-    const preProcess = `scale=${targetW*2}:${targetH*2}:force_original_aspect_ratio=increase,crop=${targetW*2}:${targetH*2},setsar=1`;
+    // ==========================================================================================
+    // CONFIGURAÇÃO BASE
+    // Upscale agressivo (2x ou 4x) para garantir que zooms e rotações não criem bordas pretas
+    // ==========================================================================================
+    const preProcess = `scale=${targetW*3}:${targetH*3}:force_original_aspect_ratio=increase,crop=${targetW*3}:${targetH*3},setsar=1`;
     const postProcess = `scale=${targetW}:${targetH}:flags=lanczos,fps=${fps},format=yuv420p`;
     
-    // Duração do filtro
-    const base = `:d=${totalFrames}:s=${targetW}x${targetH}:fps=${fps}`; 
+    // Zoom base para permitir movimento de câmera (Handheld) sem bordas pretas
+    // O canvas de trabalho é 3x maior, então zoom=1.0 é gigante.
+    // Usaremos zoom relativo onde 0.333 seria o tamanho original (fit).
+    // Para simplificar, trabalhamos com coordenadas relativas ao canvas gigante.
 
-    // VARIÁVEIS ÚTEIS DO FFMPEG:
-    // iw, ih = largura e altura da entrada (o upscale 2x)
-    // zoom = nível de zoom atual
-    // on = número do frame atual
-    // x, y = coordenadas do canto superior esquerdo da janela
-    
-    // Centro da imagem (ponto de equilíbrio)
-    // Usamos um zoom base de 1.2 ou 1.5 para ter margem para tremer a câmera sem sair da imagem
-    const centerX = "(iw-iw/zoom)/2";
-    const centerY = "(ih-ih/zoom)/2";
+    // Duração padrão para o zoompan
+    const zpDur = `:d=${totalFrames}:fps=${fps}:s=${targetW}x${targetH}`;
 
-    let z = "1.0";
-    let x = centerX;
-    let y = centerY;
+    // Variáveis auxiliares de tempo (normalizadas 0 a 1)
+    const t = `(on/${totalFrames})`; // Tempo linear 0 -> 1
+    const t_pi = `(on/${totalFrames}*PI)`; 
+    const t_sin = `sin(${t}*PI)`; // Sobe e desce suave
+
+    let filterChain = "";
 
     switch (moveId) {
         // =================================================================
-        // 1. MOVIMENTOS LINEARES (Suaves e Diretos)
-        // =================================================================
-        case 'static':
-            z = "1.0";
-            x = "0"; 
-            y = "0";
-            break;
-            
-        case 'kenBurns': // Zoom In Suave Padrão
-            z = `1.0+(on/${totalFrames})*0.3`; // Vai de 1.0 a 1.3
-            break;
-            
-        case 'zoom-in': // Zoom In Mais Agressivo
-            z = `1.0+(on/${totalFrames})*0.6`; // Vai de 1.0 a 1.6
-            break;
-            
-        case 'zoom-out': // Zoom Out
-            z = `1.6-(on/${totalFrames})*0.6`; // Vai de 1.6 a 1.0
-            break;
-
-        // =================================================================
-        // 2. PANORÂMICAS REAIS (Tilt / Pan)
-        // Nota: Fixamos o zoom em 1.4 para ter "sobra" de imagem para percorrer
+        // 1. DINÂMICA FÍSICA & ELÁSTICA (Bounciness & Physics)
         // =================================================================
         
-        case 'mov-pan-slow-l': // Panorâmica para Esquerda (Câmera vai p/ direita)
-            z = "1.4";
-            x = `(on/${totalFrames}) * (iw-iw/zoom)`; // X vai de 0 até o máximo
-            y = centerY;
-            break;
-            
-        case 'mov-pan-slow-r': // Panorâmica para Direita
-            z = "1.4";
-            x = `(1-(on/${totalFrames})) * (iw-iw/zoom)`; // X vai do máximo até 0
-            y = centerY;
-            break;
-            
-        case 'mov-pan-slow-u': // Tilt Up (Câmera sobe -> mostra de baixo p/ cima)
-            z = "1.4";
-            x = centerX;
-            y = `(1-(on/${totalFrames})) * (ih-ih/zoom)`; 
-            break;
-            
-        case 'mov-pan-slow-d': // Tilt Down (Descida -> mostra de cima p/ baixo)
-            z = "1.4";
-            x = centerX;
-            y = `(on/${totalFrames}) * (ih-ih/zoom)`;
+        case 'mov-rubber-band': // Efeito Elástico Real (Vai e volta rápido com amortecimento)
+            // Zoom oscila: Entra rápido, passa do ponto, volta.
+            // Fórmula: 1 + (amplitude * sin(freq * t) * decay)
+            filterChain = `zoompan=z='1.5 + 0.3*sin(on/10)*exp(-on/${totalFrames/3})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zpDur}`;
             break;
 
-        case 'mov-pan-diag-tl': // Diagonal Top-Left
-            z = "1.4";
-            x = `(1-(on/${totalFrames})) * (iw-iw/zoom)`;
-            y = `(1-(on/${totalFrames})) * (ih-ih/zoom)`;
+        case 'mov-jelly-wobble': // Gelatina (Oscilação Líquida X e Y e Zoom)
+            // O centro X e Y oscilam em frequências diferentes criando distorção de movimento
+            filterChain = `zoompan=z='1.2 + 0.05*sin(on/5)':x='iw/2-(iw/zoom/2) + (iw/zoom/10)*sin(on/8)':y='ih/2-(ih/zoom/2) + (ih/zoom/10)*cos(on/10)'${zpDur}`;
+            break;
+
+        case 'mov-bounce-drop': // Queda com Quique (Gravidade)
+            // Simula um objeto caindo e quicando no chão
+            // Y varia com abs(cos) para fazer o quique
+            filterChain = `zoompan=z='1.2':x='iw/2-(iw/zoom/2)':y='(ih/2-(ih/zoom/2)) + (ih/4)*abs(cos(on/15))*exp(-on/${totalFrames/2})'${zpDur}`;
+            break;
+
+        case 'mov-pop-up': // Pop Up (Crescimento Explosivo com Overshoot)
+            // Zoom vai de 1.0 a 1.6 rapidíssimo e estabiliza em 1.5
+            filterChain = `zoompan=z='if(lte(on,20), 1.0+(0.6*on/20), 1.5 + 0.1*sin((on-20)/5)*exp(-(on-20)/20))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zpDur}`;
+            break;
+
+        case 'mov-scale-pulse': // Pulso Cardíaco
+            filterChain = `zoompan=z='1.3 + 0.1*sin(on/3)*sin(on/3)*sin(on/3)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zpDur}`;
             break;
 
         // =================================================================
-        // 3. MOVIMENTOS DINÂMICOS & ORGÂNICOS
+        // 2. CÂMERA DE MÃO & REALISMO (Handheld & Shake)
         // =================================================================
 
-        // ELÁSTICO / RUBBER BAND:
-        // Usa seno para criar um efeito de "boing" (zoom in e out cíclico)
-        case 'mov-rubber-band':
-        case 'mov-scale-pulse':
-        case 'mov-zoom-pulse-slow':
-            // 1.2 base + oscilação de 0.3. Velocidade controlada pelo 'on'.
-            // Sinusoide que faz o zoom pulsar
-            z = `1.2 + 0.3*sin(on/20)`; 
-            x = centerX;
-            y = centerY;
+        case 'handheld-1': // Vlog Leve
+            // Perlin Noise Simulado: Soma de Senos com frequências primas (13, 17) para evitar repetição
+            filterChain = `zoompan=z='1.2':x='iw/2-(iw/zoom/2) + (iw/50)*sin(on/13) + (iw/100)*cos(on/29)':y='ih/2-(ih/zoom/2) + (ih/50)*cos(on/17) + (ih/100)*sin(on/31)'${zpDur}`;
             break;
 
-        // FLUTUAR 3D / FLOAT:
-        // Simula um drone parado no ar ou movimento "underwater".
-        // Zoom fixo, X e Y oscilam em frequências diferentes (figura de 8).
-        case 'mov-3d-float':
-        case 'mov-3d-swing-l':
-            z = "1.2";
-            x = `${centerX} + (iw/zoom/10)*sin(on/40)`; // Oscila X lentamente
-            y = `${centerY} + (ih/zoom/15)*cos(on/50)`; // Oscila Y em outro ritmo
+        case 'handheld-2': // Corrida / Ação
+            filterChain = `zoompan=z='1.3':x='iw/2-(iw/zoom/2) + (iw/30)*sin(on/5)':y='ih/2-(ih/zoom/2) + (ih/20)*abs(sin(on/4))'${zpDur}`;
             break;
 
-        // CÂMERA DE MÃO / HANDHELD (REALISMO):
-        // Simula o tremor natural da mão humana.
-        // Frequência mais alta que o float, amplitude menor e mais caótica.
-        case 'handheld-1':
-        case 'handheld-2':
-        case 'mov-walk':
-            z = "1.1"; // Zoom leve p/ ter borda
-            // Soma de dois senos para criar irregularidade "orgânica"
-            x = `${centerX} + (iw/zoom/40)*sin(on/10) + (iw/zoom/80)*sin(on/4)`; 
-            y = `${centerY} + (ih/zoom/40)*cos(on/12)`;
+        case 'mov-walk': // Caminhada (Balanço rítmico Y + leve X)
+            filterChain = `zoompan=z='1.2':x='iw/2-(iw/zoom/2) + (iw/80)*sin(on/24)':y='ih/2-(ih/zoom/2) + (ih/40)*abs(sin(on/12))'${zpDur}`;
             break;
 
-        // TERREMOTO / SHAKE / JITTER:
-        // Movimento rápido e agressivo.
-        case 'earthquake':
-        case 'mov-shake-violent':
-        case 'mov-jitter-x':
-        case 'mov-glitch-snap':
-            z = "1.1";
-            // Multiplicadores altos na frequência (on/2) causam vibração rápida
-            x = `${centerX} + (iw/zoom/20)*sin(on*10)`; 
-            y = `${centerY} + (ih/zoom/20)*cos(on*13)`;
+        case 'earthquake': // Terremoto (Vibração Caótica)
+            // Usa 'random(1)' para caos total frame a frame
+            filterChain = `zoompan=z='1.1':x='iw/2-(iw/zoom/2) + (random(1)-0.5)*(iw/10)':y='ih/2-(ih/zoom/2) + (random(1)-0.5)*(ih/10)'${zpDur}`;
             break;
 
-        // POP UP (Zoom rápido no início e para):
-        case 'mov-pop-up':
-            // Se frame < 24 (1seg), zoom rápido. Depois mantém.
-            z = `if(lte(on,24), 1.0+(on/24)*0.4, 1.4)`;
+        case 'mov-jitter-x': // Tremor Horizontal (Tensão)
+            filterChain = `zoompan=z='1.2':x='iw/2-(iw/zoom/2) + (iw/20)*sin(on*10)':y='ih/2-(ih/zoom/2)'${zpDur}`;
             break;
 
-        // Padrão (Ken Burns Lento)
+        // =================================================================
+        // 3. 3D & ROTAÇÃO (Spin, Roll, Perspective)
+        // =================================================================
+
+        case 'mov-3d-roll': // Rolamento de Câmera (Dutch Angle)
+            // Rotação real usando filtro 'rotate' + zoom para cobrir bordas pretas
+            // Rotação senoidal suave de -5 a +5 graus
+            filterChain = `rotate=angle='5*PI/180*sin(t*2)':fillcolor=black,zoompan=z='1.4':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zpDur}`;
+            break;
+
+        case 'mov-3d-spin-axis': // Giro Completo Lento (Vortex)
+            filterChain = `rotate=angle='t*0.5':ow='iw':oh='ih',zoompan=z='1.8':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zpDur}`;
+            break;
+
+        case 'mov-3d-swing-l': // Pêndulo
+            filterChain = `rotate=angle='15*PI/180*sin(t*3)':fillcolor=black,zoompan=z='1.5':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zpDur}`;
+            break;
+
+        // =================================================================
+        // 4. GLITCH & CAOS DIGITAL
+        // =================================================================
+
+        case 'mov-glitch-snap': // Pulos de Corte
+            // Zoom muda bruscamente a cada 10 frames
+            filterChain = `zoompan=z='if(eq(mod(on,10),0), 1.5, 1.0)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zpDur}`;
+            break;
+
+        case 'mov-rgb-shift-move': // RGB Split Simulado (Vibração Rápida)
+            // Simula RGB shift tremendo muito rápido
+            filterChain = `zoompan=z='1.05':x='iw/2-(iw/zoom/2) + if(eq(mod(on,2),0), 10, -10)':y='ih/2-(ih/zoom/2)'${zpDur}`;
+            break;
+
+        // =================================================================
+        // 5. FOCO & BLUR (Efeitos Óticos)
+        // =================================================================
+
+        case 'mov-blur-pulse': // Pulso de Desfoque
+            // Aplica boxblur que varia com o tempo (sinusoidal)
+            // Zoom suave de fundo
+            filterChain = `boxblur=luma_radius='20*abs(sin(t*3))':luma_power=1,zoompan=z='1.1':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zpDur}`;
+            break;
+
+        case 'mov-blur-in': // Fica Focado (Começa borrado)
+            filterChain = `boxblur=luma_radius='20*(1-t/T)':luma_power=1,zoompan=z='1.0+0.1*on/${totalFrames}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zpDur}`;
+            break;
+
+        // =================================================================
+        // 6. ZOOMS & PANS CLÁSSICOS (Corrigidos e Suaves)
+        // =================================================================
+
+        case 'zoom-in': // Zoom In Dinâmico (Acelera)
+            // t*t cria curva exponencial (suave no começo, rápido no fim)
+            filterChain = `zoompan=z='1.0 + 2.0*(${t}*${t})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zpDur}`;
+            break;
+
+        case 'zoom-out': // Zoom Out Dinâmico
+            filterChain = `zoompan=z='3.0 - 2.0*(${t}*${t})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zpDur}`;
+            break;
+
+        case 'mov-zoom-crash-in': // Crash Zoom (Impacto)
+            // Zoom extremo linear
+            filterChain = `zoompan=z='1.0 + 4.0*${t}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zpDur}`;
+            break;
+
+        case 'mov-pan-fast-l': // Pan Rápido (Whip Pan)
+            // Curva S-Curve para suavizar inicio e fim do Pan
+            // X se move rápido
+            filterChain = `zoompan=z='1.2':x='(iw-iw/zoom)*(1-(${t}*${t}*(3-2*${t})))':y='ih/2-(ih/zoom/2)'${zpDur}`;
+            break;
+
+        // PADRÃO: Ken Burns Suave (Estático melhorado)
+        case 'static':
+        case 'kenBurns':
         default:
-            z = `1.0+(on/${totalFrames})*0.15`;
-            x = centerX;
-            y = centerY;
+            // Movimento lento e imperceptível para dar vida
+            filterChain = `zoompan=z='1.0 + 0.15*${t}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zpDur}`;
             break;
     }
 
-    // Monta o filtro final
-    const effect = `zoompan=z='${z}':x='${x}':y='${y}'${base}`;
-
-    return `${preProcess},${effect},${postProcess}`;
+    // Retorna a cadeia completa
+    return `${preProcess},${filterChain},${postProcess}`;
 }
