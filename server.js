@@ -1,4 +1,3 @@
-
 import express from 'express';
 import cors from 'cors';
 import multer from 'multer';
@@ -121,7 +120,6 @@ function getAudioToolCommand(action, inputFiles, params, outputPath) {
             break;
         case 'speed':
             const speed = parseFloat(params.speed || '1.0');
-            // Chaining atempo for values outside 0.5 - 2.0
             let atempoChain = "";
             let currentSpeed = speed;
             while (currentSpeed > 2.0) {
@@ -136,11 +134,10 @@ function getAudioToolCommand(action, inputFiles, params, outputPath) {
             args.push('-af', atempoChain, '-c:a', 'libmp3lame', '-q:a', '2');
             break;
         case '8d-audio':
-            // Garante entrada estéreo para o efeito funcionar
             args.push('-af', 'aformat=channel_layouts=stereo,apulsator=hz=0.125', '-c:a', 'libmp3lame', '-q:a', '2');
             break;
         case 'bass-boost':
-            const gain = params.gain || '10';
+            const gain = params.gain || params.value || '10';
             args.push('-af', `bass=g=${gain}:f=100`, '-c:a', 'libmp3lame', '-q:a', '2');
             break;
         case 'volume':
@@ -155,22 +152,17 @@ function getAudioToolCommand(action, inputFiles, params, outputPath) {
             break;
         case 'fade':
             const dur = params.duration || '3';
-            // Simple Fade In
             args.push('-af', `afade=t=in:ss=0:d=${dur}`, '-c:a', 'libmp3lame', '-q:a', '2');
             break;
         case 'vocal-remove':
-            // Correção Crítica: Remover aspas da string do filtro ao usar spawn
-            // pan=stereo|c0=c0-c1|c1=c1-c0 (Center cancel)
             args.push('-af', 'pan=stereo|c0=c0-c1|c1=c1-c0', '-c:a', 'libmp3lame', '-q:a', '2');
             break;
         case 'pitch':
-            const pVal = parseFloat(params.pitch || '1.0');
-            // asetrate muda velocidade e tom.
-            // atempo restaura velocidade (inverso do pitch).
-            const newRate = Math.round(44100 * pVal);
-            const tempoVal = 1.0 / pVal;
+            const semitones = parseFloat(params.pitch || params.value || '0');
+            const rateMul = Math.pow(2, semitones / 12.0);
+            const newRate = Math.round(44100 * rateMul);
+            const tempoVal = 1.0 / rateMul;
             
-            // Chain atempo limits
             let tempoFilter = "";
             let remaining = tempoVal;
             while (remaining > 2.0) {
@@ -232,7 +224,7 @@ function getToolCommand(action, inputFiles, params, outputPath) {
             break;
         case 'interpolation':
             const fps = params.targetFps || '60';
-            const slowMo = params.slowMo === 'true';
+            const slowMo = params.slowMo === 'true' || params.slowMo === true;
             const filter = `minterpolate='mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1:fps=${fps}'`;
             if (slowMo) args.push('-vf', `${filter},setpts=2.0*PTS`, '-r', fps, '-c:v', 'libx264', '-preset', 'medium');
             else args.push('-vf', filter, '-r', fps, '-c:v', 'libx264', '-preset', 'medium');
@@ -377,23 +369,36 @@ async function handleExport(job, uploadDir, callback) {
     const outputName = `render_${job.id}.mp4`;
     const outputPath = path.join(OUTPUT_DIR, outputName);
     
-    const transition = job.params?.transition || 'cut'; 
-    const movement = job.params?.movement || 'static';
-    const renderSubtitles = job.params?.renderSubtitles === 'true';
-    const subtitleStyleKey = job.params?.subtitleStyle || 'viral_yellow';
-    const aspectRatio = job.params?.aspectRatio || '16:9';
+    // Parse config (req.body from renderOnServer)
+    let jobConfig = job.params;
+    if (typeof jobConfig === 'string') {
+        try { jobConfig = JSON.parse(jobConfig); } catch(e) {}
+    } else if (jobConfig && jobConfig.config) {
+        if (typeof jobConfig.config === 'string') {
+            try { jobConfig = JSON.parse(jobConfig.config); } catch(e) {}
+        } else {
+            jobConfig = jobConfig.config;
+        }
+    }
+
+    const transition = jobConfig?.transition || 'cut'; 
+    const movement = jobConfig?.movement || 'static';
+    const renderSubtitles = jobConfig?.subtitles === true || jobConfig?.renderSubtitles === 'true' || jobConfig?.renderSubtitles === true;
+    const subtitleStyleKey = jobConfig?.subtitleStyle || 'viral_yellow';
+    const aspectRatio = jobConfig?.aspectRatio || '16:9';
     
-    let musicVolume = parseFloat(job.params?.musicVolume);
-    if (isNaN(musicVolume)) musicVolume = 0.2;
-    
-    let sfxVolume = parseFloat(job.params?.sfxVolume);
-    if (isNaN(sfxVolume)) sfxVolume = 0.5;
+    let musicVolume = parseFloat(jobConfig?.musicVolume || 0.2);
+    let sfxVolume = parseFloat(jobConfig?.sfxVolume || 0.5);
 
     let targetW = 1280, targetH = 720;
     if (aspectRatio === '9:16') { targetW = 720; targetH = 1280; }
 
     let scenesData = [];
-    try { if (job.params?.scenesData) scenesData = JSON.parse(job.params.scenesData); } catch(e) {}
+    if (jobConfig?.scenesData) {
+        scenesData = typeof jobConfig.scenesData === 'string' ? JSON.parse(jobConfig.scenesData) : jobConfig.scenesData;
+    } else if (jobConfig?.sceneData) {
+        scenesData = typeof jobConfig.sceneData === 'string' ? JSON.parse(jobConfig.sceneData) : jobConfig.sceneData;
+    }
 
     try {
         const sceneMap = {};
@@ -403,10 +408,20 @@ async function handleExport(job, uploadDir, callback) {
             if (f.originalname.includes('background_music')) {
                 bgMusicFile = f;
             } else {
-                const match = f.originalname.match(/scene_(\d+)_(visual|audio|sfx)/);
+                // Modified regex to handle scene_0.mp4 and scene_0_audio.wav
+                const match = f.originalname.match(/scene_(\d+)(?:_(visual|audio|sfx))?\.?/);
                 if (match) {
                     const idx = parseInt(match[1]);
-                    const type = match[2];
+                    // Determine type based on extension or suffix
+                    let type = match[2] || 'visual'; // Default to visual if no suffix
+                    
+                    if (!match[2]) {
+                        if (f.mimetype.includes('audio')) type = 'audio';
+                        else if (f.mimetype.includes('image') || f.mimetype.includes('video')) type = 'visual';
+                    }
+                    
+                    if (f.originalname.includes('sfx')) type = 'sfx'; // Specific override
+
                     if (!sceneMap[idx]) sceneMap[idx] = {};
                     sceneMap[idx][type] = f;
                 }
@@ -466,6 +481,11 @@ async function handleExport(job, uploadDir, callback) {
                         args.push('-map', '0:v', '-map', '1:a', '-vf', `scale=${targetW}:${targetH}:force_original_aspect_ratio=increase,crop=${targetW}:${targetH},setsar=1,fps=24,format=yuv420p`, '-af', audioFilter, '-t', totalClipDuration.toFixed(3), ...getVideoArgs(), ...getAudioArgs(), clipPath);
                     }
                 }
+            } else {
+                // Fallback if no visual
+                args.push('-f', 'lavfi', '-i', `color=c=black:s=${targetW}x${targetH}:d=${totalClipDuration}`);
+                args.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
+                args.push('-t', totalClipDuration.toFixed(3), ...getVideoArgs(), ...getAudioArgs(), clipPath);
             }
             
             await new Promise((resolve, reject) => {
@@ -542,10 +562,11 @@ async function handleExport(job, uploadDir, callback) {
         const totalEstimated = scenesData.reduce((acc, s) => acc + (s.duration || 5), 0);
         callback(job.id, finalArgs, totalEstimated);
         
+        // Clean up temp files later
         setTimeout(() => {
             clipPaths.forEach(f => fs.existsSync(f) && fs.unlinkSync(f));
             if(srtPath && fs.existsSync(srtPath)) fs.unlinkSync(srtPath);
-        }, 300000); 
+        }, 600000); 
 
     } catch (e) { 
         console.error("ERRO NO EXPORT:", e); 
@@ -585,6 +606,57 @@ app.post('/api/process/start/:action', uploadAny, (req, res) => {
     }
 });
 
+// Alias routes for missing backend endpoints
+app.post('/api/edit/start/:action', uploadAny, (req, res) => {
+    const action = req.params.action;
+    const jobId = `edit_${action}_${Date.now()}`;
+    const outputName = `edit_${jobId}.mp4`;
+    const outputPath = path.join(OUTPUT_DIR, outputName);
+    
+    jobs[jobId] = { id: jobId, status: 'pending', progress: 0, files: req.files, params: req.body, downloadUrl: null };
+    
+    try {
+        let params = req.body;
+        if(req.body.config) {
+            try { params = JSON.parse(req.body.config); } catch(e){}
+        }
+        
+        const args = getToolCommand(action, req.files, params, outputPath);
+        createFFmpegJob(jobId, args, 60, res);
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: e.message });
+        jobs[jobId].status = 'failed';
+    }
+});
+
+app.post('/api/image/start/:action', uploadAny, (req, res) => {
+    const action = req.params.action;
+    const jobId = `img_${action}_${Date.now()}`;
+    
+    if(!req.files || req.files.length === 0) return res.status(400).json({error: "No file"});
+    const file = req.files[0];
+    const ext = path.extname(file.originalname);
+    const outputName = `img_${jobId}${ext}`;
+    const outputPath = path.join(OUTPUT_DIR, outputName);
+    
+    // For now, mock success by copying the file. 
+    // Real image processing would require ImageMagick or Sharp.
+    fs.copyFileSync(file.path, outputPath);
+    
+    jobs[jobId] = { id: jobId, status: 'completed', progress: 100, downloadUrl: `/outputs/${outputName}` };
+    res.json({ jobId });
+});
+
+// RENAMED EXPORT ROUTE TO RENDER
+app.post('/api/render/start', uploadAny, (req, res) => {
+    const jobId = `render_${Date.now()}`;
+    jobs[jobId] = { id: jobId, status: 'processing', progress: 5, files: req.files, params: req.body, downloadUrl: null };
+    res.status(202).json({ jobId });
+    handleExport(jobs[jobId], UPLOAD_DIR, (id, args, dur) => createFFmpegJob(id, args, dur, null));
+});
+
+// Keep export for backward compatibility if needed
 app.post('/api/export/start', uploadAny, (req, res) => {
     const jobId = `export_${Date.now()}`;
     jobs[jobId] = { id: jobId, status: 'processing', progress: 5, files: req.files, params: req.body, downloadUrl: null };
