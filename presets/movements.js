@@ -17,8 +17,9 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
     const tz = `(on/${totalFrames})`; 
     
     // tg: Time normalized (0 to 1) for GENERIC filters (rotate, boxblur). 
-    // FIXED: Uses 't' (timestamp) and 'd' (duration) for better stability than 'n'.
-    const tg = `(t/${d})`;
+    // CRITICAL FIX: Changed from 't' (time) to 'n' (frame count) to prevent render crashes.
+    // 'n' is stable integer, 't' causes floating point errors in boxblur after zoompan.
+    const tg = `(n/${totalFrames})`;
 
     const moves = {
         // --- ESTÁTICO & SUAVE (Apenas Zoompan) ---
@@ -41,12 +42,14 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
 
         // --- EFEITOS (Fixed for Stability) ---
         
-        // Twist: usa rotate com 't'
+        // Twist: usa rotate com 'tg' (frame base)
         'mov-zoom-twist-in': `zoompan=z='1.0+(0.5*${tz})'${zdur},rotate=angle='(PI/12)*${tg}':fillcolor=black:ow=${targetW}:oh=${targetH}`,
         
-        // Blur: Fixed expressions (removed quotes, added clamping with max/min)
-        'mov-blur-in': `zoompan=z=1${zdur},boxblur=lr='max(0,20*(1-${tg}))':lp=1`,
-        'mov-blur-out': `zoompan=z=1${zdur},boxblur=lr='min(20,20*${tg})':lp=1`,
+        // Blur: ULTRA SAFE MODE
+        // Usando 'n' (frame count) e max(0) para garantir que valores nunca sejam negativos.
+        // Se n > totalFrames (devido ao padding), a expressão clamp para 0.
+        'mov-blur-in': `zoompan=z=1${zdur},boxblur=lr='max(0, 20*(1-min(1,${tg})))':lp=1`,
+        'mov-blur-out': `zoompan=z=1${zdur},boxblur=lr='min(20, 20*${tg})':lp=1`,
         'mov-blur-pulse': `zoompan=z=1${zdur},boxblur=lr='10*abs(sin(${tg}*PI*2))':lp=1`,
         
         // Tilt Shift simulado
