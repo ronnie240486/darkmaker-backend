@@ -263,6 +263,13 @@ function getToolCommand(action, inputFiles, params, outputPath) {
     return args;
 }
 
+// === FUNÇÕES UTILITÁRIAS ===
+function timeToSeconds(timeStr) {
+    if (!timeStr) return 0;
+    const parts = timeStr.split(':');
+    return (parseFloat(parts[0]) * 3600) + (parseFloat(parts[1]) * 60) + parseFloat(parts[2]);
+}
+
 function createFFmpegJob(jobId, args, expectedDuration, res) {
     if (!jobs[jobId]) return;
     jobs[jobId].status = 'processing';
@@ -271,15 +278,12 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
     console.log(`[JOB ${jobId}] CMD: ffmpeg ${args.join(' ')}`);
     const ffmpeg = spawn(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-stats', '-y', ...args]);
     
-    let stderr = '';
     ffmpeg.stderr.on('data', d => {
         const line = d.toString();
-        stderr += line;
         if(line.includes('time=')) {
              const timeMatch = line.match(/time=(\d{2}:\d{2}:\d{2}\.\d{2})/);
              if (timeMatch && expectedDuration > 0) {
-                const parts = timeMatch[1].split(':');
-                const cur = (parseFloat(parts[0]) * 3600) + (parseFloat(parts[1]) * 60) + parseFloat(parts[2]);
+                const cur = timeToSeconds(timeMatch[1]);
                 let p = Math.round((cur / expectedDuration) * 100);
                 if (p > 99) p = 99; 
                 if (jobs[jobId]) jobs[jobId].progress = p;
@@ -295,9 +299,8 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
             jobs[jobId].downloadUrl = `/outputs/${path.basename(args[args.length - 1])}`;
         } else {
             console.error(`[JOB ${jobId}] Falha: ${code}`);
-            console.error(`[JOB ${jobId}] Stderr:`, stderr.slice(-500)); // Log last 500 chars
             jobs[jobId].status = 'failed';
-            jobs[jobId].error = 'FFmpeg processing failed. Check server logs.';
+            jobs[jobId].error = 'FFmpeg processing failed code ' + code;
         }
     });
 }
@@ -356,6 +359,7 @@ async function handleExport(job, uploadDir, callback) {
             const scene = sortedScenes[i];
             const clipPath = path.join(uploadDir, `temp_${job.id}_${i}.mp4`);
             
+            // CORREÇÃO CRÍTICA: DURAÇÃO BASEADA NO ÁUDIO + TRANSIÇÃO + PAUSA
             let audioDur = 0;
             if (scene.audio) {
                 audioDur = await getExactDuration(scene.audio.path);
@@ -365,7 +369,7 @@ async function handleExport(job, uploadDir, callback) {
             // Se não tiver áudio, usa 5s padrão
             const baseDur = audioDur > 0 ? audioDur : 5;
             const transDur = 1.0; 
-            const safetyPad = 0.5; // Pausa extra
+            const safetyPad = 0.5; // Pausa extra após a fala antes da transição
             
             const totalSceneDur = baseDur + transDur + safetyPad;
             
@@ -394,23 +398,24 @@ async function handleExport(job, uploadDir, callback) {
                 hasSfx = true;
             }
 
+            // Audio Mixing Logic 
             let filterComplex = "";
             let audioMap = "[a_out]";
             
-            // NOTE: Using 'apad' without arguments creates infinite silence padding.
-            // The '-t' option (set to totalSceneDur) will limit the output duration, preventing infinite loops.
             if (hasSfx) {
-                filterComplex += `[1:a]volume=1.5,apad,asetpts=PTS-STARTPTS[voice];[2:a]volume=${sfxVolume},apad,asetpts=PTS-STARTPTS[sfx];[voice][sfx]amix=inputs=2:duration=first:dropout_transition=0,aresample=async=1[a_out];`;
+                filterComplex += `[1:a]volume=1.5,apad=pad_dur=2,asetpts=PTS-STARTPTS[voice];[2:a]volume=${sfxVolume},apad=pad_dur=2,asetpts=PTS-STARTPTS[sfx];[voice][sfx]amix=inputs=2:duration=longest:dropout_transition=0,aresample=async=1[a_out];`;
             } else {
-                filterComplex += `[1:a]volume=1.5,apad,asetpts=PTS-STARTPTS,aresample=async=1[a_out];`;
+                filterComplex += `[1:a]volume=1.5,apad=pad_dur=2,asetpts=PTS-STARTPTS,aresample=async=1[a_out];`;
             }
 
             // Visual Movement & Scaling Logic
             const moveFilter = getMovementFilter(movement, totalSceneDur, targetW, targetH);
             
             if (scene.visual?.mimetype?.includes('image')) {
-                filterComplex += `[0:v]${moveFilter}[v_out]`;
+                // IMPORTANT: Added setsar=1 to ensure consistent pixel aspect ratio
+                filterComplex += `[0:v]${moveFilter},setsar=1[v_out]`;
             } else {
+                // IMPORTANT: Added setsar=1 here too
                 filterComplex += `[0:v]scale=${targetW}:${targetH}:force_original_aspect_ratio=increase,crop=${targetW}:${targetH},setsar=1,fps=24,format=yuv420p[v_out]`;
             }
 
@@ -418,7 +423,7 @@ async function handleExport(job, uploadDir, callback) {
                 '-filter_complex', filterComplex,
                 '-map', '[v_out]',
                 '-map', audioMap,
-                '-t', totalSceneDur.toFixed(3), 
+                '-t', totalSceneDur.toFixed(3), // Define a duração exata do clipe gerado
                 ...getVideoArgs(), 
                 ...getAudioArgs(),
                 clipPath
@@ -426,15 +431,7 @@ async function handleExport(job, uploadDir, callback) {
 
             await new Promise((resolve, reject) => {
                 const p = spawn(ffmpegPath, ['-y', ...args]);
-                let stderr = '';
-                p.stderr.on('data', d => stderr += d.toString());
-                p.on('close', c => {
-                    if (c === 0) resolve();
-                    else {
-                        console.error(`FFmpeg scene ${i} error log:`, stderr.slice(-500));
-                        reject(new Error(`Erro ao renderizar cena ${i}`));
-                    }
-                });
+                p.on('close', c => c === 0 ? resolve() : reject(new Error(`Erro ao renderizar cena ${i}`)));
             });
             
             const actualDur = await getExactDuration(clipPath);
@@ -536,6 +533,7 @@ app.post('/api/process/start/:action', uploadAny, (req, res) => {
     const jobId = `${action}_${Date.now()}`;
     let ext = 'mp4';
     
+    // Define extensão de saída baseada na ação
     if (['clean-audio', 'speed', 'pitch', 'bass-boost', 'reverb', 'normalize', '8d-audio', 'join'].includes(action)) {
         if (req.files[0]?.mimetype?.includes('audio')) ext = 'mp3';
         if (action === 'convert' && req.body.format) ext = req.body.format;
