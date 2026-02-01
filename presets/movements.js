@@ -7,7 +7,7 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
     const pre = `scale=${targetW*2}:${targetH*2}:force_original_aspect_ratio=increase,crop=${targetW*2}:${targetH*2},setsar=1`;
     const post = `scale=${targetW}:${targetH}:flags=lanczos,fps=${fps},format=yuv420p`;
     const zdur = `:d=${totalFrames}:s=${targetW}x${targetH}`;
-    const t = `(on/${totalFrames})`; // Tempo normalizado de 0 a 1
+    const t = `(on/${totalFrames})`; // Tempo normalizado de 0 a 1 para zoompan
 
     const moves = {
         // --- Estático & Suave ---
@@ -48,7 +48,7 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
 
         // --- 3D & Rotação ---
         'mov-3d-spin-axis': `rotate=angle='2*PI*${t}':fillcolor=black,zoompan=z=1.2${zdur}`,
-        'mov-3d-flip-x': `zoompan=z=1${zdur}`, // Simulação simplificada
+        'mov-3d-flip-x': `zoompan=z=1${zdur}`,
         'mov-3d-flip-y': `zoompan=z=1${zdur}`,
         'mov-3d-swing-l': `rotate=angle='(PI/8)*sin(on/24)':fillcolor=black,zoompan=z=1.2${zdur}`,
         'mov-3d-roll': `rotate=angle='2*PI*${t}':fillcolor=black,zoompan=z=1.5${zdur}`,
@@ -60,11 +60,14 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
         'mov-rgb-shift-move': `rgbashift=rh=20:bv=20,zoompan=z=1.05${zdur}`,
         'mov-vibrate': `zoompan=z=1.02:x='iw/2-(iw/zoom/2)+5*sin(on*50)':y='ih/2-(ih/zoom/2)+5*cos(on*50)'${zdur}`,
 
-        // --- Foco & Blur ---
-        'mov-blur-in': `boxblur=luma_radius='20*(1-${t})':enable='between(t,0,${d})',zoompan=z=1${zdur}`,
-        'mov-blur-out': `boxblur=luma_radius='20*${t}':enable='between(t,0,${d})',zoompan=z=1${zdur}`,
-        'mov-blur-pulse': `boxblur=luma_radius='10*abs(sin(on/10))',zoompan=z=1${zdur}`,
-        'mov-tilt-shift': `boxblur=luma_radius=10:enable='if(between(y,0,h*0.2)+between(y,h*0.8,h),1,0)',zoompan=z=1${zdur}`,
+        // --- Foco & Blur (Corrigido com Split+Overlay) ---
+        // Usa split para criar duas camadas: uma nítida e uma desfocada (boxblur estático).
+        // Depois usa overlay com alpha dinâmico para transição.
+        'mov-blur-in': `split[orig][to_blur];[to_blur]boxblur=luma_radius=30:luma_power=2[blurred];[orig][blurred]overlay=alpha='max(0,1-(t/${d}))'`,
+        'mov-blur-out': `split[orig][to_blur];[to_blur]boxblur=luma_radius=30:luma_power=2[blurred];[orig][blurred]overlay=alpha='min(1,t/${d})'`,
+        'mov-blur-pulse': `split[orig][to_blur];[to_blur]boxblur=luma_radius=25:luma_power=2[blurred];[orig][blurred]overlay=alpha='0.6*(0.5+0.5*sin(t*3))'`,
+        // Tilt shift simulado estático (fallback)
+        'mov-tilt-shift': `boxblur=luma_radius=10`, 
 
         // --- Elástico & Divertido ---
         'mov-rubber-band': `zoompan=z='1.0+0.3*abs(sin(on/10))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
