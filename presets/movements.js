@@ -51,31 +51,38 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
         'mov-pan-fast-l': `zoompan=z=2.0:x='(iw/2-(iw/zoom/2)) + (iw/5 * ${p})':y='ih/2-(ih/zoom/2)'${zdur}`,
         'mov-pan-fast-r': `zoompan=z=2.0:x='(iw/2-(iw/zoom/2)) - (iw/5 * ${p})':y='ih/2-(ih/zoom/2)'${zdur}`,
 
-         // BLUR IN (desfocado → foco)
-    'mov-blur-in': `
-        gblur=sigma=10:steps=1,
-        zoompan=z='1.1-0.1*p'${zdur}
-    `,
+         // BLUR IN
+        // -------------------------
+        'mov-blur-in': `
+            gblur=sigma=10:steps=1,
+            zoompan=z='1.1-0.1*${p}'${zdur}
+        `,
 
-    // BLUR OUT (foco → desfocado)
-    'mov-blur-out': `
-        gblur=sigma=10:steps=1,
-        zoompan=z='1+0.1*p'${zdur}
-    `,
+        // -------------------------
+        // BLUR OUT
+        // -------------------------
+        'mov-blur-out': `
+            gblur=sigma=10:steps=1,
+            zoompan=z='1+0.1*${p}'${zdur}
+        `,
 
-    // BLUR PULSE (pulso leve)
-    'mov-blur-pulse': `
-        gblur=sigma=8:steps=1,
-        zoompan=z='1.05+0.03*sin(2*PI*p)'${zdur},
-        vignette=a=PI/6
-    `,
+        // -------------------------
+        // BLUR PULSE
+        // -------------------------
+        'mov-blur-pulse': `
+            gblur=sigma=8:steps=1,
+            zoompan=z='1.05+0.03*sin(2*PI*${p})'${zdur},
+            vignette=a=PI/6
+        `,
 
-    // Tilt-shift leve (sempre funciona)
-    'mov-tilt-shift': `
-        gblur=sigma=4:steps=1,
-        vignette=a=PI/5,
-        zoompan=z='1.05+0.05*p'${zdur}
-    `,
+        // -------------------------
+        // TILT-SHIFT SAFE
+        // -------------------------
+        'mov-tilt-shift': `
+            gblur=sigma=4:steps=1,
+            vignette=a=PI/5,
+            zoompan=z='1.05+0.05*${p}'${zdur}
+        `,
 
     const selectedFilter = moves[moveId] || moves['kenburns'];
     
