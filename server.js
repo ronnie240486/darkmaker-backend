@@ -431,16 +431,22 @@ async function handleExport(job, uploadDir, callback) {
             );
 
             await new Promise((resolve, reject) => {
-                const p = spawn(ffmpegPath, ['-y', ...args]);
-                p.on('close', c => c === 0 ? resolve() : reject(new Error(`Erro ao renderizar cena ${i}`)));
-            });
-            
-            const actualDur = await getExactDuration(clipPath);
-            videoClipDurations.push(actualDur);
-            clipPaths.push(clipPath);
-            
-            if(jobs[job.id]) jobs[job.id].progress = Math.round((i / sortedScenes.length) * 80);
-        }
+    const p = spawn(ffmpegPath, ['-y', ...args]);
+
+    // CAPTURA ERROS REAIS DO FFMPEG (ESSENCIAL)
+    p.stderr.on("data", d => {
+        console.log("[FFMPEG STDERR]", d.toString());
+    });
+    
+    p.stdout.on("data", d => {
+        console.log("[FFMPEG STDOUT]", d.toString());
+    });
+
+    p.on('close', c => 
+        c === 0 ? resolve() : reject(new Error(`Erro ao renderizar cena ${i}`))
+    );
+});
+
 
         // PASSO 2: CONCATENAÇÃO (CUT vs XFADE)
         let finalArgs = [];
