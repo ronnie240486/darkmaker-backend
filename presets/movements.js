@@ -50,7 +50,7 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
         // Usamos lrp (Linear Interpolation) fixo no boxblur.
         // max(0, val) garante que nunca seja negativo.
         // min(50, val) garante que não exploda a memória.
-        'mov-blur-in': `zoompan=z=1.1${zdur},boxblur=lr='min(50, max(0, 40-(40*${p})))':lp=2`,
+        'gblur=sigma='8*(t/D)':steps=1, zoompan=z='1+0.02*t':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'
         'mov-blur-out': `zoompan=z=1.1${zdur},boxblur=lr='min(50, max(0, 40*${p}))':lp=2`,
         'mov-blur-pulse': `zoompan=z=1.1${zdur},boxblur=lr='min(20, max(0, 10*sin(on/15)))':lp=1`,
         'mov-tilt-shift': `zoompan=z=1.1${zdur},boxblur=lr=2:lp=1,vignette=a=PI/5`,
