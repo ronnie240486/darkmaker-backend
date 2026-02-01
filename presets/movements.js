@@ -60,13 +60,20 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
         'mov-rgb-shift-move': `rgbashift=rh=20:bv=20,zoompan=z=1.05${zdur}`,
         'mov-vibrate': `zoompan=z=1.02:x='iw/2-(iw/zoom/2)+5*sin(on*50)':y='ih/2-(ih/zoom/2)+5*cos(on*50)'${zdur}`,
 
-        // --- Foco & Blur (Fixed) ---
-        'mov-blur-in': `gblur=sigma='20*(1-${t})':steps=1,zoompan=z=1${zdur}`,
-        'mov-blur-out': `gblur=sigma='20*${t}':steps=1,zoompan=z=1${zdur}`,
-        'mov-blur-pulse': `gblur=sigma='10*abs(sin(on/10))':steps=1,zoompan=z=1${zdur}`,
-        // Tilt-shift requires complex spatial masking which is unstable in simple filter chains
-        // Replaced with a heavy vignette + soft focus zoom for a "dreamy focus" effect
-        'mov-tilt-shift': `vignette=a=PI/5,gblur=sigma=1:steps=1,zoompan=z='1.0+(0.1*${t})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
+       // --- Foco & Blur (FUNCIONA NO FFMPEG 6) ---
+
+// Blur que diminui com o tempo (desfocado -> foco)
+'mov-blur-in': `boxblur=10*(1-t/${d}):1`,
+
+// Blur que aumenta com o tempo (foco -> desfocado)
+'mov-blur-out': `boxblur=10*(t/${d}):1`,
+
+// Blur pulsante
+'mov-blur-pulse': `boxblur=6+4*sin(2*PI*t):1`,
+
+// Fake tilt-shift (funciona no FFmpeg 6)
+'mov-tilt-shift': `vignette=PI/5, boxblur=3, zoompan=z='1+0.05*t':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
+
 
         // --- Elástico & Divertido ---
         'mov-rubber-band': `zoompan=z='1.0+0.3*abs(sin(on/10))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
