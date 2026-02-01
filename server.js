@@ -359,13 +359,19 @@ async function handleExport(job, uploadDir, callback) {
             const scene = sortedScenes[i];
             const clipPath = path.join(uploadDir, `temp_${job.id}_${i}.mp4`);
             
-            // Duration driven by narration audio
-            let dur = 5;
-            if (scene.audio) dur = (await getExactDuration(scene.audio.path)) || dur;
+            // CORREÇÃO CRÍTICA: DURAÇÃO BASEADA NO ÁUDIO + TRANSIÇÃO + PAUSA
+            let audioDur = 0;
+            if (scene.audio) {
+                audioDur = await getExactDuration(scene.audio.path);
+            }
             
-            // GARANTIR DURAÇÃO MÍNIMA: Aumentada para 1.5s para transições XFADE funcionarem
+            // Duração Visual = Audio + Transição + Segurança
+            // Se não tiver áudio, usa 5s padrão
+            const baseDur = audioDur > 0 ? audioDur : 5;
             const transDur = 1.0; 
-            if (dur < transDur * 1.5) dur = transDur * 1.5; 
+            const safetyPad = 0.5; // Pausa extra após a fala antes da transição
+            
+            const totalSceneDur = baseDur + transDur + safetyPad;
             
             const args = [];
             
@@ -375,14 +381,13 @@ async function handleExport(job, uploadDir, callback) {
             } else if (scene.visual) {
                 args.push('-stream_loop', '-1', '-i', scene.visual.path);
             } else {
-                args.push('-f', 'lavfi', '-i', `color=c=black:s=${targetW}x${targetH}:d=${dur}`);
+                args.push('-f', 'lavfi', '-i', `color=c=black:s=${targetW}x${targetH}:d=${totalSceneDur}`);
             }
 
             // 2. Input Áudio (Voz) [1:a]
             if (scene.audio) {
                 args.push('-i', scene.audio.path);
             } else {
-                // Gera silêncio se não houver áudio
                 args.push('-f', 'lavfi', '-i', 'anullsrc=cl=stereo:sr=44100');
             }
 
@@ -394,18 +399,20 @@ async function handleExport(job, uploadDir, callback) {
             }
 
             // Audio Mixing Logic 
-            // CORREÇÃO CRÍTICA: Adicionado 'apad' para garantir que o áudio tenha sobra para o crossfade
+            // Usa 'apad' para estender o áudio até o final do vídeo (que é mais longo que o áudio original)
             let filterComplex = "";
             let audioMap = "[a_out]";
             
+            // O pad_dur deve ser suficiente para cobrir a transição + safety
+            // pad_dur=2 garante que o stream de áudio não acabe antes do vídeo
             if (hasSfx) {
-                filterComplex += `[1:a]volume=1.5,apad=pad_dur=1,asetpts=PTS-STARTPTS[voice];[2:a]volume=${sfxVolume},apad=pad_dur=1,asetpts=PTS-STARTPTS[sfx];[voice][sfx]amix=inputs=2:duration=first:dropout_transition=0,aresample=async=1[a_out];`;
+                filterComplex += `[1:a]volume=1.5,apad=pad_dur=2,asetpts=PTS-STARTPTS[voice];[2:a]volume=${sfxVolume},apad=pad_dur=2,asetpts=PTS-STARTPTS[sfx];[voice][sfx]amix=inputs=2:duration=longest:dropout_transition=0,aresample=async=1[a_out];`;
             } else {
-                filterComplex += `[1:a]volume=1.5,apad=pad_dur=1,asetpts=PTS-STARTPTS,aresample=async=1[a_out];`;
+                filterComplex += `[1:a]volume=1.5,apad=pad_dur=2,asetpts=PTS-STARTPTS,aresample=async=1[a_out];`;
             }
 
             // Visual Movement & Scaling Logic
-            const moveFilter = getMovementFilter(movement, dur, targetW, targetH);
+            const moveFilter = getMovementFilter(movement, totalSceneDur, targetW, targetH);
             
             if (scene.visual?.mimetype?.includes('image')) {
                 filterComplex += `[0:v]${moveFilter}[v_out]`;
@@ -417,7 +424,7 @@ async function handleExport(job, uploadDir, callback) {
                 '-filter_complex', filterComplex,
                 '-map', '[v_out]',
                 '-map', audioMap,
-                '-t', dur.toFixed(3), // Limita o vídeo, mas o apad no filtro garante o buffer de áudio
+                '-t', totalSceneDur.toFixed(3), // Define a duração exata do clipe gerado
                 ...getVideoArgs(), 
                 ...getAudioArgs(),
                 clipPath
@@ -428,7 +435,6 @@ async function handleExport(job, uploadDir, callback) {
                 p.on('close', c => c === 0 ? resolve() : reject(new Error(`Erro ao renderizar cena ${i}`)));
             });
             
-            // CRITICAL: Get precise duration of the generated clip for xfade sync
             const actualDur = await getExactDuration(clipPath);
             videoClipDurations.push(actualDur);
             clipPaths.push(clipPath);
@@ -462,7 +468,7 @@ async function handleExport(job, uploadDir, callback) {
             
             let filter = "";
             let accumOffset = 0;
-            const transDur = 1.0; // Aumentado para 1.0s para ser mais visível (ex: porta abrir)
+            const transDur = 1.0; 
             const transName = getTransitionXfade(transitionType);
             
             for (let i = 0; i < clipPaths.length - 1; i++) {
@@ -471,9 +477,10 @@ async function handleExport(job, uploadDir, callback) {
                 const vNext = `[${i+1}:v]`;
                 const aNext = `[${i+1}:a]`;
                 
+                // O offset agora considera que o vídeo anterior tem "gordura" (audio + trans + pad).
+                // A transição começa *antes* do vídeo acabar, mas *depois* do áudio principal acabar (graças à nossa conta anterior).
                 accumOffset += videoClipDurations[i] - transDur;
                 
-                // Safety: Ensure offset is positive
                 const safeOffset = Math.max(0, accumOffset);
 
                 filter += `${vSrc}${vNext}xfade=transition=${transName}:duration=${transDur}:offset=${safeOffset.toFixed(3)}[v_tmp${i+1}];`;
