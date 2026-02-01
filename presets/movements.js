@@ -1,39 +1,92 @@
-// movements.js – FFmpeg Ken Burns + Realístico
-export function getMovementFilter(id, durationSec = 5) {
-    const fps = 30;
-    const frames = durationSec * fps;
+// ---------------------------------------------------------
+// MOVIMENTOS (ZOOM, PAN, ROTATE, 3D FAKE)
+// ---------------------------------------------------------
 
-    const base = `zoompan=d=${frames}:s=1280x720:fps=30`;
-    const cx = `(iw/2)-(iw/zoom/2)`;
-    const cy = `(ih/2)-(ih/zoom/2)`;
+export function buildMovementFilter(moveId, duration, fps, w, h) {
+    switch (moveId) {
 
-    const map = {
-        // Suave
-        "static": null,
-        "kenburns": `${base}:z='1+0.15*(on/${frames})':x='${cx}':y='${cy}'`,
-        "float": `${base}:z='1.05':x='${cx}+sin(on*0.05)*10':y='${cy}+cos(on*0.05)*10'`,
+        // --------------------------
+        // ZOOM SUAVE
+        // --------------------------
+        case "kenburns-in":
+            return `zoompan=z='1+0.002*t':d=${duration * fps}:fps=${fps}`;
 
-        // Zoom
-        "zoom-in": `${base}:z='1+0.3*(on/${frames})':x='${cx}':y='${cy}'`,
-        "zoom-out": `${base}:z='1.3-0.3*(on/${frames})':x='${cx}':y='${cy}'`,
-        "zoom-bounce": `${base}:z='1+0.4*sin(on*0.15)'`,
+        case "kenburns-out":
+            return `zoompan=z='1-0.002*t':d=${duration * fps}:fps=${fps}`;
 
-        // Pan
-        "pan-left": `${base}:z=1:x='${cx}-on*2':y='${cy}'`,
-        "pan-right": `${base}:z=1:x='${cx}+on*2':y='${cy}'`,
-        "pan-up": `${base}:z=1:x='${cx}':y='${cy}-on*2'`,
-        "pan-down": `${base}:z=1:x='${cx}':y='${cy}+on*2'`,
+        case "zoom-pulse":
+            return `zoompan=z='1+0.1*sin(2*PI*t/2)':d=${duration * fps}:fps=${fps}`;
 
-        // Handheld (realista)
-        "handheld": `${base}:z='1.02':x='${cx}+sin(on*0.3)*3':y='${cy}+cos(on*0.25)*3'`,
-        "jitter": `${base}:z='1.0':x='${cx}+sin(on*2)*8':y='${cy}+cos(on*3)*8'`,
 
-        // Rotação / 3D fake
-        "roll": "rotate=0.03*sin(t*2)",
+        // --------------------------
+        // PAN (MOVIMENTO LATERAL)
+        // --------------------------
+        case "pan-left":
+            return `zoompan=x='t*20':y=0:z=1:d=${duration * fps}:fps=${fps}`;
 
-        // Shake forte
-        "shake": `crop=w=iw*0.95:h=ih*0.95:x='(iw-ow)/2+((random(1)-0.5)*20)':y='(ih-oh)/2+((random(2)-0.5)*20)',scale=1280:720`,
-    };
+        case "pan-right":
+            return `zoompan=x='-(t*20)':y=0:z=1:d=${duration * fps}:fps=${fps}`;
 
-    return map[id] || null;
+        case "pan-up":
+            return `zoompan=y='t*20':x=0:z=1:d=${duration * fps}:fps=${fps}`;
+
+        case "pan-down":
+            return `zoompan=y='-(t*20)':x=0:z=1:d=${duration * fps}:fps=${fps}`;
+
+
+        // --------------------------
+        // ROTATE
+        // --------------------------
+        case "rotate":
+            return "rotate=angle=PI/180*t*5";
+
+        case "spin":
+            return "rotate=angle=PI*t";
+
+
+        // --------------------------
+        // SHAKE / HANDHELD
+        // --------------------------
+        case "handheld":
+            return "perspective=x0='10*sin(t*2)':y0='10*cos(t*2)'";
+
+        case "shake":
+            return "rotate=angle='0.02*sin(20*t)'";
+
+
+        // --------------------------
+        // DOLLY / WARP
+        // --------------------------
+        case "dolly":
+            return `zoompan=z='1+0.005*t':d=${duration * fps}:fps=${fps}`;
+
+
+        default:
+            console.warn("⚠ Movimento não encontrado:", moveId);
+            return "";
+    }
 }
+
+
+// ---------------------------------------------------------
+// LISTA DE MOVIMENTOS
+// ---------------------------------------------------------
+
+export const MOVEMENTS = [
+    "kenburns-in",
+    "kenburns-out",
+    "zoom-pulse",
+
+    "pan-left",
+    "pan-right",
+    "pan-up",
+    "pan-down",
+
+    "rotate",
+    "spin",
+
+    "handheld",
+    "shake",
+
+    "dolly"
+];
