@@ -13,11 +13,11 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
     const zdur = `:d=${totalFrames*2}:s=${targetW}x${targetH}:fps=${fps}`;
     const p_zoom = `(on/${totalFrames})`; 
 
-    // --- FILTROS DE BLUR AUXILIARES (SAFE MODE) ---
-    // Usamos expressões de tempo simples para o enable
+    // --- FILTROS DE BLUR AUXILIARES ---
+    // Safe Blurs usando expressões de tempo simples
     const blurIn = `,boxblur=20:1:enable='lt(t,0.5)',boxblur=10:1:enable='between(t,0.5,1.0)',boxblur=5:1:enable='between(t,1.0,1.5)',boxblur=2:1:enable='between(t,1.5,2.0)'`;
     const blurOut = `,boxblur=2:1:enable='between(t,${d-2.0},${d-1.5})',boxblur=5:1:enable='between(t,${d-1.5},${d-1.0})',boxblur=10:1:enable='between(t,${d-1.0},${d-0.5})',boxblur=20:1:enable='gt(t,${d-0.5})'`;
-    const pulseBlur = `,boxblur=15:1:enable='between(mod(t,3),0,0.3)'`; 
+    const pulseBlur = `,boxblur=20:1:enable='between(mod(t,3),0,0.2)'`; // Blur forte e rápido
 
     const moves = {
         // --- 1. ESTÁTICO & SUAVE ---
@@ -45,29 +45,36 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
         'mov-blur-out': `zoompan=z='min(1.15, 1.0+0.001*on)'${zdur}${blurOut}`,
         'mov-blur-pulse': `zoompan=z='1.05+0.02*sin(on/30)'${zdur}${pulseBlur}`,
         
-        // Tilt Shift: Usamos boxblur simples nas bordas simulado com crop/overlay seria complexo, 
-        // então simplificamos para vignette + contraste alto + blur leve geral para segurança.
-        'mov-tilt-shift': `zoompan=z=1.1${zdur},boxblur=2:1,vignette=a=PI/4,eq=saturation=1.4:contrast=1.2`,
+        // Tilt Shift: Focado no centro, borrado e escuro nas bordas
+        'mov-tilt-shift': `zoompan=z=1.1${zdur},boxblur=5:1,vignette=a=PI/3`,
 
         // --- 5. EFEITOS ESPECIAIS & MOVIMENTO REALISTA ---
         'handheld-1': `zoompan=z=1.2:x='iw/2-(iw/zoom/2)+8*sin(on/15)':y='ih/2-(ih/zoom/2)+8*cos(on/18)'${zdur}`,
-        'earthquake': `zoompan=z=1.2:x='iw/2-(iw/zoom/2)+20*sin(on*50)':y='ih/2-(ih/zoom/2)+20*cos(on*43)'${zdur}`, // Substituído random por sin de alta freq
+        'earthquake': `zoompan=z=1.2:x='iw/2-(iw/zoom/2)+20*sin(on*5)':y='ih/2-(ih/zoom/2)+20*cos(on*7)'${zdur}`,
         
-        // --- 6. GLITCH & CAOS (SAFE MODE - SEM RGBASHIFT) ---
-        // RGB Shift Alternative: Usamos oscilação de cor (hue) e saturação para criar a "estranheza" sem quebrar o pipe.
-        'mov-rgb-shift-move': `zoompan=z='1.05+0.02*sin(on/20)'${zdur},eq=saturation=1.5:contrast=1.2,hue=h='sin(on/5)*10'`,
+        // --- 6. GLITCH & CAOS (CORRIGIDO: MATEMÁTICA SEGURA + DESFOQUE REAL) ---
         
-        // Snap Glitch: Zoom súbito aleatório + Ruído
-        'mov-glitch-snap': `zoompan=z='if(between(mod(on,45),0,5), 1.4, 1.05)'${zdur},noise=alls=20:allf=t`,
+        // RGB Shift Move (Simulado):
+        // Usa hue dinâmico rápido para oscilar cores + desfoque leve constante para "digital feel"
+        'mov-rgb-shift-move': `zoompan=z='1.1+0.05*sin(on/5)'${zdur},hue=h='20*sin(10*t)',boxblur=2:1`,
         
-        // Glitch Skid: Deslocamento lateral rápido
-        'mov-glitch-skid': `zoompan=z=1.1:x='iw/2-(iw/zoom/2)+if(between(mod(on,60),0,4), 80, 0)'${zdur},noise=alls=5:allf=t`,
+        // Snap Glitch:
+        // Usa ondas quadradas (sin > 0) para saltos bruscos.
+        // Adiciona Noise pesado e Blur forte SÓ quando o salto acontece.
+        'mov-glitch-snap': `zoompan=z='if(gt(sin(on/5),0.9), 1.5, 1.05)'${zdur},noise=alls=20:allf=t,boxblur=20:2:enable='gt(sin(t*6),0.9)'`,
         
-        // Shake Violento: Tremor de alta amplitude (Safe Math)
-        'mov-shake-violent': `zoompan=z=1.4:x='iw/2-(iw/zoom/2)+40*sin(on*100)':y='ih/2-(ih/zoom/2)+40*cos(on*80)'${zdur}`,
+        // Glitch Skid:
+        // Deslocamento lateral rápido em loop + ruído.
+        'mov-glitch-skid': `zoompan=z=1.1:x='iw/2-(iw/zoom/2)+100*sin(on*2)'${zdur},noise=alls=10:allf=t`,
         
-        // Vibração Sônica: Alta frequência, baixa amplitude
-        'mov-vibrate': `zoompan=z=1.1:x='iw/2-(iw/zoom/2)+5*sin(on*120)':y='ih/2-(ih/zoom/2)+5*cos(on*120)'${zdur}`
+        // Shake Violento:
+        // Alta amplitude, alta frequência nas coordenadas X/Y.
+        // Adicionado boxblur CONSTANTE para simular motion blur de alta velocidade.
+        'mov-shake-violent': `zoompan=z=1.3:x='iw/2-(iw/zoom/2)+60*sin(on)':y='ih/2-(ih/zoom/2)+60*cos(on*1.1)'${zdur},boxblur=10:1`,
+        
+        // Vibração Sônica:
+        // Micro-movimentos ultra rápidos + desfoque vertical
+        'mov-vibrate': `zoompan=z=1.1:x='iw/2-(iw/zoom/2)+10*sin(on*10)'${zdur},boxblur=2:1`
     };
 
     const selectedFilter = moves[moveId] || moves['kenburns'];
