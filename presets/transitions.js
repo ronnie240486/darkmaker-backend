@@ -1,101 +1,123 @@
-// ------------------------------
-// PRESETS PARA FFmpeg 6 100% VÁLIDOS
-// ------------------------------
 
-export function getTransitionXfade(type) {
+export function getTransitionXfade(transId) {
+    const id = transId?.toLowerCase() || 'fade';
+
     const map = {
-        "fade-black": "fade",
-        "fade-white": "fade",
-        "crossfade": "fade",
-        "mix": "fade",
-        "wipe-left": "wipeleft",
-        "wipe-right": "wiperight",
-        "wipe-up": "wipeup",
-        "wipe-down": "wipedown",
-        "slide-left": "slideleft",
-        "slide-right": "slideright",
-        "slide-up": "slideup",
-        "slide-down": "slidedown",
-        "circle": "circleopen",
-        "circle-close": "circleclose",
-        "diag-tl": "diagtl",
-        "diag-br": "diagbr",
-        "hlslice": "hlslice",
-        "vlslice": "vlslice",
-        "pixelize": "pixelize",
-        "rectcrop": "rectcrop",
-        "zoom-in": "zoom",
-        "zoom-out": "zoom",
-        "fade-through-black": "fade",
-        "fade-through-white": "fade",
-        "checkerboard": "checkerboard",
-        "dissolve": "fade",
+        // --- Clássicos ---
+        'cut': 'fade',
+        'fade': 'fade',
+        'black': 'fadeblack',
+        'white': 'fadewhite',
+        'mix': 'dissolve',
+
+        // --- Movimento (Slides & Wipes) ---
+        'slide-left': 'slideleft',
+        'slide-right': 'slideright',
+        'slide-up': 'slideup',
+        'slide-down': 'slidedown',
+        'wipe-left': 'wipeleft',
+        'wipe-right': 'wiperight',
+        'wipe-up': 'wipeup',
+        'wipe-down': 'wipedown',
+        'push-left': 'pushleft',
+        'push-right': 'pushright',
+
+        // --- Zoom & Warp ---
+        'zoom-in': 'zoomin',
+        'zoom-out': 'zoomout',
+        'zoom-spin-fast': 'zoomin', // Simulated
+        'whip-left': 'smoothleft',
+        'whip-right': 'smoothright',
+        'whip-up': 'smoothup',
+        'whip-down': 'smoothdown',
+        'blur-warp': 'hblur',
+        'elastic-left': 'slideleft',
+
+        // --- Glitch & Cyberpunk ---
+        'glitch': 'pixelize',
+        'color-glitch': 'pixelize',
+        'pixelize': 'pixelize',
+        'datamosh': 'pixelize',
+        'hologram': 'dissolve',
+        'cyber-zoom': 'zoomin',
+        'digital-noise': 'dissolve',
+        'rgb-split': 'dissolve',
+        'scan-line-v': 'vslice',
+        'block-glitch': 'pixelize',
+
+        // --- Formas & Geometria ---
+        'circle-open': 'circleopen',
+        'circle-close': 'circleclose',
+        'diamond-zoom': 'diagtl',
+        'clock-wipe': 'clock',
+        'checker-wipe': 'checkerboard',
+        'blind-h': 'horzopen',
+        'blind-v': 'vertopen',
+        'spiral-wipe': 'spiral',
+        'triangle-wipe': 'radial',
+        'star-zoom': 'circleopen',
+
+        // --- Luz & Atmosfera ---
+        'flash-bang': 'fadewhite',
+        'burn': 'fadeblack',
+        'light-leak-tr': 'dissolve',
+        'lens-flare': 'dissolve',
+        'god-rays': 'dissolve',
+        'glow-intense': 'dissolve',
+        'flash-black': 'fadeblack',
+
+        // --- Artístico & Textura ---
+        'oil-paint': 'hblur',
+        'ink-splash': 'radial',
+        'paper-rip': 'slidedown',
+        'page-turn': 'slidedown',
+        'water-ripple': 'ripple',
+        'smoke-reveal': 'fade',
+        'sketch-reveal': 'hslice',
+        'liquid-melt': 'slidedown',
+
+        // --- 3D & Perspectiva ---
+        'cube-rotate-l': 'slideleft',
+        'cube-rotate-r': 'slideright',
+        'door-open': 'horzopen',
+        'flip-card': 'hlslice',
+        'room-fly': 'zoomin',
+        'film-roll': 'slidedown'
     };
 
-    return map[type] || null;
+    return map[id] || 'fade';
 }
 
-// ----------------------------------------------
-// CONSTRUTOR PRINCIPAL DE TRANSIÇÕES
-// ----------------------------------------------
+export function buildTransitionFilter(clipCount, transitionType, durations, transitionDuration = 0.5) {
+    const filters = [];
+    let accumulatedDuration = durations[0] || 5;
+    const isCut = transitionType === 'cut';
+    const safeTransDur = isCut ? 0.05 : Math.min(transitionDuration, 1.0);
 
-export function buildTransitionFilter({
-    transType,
-    duration,
-    offset,
-    width,
-    height
-}) {
-    const xfadeName = getTransitionXfade(transType);
+    for (let i = 0; i < clipCount - 1; i++) {
+        const offset = accumulatedDuration - safeTransDur;
+        
+        const vIn1 = i === 0 ? "[0:v]" : `[v_tmp${i}]`;
+        const vIn2 = `[${i + 1}:v]`;
+        const vOut = `[v_tmp${i + 1}]`;
+        
+        const aIn1 = i === 0 ? "[0:a]" : `[a_tmp${i}]`;
+        const aIn2 = `[${i + 1}:a]`;
+        const aOut = `[a_tmp${i + 1}]`;
 
-    if (!xfadeName) {
-        console.warn("⚠ Transição não encontrada:", transType);
-        return "";
+        const safeTrans = getTransitionXfade(transitionType);
+        
+        filters.push(`${vIn1}${vIn2}xfade=transition=${safeTrans}:duration=${safeTransDur}:offset=${offset.toFixed(3)}${vOut}`);
+        filters.push(`${aIn1}${aIn2}acrossfade=d=${safeTransDur}:c1=tri:c2=tri${aOut}`);
+
+        accumulatedDuration = (accumulatedDuration + (durations[i+1] || 5)) - safeTransDur;
     }
 
-    return `
-        [v0][v1] xfade=transition=${xfadeName}:duration=${duration}:offset=${offset}, format=yuv420p [v]
-        ;
-        [a0][a1] acrossfade=d=${duration} [a]
-    `;
+    const mapV = `[v_tmp${clipCount - 1}]`;
+    const mapA = `[a_tmp${clipCount - 1}]`;
+
+    return { 
+        filterComplex: filters.join(';'), 
+        mapArgs: ['-map', mapV, '-map', mapA] 
+    };
 }
-
-// ----------------------------------------------
-// LISTA COMPLETA DE TRANSIÇÕES SUPORTADAS (FFmpeg 6)
-// ----------------------------------------------
-
-export const TRANSITIONS = [
-    "fade-black",
-    "fade-white",
-    "crossfade",
-    "mix",
-    "dissolve",
-
-    // SLIDES
-    "slide-left",
-    "slide-right",
-    "slide-up",
-    "slide-down",
-
-    // WIPES
-    "wipe-left",
-    "wipe-right",
-    "wipe-up",
-    "wipe-down",
-
-    // FORMAS
-    "circle",
-    "circle-close",
-    "checkerboard",
-    "pixelize",
-
-    // GEOMETRIA
-    "diag-tl",
-    "diag-br",
-    "rectcrop",
-
-    // ZOOM
-    "zoom-in",
-    "zoom-out"
-];
-
