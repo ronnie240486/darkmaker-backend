@@ -12,7 +12,7 @@ import * as esbuild from 'esbuild';
 
 // IMPORTAÇÃO DOS PRESETS DE MOVIMENTO E TRANSIÇÃO
 import { getMovementFilter } from './presets/movements.js';
-import { buildTransitionFilter } from './presets/transitions.js';
+import { getTransitionXfade } from './presets/transitions.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -91,7 +91,7 @@ app.use('/outputs', express.static(OUTPUT_DIR));
 
 const storage = multer.diskStorage({
     destination: (req, file, cb) => cb(null, UPLOAD_DIR),
-    filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9_.]/g, '_')}`)
+    filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9_.-]/g, '_')}`)
 });
 const uploadAny = multer({ storage }).any();
 
@@ -391,6 +391,7 @@ async function handleExport(job, uploadDir, callback) {
     }
 
     const movement = jobConfig?.movement || 'static';
+    const transitionType = jobConfig?.transition || 'cut';
     const aspectRatio = jobConfig?.aspectRatio || '16:9';
     let musicVolume = parseFloat(jobConfig?.musicVolume || 0.2);
     let sfxVolume = parseFloat(jobConfig?.sfxVolume || 0.5);
@@ -402,18 +403,19 @@ async function handleExport(job, uploadDir, callback) {
         const sceneMap = {};
         let bgMusicFile = null;
 
+        // Categorize files
         job.files.forEach(f => {
-            if (f.originalname.includes('background_music')) bgMusicFile = f;
-            else {
-                const match = f.originalname.match(/scene_(\d+)(?:_(visual|audio|sfx))?\.?/);
+            if (f.originalname.includes('background_music')) {
+                bgMusicFile = f;
+            } else {
+                const match = f.originalname.match(/scene_(\d+)(?:_(sfx))?\.?/);
                 if (match) {
                     const idx = parseInt(match[1]);
-                    let type = match[2] || 'visual';
-                    if (!match[2]) {
-                        if (f.mimetype.includes('audio')) type = 'audio';
-                        else type = 'visual';
-                    }
-                    if (f.originalname.includes('sfx')) type = 'sfx';
+                    let type = 'visual';
+                    if (match[2] === 'sfx') type = 'sfx';
+                    else if (f.mimetype.includes('audio')) type = 'audio';
+                    else type = 'visual';
+                    
                     if (!sceneMap[idx]) sceneMap[idx] = {};
                     sceneMap[idx][type] = f;
                 }
@@ -429,13 +431,15 @@ async function handleExport(job, uploadDir, callback) {
             const scene = sortedScenes[i];
             const clipPath = path.join(uploadDir, `temp_${job.id}_${i}.mp4`);
             
+            // Duration driven by narration audio
             let dur = 5;
             if (scene.audio) dur = (await getExactDuration(scene.audio.path)) || dur;
             videoClipDurations.push(dur);
 
             const args = [];
+            let inputsCount = 0;
             
-            // Input Visual
+            // 1. Input Visual [0:v]
             if (scene.visual?.mimetype?.includes('image')) {
                 args.push('-framerate', '24', '-loop', '1', '-i', scene.visual.path);
             } else if (scene.visual) {
@@ -443,24 +447,35 @@ async function handleExport(job, uploadDir, callback) {
             } else {
                 args.push('-f', 'lavfi', '-i', `color=c=black:s=${targetW}x${targetH}:d=${dur}`);
             }
+            inputsCount++;
 
-            // Input Áudio (Voz)
-            if (scene.audio) args.push('-i', scene.audio.path);
-            else args.push('-f', 'lavfi', '-i', 'anullsrc=cl=stereo:sr=44100');
+            // 2. Input Áudio (Voz) [1:a]
+            if (scene.audio) {
+                args.push('-i', scene.audio.path);
+            } else {
+                args.push('-f', 'lavfi', '-i', 'anullsrc=cl=stereo:sr=44100');
+            }
+            inputsCount++;
 
-            // Input SFX (Opcional)
-            let filterComplex = "";
-            let audioMap = "1:a";
+            // 3. Input SFX (Opcional) [2:a]
+            let hasSfx = false;
             if (scene.sfx) {
                 args.push('-i', scene.sfx.path);
-                filterComplex += `[1:a]volume=1.5[voice];[2:a]volume=${sfxVolume}[sfx];[voice][sfx]amix=inputs=2:duration=first[mixed_a];`;
-                audioMap = "[mixed_a]";
-            } else {
-                filterComplex += `[1:a]volume=1.5[mixed_a];`;
-                audioMap = "[mixed_a]";
+                hasSfx = true;
+                inputsCount++;
             }
 
-            // Filtro de Movimento e Scale
+            // Audio Mixing Logic
+            let filterComplex = "";
+            let audioMap = "[a_out]";
+            
+            if (hasSfx) {
+                filterComplex += `[1:a]volume=1.5[voice];[2:a]volume=${sfxVolume}[sfx];[voice][sfx]amix=inputs=2:duration=first:dropout_transition=0[a_out];`;
+            } else {
+                filterComplex += `[1:a]volume=1.5[a_out];`;
+            }
+
+            // Visual Movement & Scaling Logic
             const moveFilter = getMovementFilter(movement, dur, targetW, targetH);
             
             if (scene.visual?.mimetype?.includes('image')) {
@@ -487,25 +502,72 @@ async function handleExport(job, uploadDir, callback) {
             if(jobs[job.id]) jobs[job.id].progress = Math.round((i / sortedScenes.length) * 80);
         }
 
-        // PASSO 2: CONCATENAR TUDO (ULTRA FAST)
-        const listPath = path.join(uploadDir, `list_${job.id}.txt`);
-        const fileContent = clipPaths.map(p => `file '${path.resolve(p).replace(/\\/g, '/')}'`).join('\n');
-        fs.writeFileSync(listPath, fileContent);
+        // PASSO 2: CONCATENAÇÃO (CUT vs XFADE)
+        let finalArgs = [];
         
-        let finalArgs = ['-f', 'concat', '-safe', '0', '-i', listPath];
-        
-        if (bgMusicFile) {
-            finalArgs.push('-i', bgMusicFile.path);
-            finalArgs.push(
-                '-filter_complex', `[1:a]volume=${musicVolume},aloop=loop=-1:size=2e+09[bgm];[0:a][bgm]amix=inputs=2:duration=first[a_final]`,
-                '-map', '0:v', '-map', '[a_final]'
-            );
+        if (transitionType === 'cut' || clipPaths.length < 2) {
+            // --- CONCAT SIMPLES (CUT) ---
+            const listPath = path.join(uploadDir, `list_${job.id}.txt`);
+            const fileContent = clipPaths.map(p => `file '${path.resolve(p).replace(/\\/g, '/')}'`).join('\n');
+            fs.writeFileSync(listPath, fileContent);
+            
+            finalArgs = ['-f', 'concat', '-safe', '0', '-i', listPath];
+            
+            if (bgMusicFile) {
+                finalArgs.push('-i', bgMusicFile.path);
+                finalArgs.push(
+                    '-filter_complex', `[1:a]volume=${musicVolume},aloop=loop=-1:size=2e+09[bgm];[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=0[a_final]`,
+                    '-map', '0:v', '-map', '[a_final]'
+                );
+            } else {
+                finalArgs.push('-c', 'copy');
+            }
         } else {
-            finalArgs.push('-c', 'copy');
+            // --- XFADE COMPLEXO (TRANSIÇÕES) ---
+            // Inputs: All rendered clips
+            clipPaths.forEach(p => finalArgs.push('-i', p));
+            
+            let filter = "";
+            let accumOffset = 0;
+            const transDur = 0.5; // Fixed 500ms transition
+            const transName = getTransitionXfade(transitionType);
+            
+            for (let i = 0; i < clipPaths.length - 1; i++) {
+                // Determine source streams labels
+                const vSrc = (i === 0) ? `[0:v]` : `[v_tmp${i}]`;
+                const aSrc = (i === 0) ? `[0:a]` : `[a_tmp${i}]`;
+                const vNext = `[${i+1}:v]`;
+                const aNext = `[${i+1}:a]`;
+                
+                // Offset = Current Duration Accumulation - Transition Duration
+                accumOffset += videoClipDurations[i] - transDur;
+                
+                filter += `${vSrc}${vNext}xfade=transition=${transName}:duration=${transDur}:offset=${accumOffset.toFixed(3)}[v_tmp${i+1}];`;
+                filter += `${aSrc}${aNext}acrossfade=d=${transDur}:c1=tri:c2=tri[a_tmp${i+1}];`;
+            }
+            
+            // Labels of the final stitched streams
+            const lastIdx = clipPaths.length - 1;
+            const finalVLabel = `[v_tmp${lastIdx}]`;
+            const finalALabel = `[a_tmp${lastIdx}]`;
+            
+            if (bgMusicFile) {
+                finalArgs.push('-i', bgMusicFile.path);
+                // Mix result audio with BGM
+                // Note: The index of BGM input is clipPaths.length
+                const bgmIdx = clipPaths.length; 
+                filter += `[${bgmIdx}:a]volume=${musicVolume},aloop=loop=-1:size=2e+09[bgm];${finalALabel}[bgm]amix=inputs=2:duration=first:dropout_transition=0[a_final]`;
+                finalArgs.push('-filter_complex', filter, '-map', finalVLabel, '-map', '[a_final]');
+            } else {
+                finalArgs.push('-filter_complex', filter, '-map', finalVLabel, '-map', finalALabel);
+            }
         }
 
-        if (bgMusicFile) {
-             finalArgs.push('-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k');
+        // Output Settings
+        // Se usamos xfade, precisamos re-encodar. Se usamos concat+amix, re-encodamos audio.
+        // Se usamos concat simples, copy.
+        if (transitionType !== 'cut' || bgMusicFile) {
+             finalArgs.push('-c:v', 'libx264', '-preset', 'ultrafast', '-c:a', 'aac', '-b:a', '192k');
         }
         
         finalArgs.push(outputPath);
@@ -513,8 +575,10 @@ async function handleExport(job, uploadDir, callback) {
         const totalDuration = videoClipDurations.reduce((a,b) => a+b, 0);
         callback(job.id, finalArgs, totalDuration);
 
+        // Cleanup
         setTimeout(() => {
             clipPaths.forEach(p => { if(fs.existsSync(p)) fs.unlinkSync(p); });
+            const listPath = path.join(uploadDir, `list_${job.id}.txt`);
             if(fs.existsSync(listPath)) fs.unlinkSync(listPath);
         }, 600000);
 
@@ -618,4 +682,4 @@ app.get('/api/process/status/:jobId', (req, res) => {
     res.json(job);
 });
 
-app.listen(PORT, '0.0.0.0', () => console.log(`Turbo Server Complete na porta ${PORT}`));
+app.liste
