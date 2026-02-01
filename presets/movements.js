@@ -51,16 +51,14 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
         'handheld-1': `zoompan=z=1.2:x='iw/2-(iw/zoom/2)+8*sin(on/15)':y='ih/2-(ih/zoom/2)+8*cos(on/18)'${zdur}`,
         'earthquake': `zoompan=z=1.2:x='iw/2-(iw/zoom/2)+20*sin(on*50)':y='ih/2-(ih/zoom/2)+20*cos(on*43)'${zdur}`,
         
-        // --- 6. GLITCH & CAOS (AJUSTADO) ---
-        
+        // --- 6. GLITCH & CAOS ---
         // RGB Shift Move: Movimento ondulante + alteração de cor
         'mov-rgb-shift-move': `zoompan=z='1.1+0.05*sin(on/15)'${zdur},hue=h='20*sin(10*t)'`,
         
         // Snap Glitch: Zoom rápido "quadrado" + Ruído
         'mov-glitch-snap': `zoompan=z='if(gt(sin(on/5),0.9), 1.4, 1.05)'${zdur},noise=alls=20:allf=t`,
         
-        // Glitch Skid (CORRIGIDO):
-        // Movimento lateral rápido e curto (jitter) + Desfoque de movimento
+        // Glitch Skid: Movimento lateral rápido e curto (jitter) + Desfoque de movimento
         'mov-glitch-skid': `zoompan=z=1.1:x='iw/2-(iw/zoom/2)+30*sin(on*20)':y='ih/2-(ih/zoom/2)'${zdur},boxblur=4:1`,
         
         // Shake Violento: Movimento rápido + Blur forte
@@ -69,15 +67,21 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
         // Vibração Sônica: Micro-vibração vertical
         'mov-vibrate': `zoompan=z=1.1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)+10*sin(on*50)'${zdur},boxblur=2:1`,
 
-        // --- 7. ELÁSTICO & DIVERTIDO (CORRIGIDO) ---
+        // --- 7. ELÁSTICO & DIVERTIDO (CORRIGIDO FINAL) ---
 
-        // Pop Up (CORRIGIDO):
-        // Zoom rápido de 1.0 a 1.2 nos primeiros 10 frames, depois mantém.
+        // Gelatina (Jelly Wobble) - CORRIGIDO:
+        // Usa 3 frequências diferentes (Zoom/X/Y) para criar instabilidade "mole".
+        // Adiciona blur leve constante para suavidade "gelatinosa".
+        'mov-jelly-wobble': `zoompan=z='1.05+0.05*sin(on/5)':x='iw/2-(iw/zoom/2)+20*sin(on/6)':y='ih/2-(ih/zoom/2)+15*cos(on/7)'${zdur},boxblur=2:1`,
+
+        // Elástico (Rubber Band) - CORRIGIDO:
+        // Usa abs(sin) para criar um movimento de puxar e soltar (bounce) contínuo.
+        'mov-rubber-band': `zoompan=z='1.0+0.3*abs(sin(on/15))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
+
+        // Pop Up
         'mov-pop-up': `zoompan=z='min(1.2, 1.0+(on/10)*0.2)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
 
-        // Bounce Drop (CORRIGIDO):
-        // Cai de cima (offset negativo Y) e quica. Usamos cos amortecido por (1+on).
-        // z=1.3 para dar margem de manobra vertical.
+        // Bounce Drop
         'mov-bounce-drop': `zoompan=z=1.3:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2) - 150*cos(on/5)/(1+on*0.1)'${zdur}`
     };
 
