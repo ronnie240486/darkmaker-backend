@@ -397,10 +397,12 @@ async function handleExport(job, uploadDir, callback) {
             let filterComplex = "";
             let audioMap = "[a_out]";
             
+            // NOTE: Using 'apad' without arguments creates infinite silence padding.
+            // The '-t' option (set to totalSceneDur) will limit the output duration, preventing infinite loops.
             if (hasSfx) {
-                filterComplex += `[1:a]volume=1.5,apad=pad_dur=2,asetpts=PTS-STARTPTS[voice];[2:a]volume=${sfxVolume},apad=pad_dur=2,asetpts=PTS-STARTPTS[sfx];[voice][sfx]amix=inputs=2:duration=longest:dropout_transition=0,aresample=async=1[a_out];`;
+                filterComplex += `[1:a]volume=1.5,apad,asetpts=PTS-STARTPTS[voice];[2:a]volume=${sfxVolume},apad,asetpts=PTS-STARTPTS[sfx];[voice][sfx]amix=inputs=2:duration=first:dropout_transition=0,aresample=async=1[a_out];`;
             } else {
-                filterComplex += `[1:a]volume=1.5,apad=pad_dur=2,asetpts=PTS-STARTPTS,aresample=async=1[a_out];`;
+                filterComplex += `[1:a]volume=1.5,apad,asetpts=PTS-STARTPTS,aresample=async=1[a_out];`;
             }
 
             // Visual Movement & Scaling Logic
