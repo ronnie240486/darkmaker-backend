@@ -51,14 +51,18 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
         'mov-pan-fast-l': `zoompan=z=2.0:x='(iw/2-(iw/zoom/2)) + (iw/5 * ${p})':y='ih/2-(ih/zoom/2)'${zdur}`,
         'mov-pan-fast-r': `zoompan=z=2.0:x='(iw/2-(iw/zoom/2)) - (iw/5 * ${p})':y='ih/2-(ih/zoom/2)'${zdur}`,
 
-        // --- 4. BLUR & FOCO (Fixed - NO DYNAMIC BOXBLUR) ---
-        // boxblur não aceita expressões dinâmicas em builds padrão do FFmpeg. Usar valores fixos ou EQ.
-        // Substituído por efeitos de zoom leve + unsharp negativo (softness) ou vignette para evitar crash.
-        
-        'mov-blur-in': `zoompan=z='1.0+0.1*${p}'${zdur},unsharp=5:5:-1.0:5:5:-1.0`, // Soft Look (Fake Blur)
-        'mov-blur-out': `zoompan=z='1.1-0.1*${p}'${zdur},unsharp=5:5:-1.0:5:5:-1.0`, 
-        'mov-blur-pulse': `zoompan=z='1.05+0.05*sin(on/10)'${zdur},vignette=a=PI/4`, // Pulso com Vinheta
-        'mov-tilt-shift': `zoompan=z=1.1${zdur},boxblur=2:1,vignette=a=PI/5`, // Blur Estático é seguro
+        // --- BLUR IN (desfoca → foca) ---
+    'mov-blur-in': `gblur=sigma='12*(1-p)':steps=1,zoompan=z='1+0.08*p'${zdur}`,
+
+    // --- BLUR OUT (foca → desfoca) ---
+    'mov-blur-out': `gblur=sigma='12*p':steps=1,zoompan=z='1.08-0.08*p'${zdur}`,
+
+    // --- BLUR PULSE (efeito respirando) ---
+    'mov-blur-pulse': `gblur=sigma='6*abs(sin(2*PI*p))':steps=1,zoompan=z='1.02+0.02*sin(2*PI*p)'${zdur},vignette=a=PI/4`,
+
+    // --- TILT-SHIFT SEGURO (versão leve que nunca quebra) ---
+    'mov-tilt-shift': `gblur=sigma=2:steps=1,vignette=a=PI/5,zoompan=z='1.05+0.05*p'${zdur}`,
+
 
         // --- 5. EFEITOS ESPECIAIS ---
         'handheld-1': `zoompan=z=1.3:x='iw/2-(iw/zoom/2)+15*sin(on/10)':y='ih/2-(ih/zoom/2)+15*cos(on/12)'${zdur}`,
