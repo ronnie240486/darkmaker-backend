@@ -10,7 +10,6 @@ import ffmpegPath from 'ffmpeg-static';
 import ffprobePath from 'ffprobe-static';
 import * as esbuild from 'esbuild';
 
-// IMPORTAÇÃO DOS PRESETS DE MOVIMENTO E TRANSIÇÃO
 import { getMovementFilter } from './presets/movements.js';
 import { getTransitionXfade } from './presets/transitions.js';
 
@@ -97,7 +96,6 @@ const uploadAny = multer({ storage }).any();
 
 const jobs = {};
 
-// === PRESETS DE COR ===
 const COLOR_PRESETS = {
     'realistic': 'eq=saturation=1.1,colorbalance=rm=0.05:gm=0.05:bm=-0.05',
     'vintage': 'colorbalance=rs=0.2:bs=-0.2,eq=gamma=1.2:saturation=0.8,vignette',
@@ -107,8 +105,6 @@ const COLOR_PRESETS = {
     'vibrant': 'eq=saturation=1.5:contrast=1.1'
 };
 
-// ... (getAudioToolCommand and getToolCommand removed for brevity, assume they are same as previous version or standard implementation) ...
-// === GET AUDIO TOOL COMMAND ===
 function getAudioToolCommand(action, inputFiles, params, outputPath) {
     const input = inputFiles[0]?.path;
     const args = [];
@@ -310,7 +306,6 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
 }
 
 // === ENGINE DE EXPORTAÇÃO FRAGMENTADA (TURBO) ===
-// (Código completo da renderização turbo para vídeos longos)
 async function handleExport(job, uploadDir, callback) {
     const outputName = `render_${job.id}.mp4`;
     const outputPath = path.join(OUTPUT_DIR, outputName);
@@ -337,7 +332,6 @@ async function handleExport(job, uploadDir, callback) {
         const sceneMap = {};
         let bgMusicFile = null;
 
-        // Categorize files
         job.files.forEach(f => {
             if (f.originalname.includes('background_music')) {
                 bgMusicFile = f;
@@ -369,8 +363,8 @@ async function handleExport(job, uploadDir, callback) {
             let dur = 5;
             if (scene.audio) dur = (await getExactDuration(scene.audio.path)) || dur;
             
-            // GARANTIR DURAÇÃO MÍNIMA: Aumenta a duração para 1.5s ou o necessário para a transição
-            const transDur = 0.75; // 750ms transition
+            // GARANTIR DURAÇÃO MÍNIMA: Aumentada para 1.5s para transições XFADE funcionarem
+            const transDur = 1.0; 
             if (dur < transDur * 1.5) dur = transDur * 1.5; 
             
             const args = [];
@@ -388,6 +382,7 @@ async function handleExport(job, uploadDir, callback) {
             if (scene.audio) {
                 args.push('-i', scene.audio.path);
             } else {
+                // Gera silêncio se não houver áudio
                 args.push('-f', 'lavfi', '-i', 'anullsrc=cl=stereo:sr=44100');
             }
 
@@ -398,14 +393,15 @@ async function handleExport(job, uploadDir, callback) {
                 hasSfx = true;
             }
 
-            // Audio Mixing Logic
+            // Audio Mixing Logic 
+            // CORREÇÃO CRÍTICA: Adicionado 'apad' para garantir que o áudio tenha sobra para o crossfade
             let filterComplex = "";
             let audioMap = "[a_out]";
             
             if (hasSfx) {
-                filterComplex += `[1:a]volume=1.5[voice];[2:a]volume=${sfxVolume}[sfx];[voice][sfx]amix=inputs=2:duration=first:dropout_transition=0[a_out];`;
+                filterComplex += `[1:a]volume=1.5,apad=pad_dur=1,asetpts=PTS-STARTPTS[voice];[2:a]volume=${sfxVolume},apad=pad_dur=1,asetpts=PTS-STARTPTS[sfx];[voice][sfx]amix=inputs=2:duration=first:dropout_transition=0,aresample=async=1[a_out];`;
             } else {
-                filterComplex += `[1:a]volume=1.5[a_out];`;
+                filterComplex += `[1:a]volume=1.5,apad=pad_dur=1,asetpts=PTS-STARTPTS,aresample=async=1[a_out];`;
             }
 
             // Visual Movement & Scaling Logic
@@ -421,7 +417,7 @@ async function handleExport(job, uploadDir, callback) {
                 '-filter_complex', filterComplex,
                 '-map', '[v_out]',
                 '-map', audioMap,
-                '-t', dur.toFixed(3),
+                '-t', dur.toFixed(3), // Limita o vídeo, mas o apad no filtro garante o buffer de áudio
                 ...getVideoArgs(), 
                 ...getAudioArgs(),
                 clipPath
@@ -462,12 +458,11 @@ async function handleExport(job, uploadDir, callback) {
             }
         } else {
             // --- XFADE COMPLEXO (TRANSIÇÕES) ---
-            // Fix Error 234: Use script file for complex filters
             clipPaths.forEach(p => finalArgs.push('-i', p));
             
             let filter = "";
             let accumOffset = 0;
-            const transDur = 0.75; // Aumentado para 750ms para ser visível
+            const transDur = 1.0; // Aumentado para 1.0s para ser mais visível (ex: porta abrir)
             const transName = getTransitionXfade(transitionType);
             
             for (let i = 0; i < clipPaths.length - 1; i++) {
@@ -476,9 +471,6 @@ async function handleExport(job, uploadDir, callback) {
                 const vNext = `[${i+1}:v]`;
                 const aNext = `[${i+1}:a]`;
                 
-                // Offset calculation uses actual durations of previous clips
-                // For the first clip, offset is duration - transition.
-                // For subsequent chains, it accumulates.
                 accumOffset += videoClipDurations[i] - transDur;
                 
                 // Safety: Ensure offset is positive
@@ -497,7 +489,6 @@ async function handleExport(job, uploadDir, callback) {
                 const bgmIdx = clipPaths.length; 
                 filter += `[${bgmIdx}:a]volume=${musicVolume},aloop=loop=-1:size=2e+09[bgm];${finalALabel}[bgm]amix=inputs=2:duration=first:dropout_transition=0[a_final]`;
                 
-                // Write filter to file to avoid CLI length limit
                 const filterPath = path.join(uploadDir, `filter_${job.id}.txt`);
                 fs.writeFileSync(filterPath, filter);
                 finalArgs.push('-filter_complex_script', filterPath, '-map', finalVLabel, '-map', '[a_final]');
@@ -569,7 +560,6 @@ app.post('/api/process/start/:action', uploadAny, (req, res) => {
     }
 });
 
-// Alias route for video editor
 app.post('/api/edit/start/:action', uploadAny, (req, res) => {
     const action = req.params.action;
     const jobId = `edit_${action}_${Date.now()}`;
