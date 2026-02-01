@@ -15,9 +15,9 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
     // tz: Time normalized (0 to 1) for ZOOMPAN. Uses 'on' (output_number).
     const tz = `(on/${totalFrames})`; 
     
-    // tg: Time normalized (0 to 1) for GENERIC filters (rotate, boxblur). Uses 'n' (frame_number).
-    // This is CRITICAL: using 'on' in boxblur/rotate causes render failure.
-    const tg = `(n/${totalFrames})`;
+    // tg: Time normalized (0 to 1) for GENERIC filters (rotate, boxblur). 
+    // FIXED: Uses 't' (timestamp) and 'd' (duration) for better stability than 'n'.
+    const tg = `(t/${d})`;
 
     const moves = {
         // --- ESTÁTICO & SUAVE (Apenas Zoompan) ---
@@ -38,29 +38,29 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
         'mov-zoom-wobble': `zoompan=z='1.1':x='iw/2-(iw/zoom/2)+20*sin(on/10)':y='ih/2-(ih/zoom/2)+20*cos(on/10)'${zdur}`,
         'mov-scale-pulse': `zoompan=z='1.0+0.2*sin(on/10)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
 
-        // --- EFEITOS (Corrigidos para usar tg/n) ---
+        // --- EFEITOS (Fixed for Stability) ---
         
-        // Twist: usa rotate com 'n'
+        // Twist: usa rotate com 't'
         'mov-zoom-twist-in': `zoompan=z='1.0+(0.5*${tz})'${zdur},rotate=angle='(PI/12)*${tg}':fillcolor=black:ow=${targetW}:oh=${targetH}`,
         
-        // Blur: usa boxblur com 'n' (lr expression)
-        'mov-blur-in': `zoompan=z=1${zdur},boxblur=lr='20*(1-${tg})':lp=1`,
-        'mov-blur-out': `zoompan=z=1${zdur},boxblur=lr='20*${tg}':lp=1`,
-        'mov-blur-pulse': `zoompan=z=1${zdur},boxblur=lr='10*abs(sin(${tg}*PI*2))':lp=1`,
+        // Blur: Fixed expressions (removed quotes, added clamping)
+        'mov-blur-in': `zoompan=z=1${zdur},boxblur=lr=max(0,20*(1-${tg})):lp=1`,
+        'mov-blur-out': `zoompan=z=1${zdur},boxblur=lr=min(20,20*${tg}):lp=1`,
+        'mov-blur-pulse': `zoompan=z=1${zdur},boxblur=lr=10*abs(sin(${tg}*PI*2)):lp=1`,
         
         // Tilt Shift simulado
-        'mov-tilt-shift': `zoompan=z='1.0+(0.1*${tz})'${zdur},boxblur=lr='2':lp=1,vignette=a=PI/5`,
+        'mov-tilt-shift': `zoompan=z='1.0+(0.1*${tz})'${zdur},boxblur=lr=2:lp=1,vignette=a=PI/5`,
 
-        // 3D & Rotação (Corrigidos)
+        // 3D & Rotação
         'mov-3d-spin-axis': `zoompan=z=1.2${zdur},rotate=angle='2*PI*${tg}':fillcolor=black:ow=${targetW}:oh=${targetH}`,
         'mov-3d-flip-x': `zoompan=z=1${zdur}`, 
         'mov-3d-flip-y': `zoompan=z=1${zdur}`,
         'mov-3d-swing-l': `zoompan=z=1.2${zdur},rotate=angle='(PI/8)*sin(2*PI*${tg})':fillcolor=black:ow=${targetW}:oh=${targetH}`,
         'mov-3d-roll': `zoompan=z=1.5${zdur},rotate=angle='2*PI*${tg}':fillcolor=black:ow=${targetW}:oh=${targetH}`,
 
-        // Glitch (noise suporta 't' seconds)
+        // Glitch
         'mov-glitch-snap': `zoompan=z='if(mod(on,20)<2, 1.3, 1.0)':x='iw/2-(iw/zoom/2)+if(mod(on,20)<2, 50, 0)':y='ih/2-(ih/zoom/2)'${zdur},noise=alls=20:allf=t`,
-        'mov-rgb-shift-move': `zoompan=z=1.05${zdur},rgbashift=rh=20:bv=20`, // rgbashift estático é seguro
+        'mov-rgb-shift-move': `zoompan=z=1.05${zdur},rgbashift=rh=20:bv=20`,
 
         // Panorâmicas
         'mov-pan-slow-l': `zoompan=z=1.4:x='(iw/2-(iw/zoom/2))*(1+0.5*${tz})':y='ih/2-(ih/zoom/2)'${zdur}`,
