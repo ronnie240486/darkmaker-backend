@@ -1,18 +1,33 @@
+// effects.js – FFmpeg safe
+export function getEffectFilter(id) {
+    const map = {
+        // Cor e estilo
+        "mono": "hue=s=0",
+        "noir": "hue=s=0,contrast=1.3",
+        "sepia": "colorchannelmixer=.393:.769:.189:.349:.686:.168:.272:.534:.131",
+        "cinema": "eq=contrast=1.2:saturation=1.2",
 
-export function getFFmpegFilterFromEffect(effectId) {
-    if (!effectId) return null;
+        // Glow / Luz
+        "glow": "gblur=sigma=10",
+        "flash": "tblend=all_mode=lighten,fade=t=in:st=0:d=0.2",
 
-    const effects = {
-        'teal-orange': 'colorbalance=rs=0.2:bs=-0.2,eq=contrast=1.1:saturation=1.3',
-        'noir': 'hue=s=0,eq=contrast=1.5:brightness=-0.1',
-        'vintage-warm': 'colorbalance=rs=0.2:bs=-0.2,eq=gamma=1.2:saturation=0.8',
-        'cyberpunk': 'eq=contrast=1.2:saturation=1.5,colorbalance=bs=0.2:gs=0.1',
-        // Removed boxblur to prevent compatibility issues
-        'vhs-distort': 'eq=saturation=1.5,noise=alls=10:allf=t', 
-        'old-film': 'eq=saturation=0.5,noise=alls=15:allf=t',
-        'sepia': 'colorbalance=rs=0.3:gs=0.2:bs=-0.2',
-        'matrix': 'colorbalance=gs=0.3:rs=-0.2:bs=-0.2,eq=contrast=1.2'
+        // Glitch
+        "glitch": "geq=random(1)",
+        "rgb-shift": "chromashift=rh=4:bh=-4",
+        "scanlines": "lutrgb=r='r(X,Y)*0.8':g='g(X,Y)*0.8':b='b(X,Y)*0.8',format=yuv420p",
+
+        // Pixel / arte
+        "pixel": "scale=iw/20:ih/20,scale=iw*20:ih*20:flags=neighbor",
+        "oil": "oilink=radius=3",
+        "sketch": "edgedetect=mode=colormix",
+
+        // Blur
+        "blur": "gblur=sigma=5",
+        "tilt-shift": "boxblur=2:1:cr=0.5:ar=1",
+
+        // Noise
+        "noise": "noise=alls=20",
     };
 
-    return effects[effectId] || null;
+    return map[id] || null;
 }
