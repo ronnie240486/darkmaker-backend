@@ -1,77 +1,69 @@
-export function getTransitionXfade(transId, durationSec = 1, w = 1280, h = 720) {
-    const d = parseFloat(durationSec) || 1;
-    const fps = 30;
+
+export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 720) {
+    const d = parseFloat(durationSec) || 5;
+    const fps = 30; 
+    const totalFrames = Math.ceil(d * fps);
     
-    // Normalização do tempo (0 → 1)
-    const tnorm = `(t/${d})`;
+    // ==========================================================================================
+    // OTIMIZAÇÃO: Scale 2x (antes era 4x)
+    // Reduz carga de memória evitando falha de pipe em ambientes com RAM limitada.
+    // 2x (2560x1440 para 720p) ainda oferece qualidade suficiente para zoom digital.
+    // ==========================================================================================
+    const pre = `scale=${targetW*2}:${targetH*2}:force_original_aspect_ratio=increase,crop=${targetW*2}:${targetH*2},setsar=1`;
+    
+    // Zoompan Base Config
+    // d=... frames totais (2x duração para segurança do buffer)
+    const zdur = `:d=${totalFrames*2}:s=${targetW}x${targetH}:fps=${fps}`;
+    
+    // Normalização (0 a 1) para zoompan
+    const p_zoom = `(on/${totalFrames})`; 
 
-    // ------------------------------------------------------------
-    // PRESETS DE TRANSIÇÃO COM BLUR REAL (boxblur)
-    // ------------------------------------------------------------
-    const transitions = {
+    // --- STEP BLUR TECHNIQUE ---
+    // Em vez de expressões dinâmicas (que quebram em alguns FFmpegs), usamos estágios.
+    // Isso é 100% compatível e evita o erro "Invalid argument".
+    const blurIn = `,boxblur=20:1:enable='lt(t,0.3)',boxblur=10:1:enable='between(t,0.3,0.6)',boxblur=4:1:enable='between(t,0.6,0.9)'`;
+    const blurOut = `,boxblur=4:1:enable='between(t,${d-0.9},${d-0.6})',boxblur=10:1:enable='between(t,${d-0.6},${d-0.3})',boxblur=20:1:enable='gt(t,${d-0.3})'`;
+    const pulseBlur = `,boxblur=10:1:enable='between(mod(t,2),0,0.2)'`; // Pulsa a cada 2s
+
+    const moves = {
+        // --- 1. ESTÁTICO & SUAVE ---
+        'static': `zoompan=z=1.0:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
+        'kenburns': `zoompan=z='min(1.2, 1.0+0.0005*on)':x='(iw/2-(iw/zoom/2))':y='(ih/2-(ih/zoom/2))'${zdur}`,
+        'mov-3d-float': `zoompan=z='1.1+0.05*sin(on/60)':x='iw/2-(iw/zoom/2)+10*sin(on/50)':y='ih/2-(ih/zoom/2)+10*cos(on/60)'${zdur}`,
         
-        // Fade normal
-        "fade": `
-            [0:v][1:v]xfade=transition=fade:duration=${d}:offset=0
-        `,
+        'mov-tilt-up-slow': `zoompan=z=1.5:x='iw/2-(iw/zoom/2)':y='(ih/2-(ih/zoom/2)) + (ih/8 * ${p_zoom})'${zdur}`,
+        'mov-tilt-down-slow': `zoompan=z=1.5:x='iw/2-(iw/zoom/2)':y='(ih/2-(ih/zoom/2)) - (ih/8 * ${p_zoom})'${zdur}`,
+
+        // --- 2. ZOOM DINÂMICO ---
+        'zoom-in': `zoompan=z='min(2.5, 1.0+(1.5*${p_zoom}))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
+        'zoom-out': `zoompan=z='max(1.0, 2.5-(1.5*${p_zoom}))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
+        'mov-zoom-crash-in': `zoompan=z='min(4, 1.0+0.15*on)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
+        'mov-dolly-vertigo': `zoompan=z='1.0+(0.8*${p_zoom})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
         
-        // Zoom + blur sutil
-        "zoom-blur": `
-            [0:v]zoompan=z='1.0 + 0.2*${tnorm}':d=1:s=${w}x${h},boxblur=lr='5*${tnorm}':lp=2[za];
-            [1:v]zoompan=z='1.2 - 0.2*${tnorm}':d=1:s=${w}x${h},boxblur=lr='5*(1-${tnorm})':lp=2[zb];
-            [za][zb]xfade=transition=fade:duration=${d}:offset=0
-        `,
+        // --- 3. PANORÂMICAS (SAFE) ---
+        'mov-pan-slow-l': `zoompan=z=2.0:x='(iw/2-(iw/zoom/2)) + (iw/6 * ${p_zoom})':y='ih/2-(ih/zoom/2)'${zdur}`,
+        'mov-pan-slow-r': `zoompan=z=2.0:x='(iw/2-(iw/zoom/2)) - (iw/6 * ${p_zoom})':y='ih/2-(ih/zoom/2)'${zdur}`,
+        'mov-pan-slow-u': `zoompan=z=2.0:x='iw/2-(iw/zoom/2)':y='(ih/2-(ih/zoom/2)) + (ih/6 * ${p_zoom})'${zdur}`,
+        'mov-pan-slow-d': `zoompan=z=2.0:x='iw/2-(iw/zoom/2)':y='(ih/2-(ih/zoom/2)) - (ih/6 * ${p_zoom})'${zdur}`,
 
-        // Desfocar total no meio da transição
-        "blur-middle": `
-            [0:v]boxblur=lr='20*${tnorm}':lp=2[a];
-            [1:v]boxblur=lr='20*(1-${tnorm})':lp=2[b];
-            [a][b]xfade=transition=fade:duration=${d}:offset=0
-        `,
+        // --- 4. BLUR & FOCO (CORRIGIDO - NO CRASH) ---
+        // Usamos zoompan padrão + o efeito de blur em etapas definido acima
+        'mov-blur-in': `zoompan=z='1.0+0.05*on'${zdur}${blurIn}`,
+        'mov-blur-out': `zoompan=z='1.0+0.05*on'${zdur}${blurOut}`,
+        'mov-blur-pulse': `zoompan=z='1.05+0.05*sin(on/10)'${zdur}${pulseBlur}`,
+        
+        // Tilt Shift: Blur estático nas bordas (Vignette + Blur leve constante)
+        'mov-tilt-shift': `zoompan=z=1.1${zdur},boxblur=2:1,vignette=a=PI/5`,
 
-        // Blur radial estilo dream
-        "dream": `
-            [0:v]boxblur=lr='40*${tnorm}':lp=3[v0];
-            [1:v]boxblur=lr='40*(1-${tnorm})':lp=3[v1];
-            [v0][v1]xfade=transition=fade:duration=${d}:offset=0
-        `,
-
-        // Whip pan + blur forte (transição de ação)
-        "whip-blur": `
-            [0:v]boxblur=lr='25':lp=3,zoompan=z=1.0:x='iw*${tnorm}*2':y=0:d=1:s=${w}x${h}[a];
-            [1:v]boxblur=lr='25':lp=3,zoompan=z=1.0:x='-iw*(1-${tnorm})*2':y=0:d=1:s=${w}x${h}[b];
-            [a][b]xfade=transition=slideleft:duration=${d}:offset=0
-        `,
-
-        // Glitch + blur
-        "glitch-blur": `
-            [0:v]noise=alls=30:allf=t,boxblur=lr='10*${tnorm}':lp=2[a];
-            [1:v]noise=alls=30:allf=t,boxblur=lr='10*(1-${tnorm})':lp=2[b];
-            [a][b]xfade=transition=fade:duration=${d}:offset=0
-        `,
-
-        // Desfocar tudo no começo e ficar nítido no final
-        "blur-in": `
-            [0:v]boxblur=lr='30*(1-${tnorm})':lp=2[a];
-            [1:v]boxblur=lr='30*${tnorm}':lp=2[b];
-            [a][b]xfade=transition=fade:duration=${d}:offset=0
-        `,
-
-        // Zoom + deep blur dramático
-        "cinematic-deep": `
-            [0:v]zoompan=z='1.0 + 0.4*${tnorm}':d=1:s=${w}x${h},boxblur=lr='15*${tnorm}':lp=3[a];
-            [1:v]zoompan=z='1.4 - 0.4*${tnorm}':d=1:s=${w}x${h},boxblur=lr='15*(1-${tnorm})':lp=3[b];
-            [a][b]xfade=transition=fade:duration=${d}:offset=0
-        `,
+        // --- 5. EFEITOS ESPECIAIS ---
+        'handheld-1': `zoompan=z=1.3:x='iw/2-(iw/zoom/2)+15*sin(on/10)':y='ih/2-(ih/zoom/2)+15*cos(on/12)'${zdur}`,
+        'earthquake': `zoompan=z=1.3:x='iw/2-(iw/zoom/2)+40*(random(1)-0.5)':y='ih/2-(ih/zoom/2)+40*(random(1)-0.5)'${zdur}`,
+        'mov-rgb-shift-move': `zoompan=z=1.1${zdur},rgbashift=rh=10:bv=10`,
+        'mov-glitch-snap': `zoompan=z='if(mod(on,30)<3, 1.3, 1.0)'${zdur},noise=alls=10:allf=t`
     };
 
-    const selected = transitions[transId] || transitions["fade"];
-
-    // Saída padronizada
-    const post = `scale=${w}:${h}:flags=lanczos,fps=${fps},format=yuv420p`;
-
-    return `
-        ${selected},
-        ${post}
-    `;
+    const selectedFilter = moves[moveId] || moves['kenburns'];
+    const post = `scale=${targetW}:${targetH}:flags=lanczos,setsar=1,fps=${fps},format=yuv420p`;
+    
+    return `${pre},${selectedFilter},${post}`;
 }
