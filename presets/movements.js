@@ -13,14 +13,15 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
     const zdur = `:d=${totalFrames*2}:s=${targetW}x${targetH}:fps=${fps}`;
     const p_zoom = `(on/${totalFrames})`; 
 
-    // --- STEP BLUR SUAVE (Cascata de Foco) ---
-    // Aumentamos a duração do efeito para 2.0s para ser bem visível.
-    // O desfoque vai diminuindo em degraus: 20 -> 10 -> 5 -> 2 -> 0
+    // --- FILTROS DE BLUR AUXILIARES ---
+    // Blur In: Começa forte (20px) e foca gradualmente até 2.0s
     const blurIn = `,boxblur=20:1:enable='lt(t,0.5)',boxblur=10:1:enable='between(t,0.5,1.0)',boxblur=5:1:enable='between(t,1.0,1.5)',boxblur=2:1:enable='between(t,1.5,2.0)'`;
     
+    // Blur Out: Começa focado e desfoca gradualmente nos últimos 2.0s
     const blurOut = `,boxblur=2:1:enable='between(t,${d-2.0},${d-1.5})',boxblur=5:1:enable='between(t,${d-1.5},${d-1.0})',boxblur=10:1:enable='between(t,${d-1.0},${d-0.5})',boxblur=20:1:enable='gt(t,${d-0.5})'`;
     
-    const pulseBlur = `,boxblur=10:1:enable='between(mod(t,3),0,0.5)'`; // Pulsa a cada 3s
+    // Pulse Blur: Um "respiro" de desfoque a cada 3 segundos
+    const pulseBlur = `,boxblur=15:1:enable='between(mod(t,3),0,0.3)'`; 
 
     const moves = {
         // --- 1. ESTÁTICO & SUAVE ---
@@ -43,20 +44,33 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
         'mov-pan-slow-u': `zoompan=z=1.5:x='iw/2-(iw/zoom/2)':y='(ih/2-(ih/zoom/2)) + (ih/8 * ${p_zoom})'${zdur}`,
         'mov-pan-slow-d': `zoompan=z=1.5:x='iw/2-(iw/zoom/2)':y='(ih/2-(ih/zoom/2)) - (ih/8 * ${p_zoom})'${zdur}`,
 
-        // --- 4. BLUR & FOCO (AJUSTADO: ZOOM LEVE + BLUR VISÍVEL) ---
-        // Zoom reduzido para 0.0015 (muito leve)
-        'mov-blur-in': `zoompan=z='min(1.25, 1.0+0.0015*on)'${zdur}${blurIn}`,
-        'mov-blur-out': `zoompan=z='min(1.25, 1.0+0.0015*on)'${zdur}${blurOut}`,
-        'mov-blur-pulse': `zoompan=z='min(1.1, 1.0+0.0005*on)'${zdur}${pulseBlur}`,
+        // --- 4. BLUR & FOCO ---
+        'mov-blur-in': `zoompan=z='min(1.15, 1.0+0.001*on)'${zdur}${blurIn}`,
+        'mov-blur-out': `zoompan=z='min(1.15, 1.0+0.001*on)'${zdur}${blurOut}`,
+        'mov-blur-pulse': `zoompan=z='1.05+0.02*sin(on/30)'${zdur}${pulseBlur}`,
         
-        // Tilt Shift: Blur constante nas bordas
-        'mov-tilt-shift': `zoompan=z=1.1${zdur},boxblur=2:1,vignette=a=PI/5`,
+        // Tilt Shift: Vignette forte + leve desfoque constante + saturação aumentada
+        'mov-tilt-shift': `zoompan=z=1.1${zdur},boxblur=2:1,vignette=a=PI/4,eq=saturation=1.3`,
 
-        // --- 5. EFEITOS ESPECIAIS ---
+        // --- 5. EFEITOS ESPECIAIS & MOVIMENTO REALISTA ---
         'handheld-1': `zoompan=z=1.2:x='iw/2-(iw/zoom/2)+8*sin(on/15)':y='ih/2-(ih/zoom/2)+8*cos(on/18)'${zdur}`,
         'earthquake': `zoompan=z=1.2:x='iw/2-(iw/zoom/2)+20*(random(1)-0.5)':y='ih/2-(ih/zoom/2)+20*(random(1)-0.5)'${zdur}`,
-        'mov-rgb-shift-move': `zoompan=z=1.1${zdur},rgbashift=rh=6:bv=6`,
-        'mov-glitch-snap': `zoompan=z='if(mod(on,45)<3, 1.2, 1.0)'${zdur},noise=alls=10:allf=t`
+        
+        // --- 6. GLITCH & CAOS (IMPLEMENTADO) ---
+        // RGB Shift com movimento flutuante
+        'mov-rgb-shift-move': `zoompan=z='1.05+0.02*sin(on/20)'${zdur},rgbashift=rh=15:bv=15:gh=-5`,
+        
+        // Snap Glitch: Zoom súbito aleatório + Ruído
+        'mov-glitch-snap': `zoompan=z='if(mod(on,45)<3, 1.3, 1.05)'${zdur},noise=alls=20:allf=t`,
+        
+        // Glitch Skid: Deslocamento lateral rápido e repetitivo ("pulo de fita")
+        'mov-glitch-skid': `zoompan=z=1.1:x='iw/2-(iw/zoom/2)+if(lt(mod(on,60),4), 80, 0)'${zdur},rgbashift=rh=20:bv=-20`,
+        
+        // Shake Violento: Tremor de alta amplitude
+        'mov-shake-violent': `zoompan=z=1.4:x='iw/2-(iw/zoom/2)+60*(random(1)-0.5)':y='ih/2-(ih/zoom/2)+60*(random(1)-0.5)'${zdur}`,
+        
+        // Vibração Sônica: Alta frequência, baixa amplitude (efeito de tensão/bass)
+        'mov-vibrate': `zoompan=z=1.1:x='iw/2-(iw/zoom/2)+15*sin(on*25)':y='ih/2-(ih/zoom/2)+15*cos(on*30)'${zdur}`
     };
 
     const selectedFilter = moves[moveId] || moves['kenburns'];
