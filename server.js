@@ -682,4 +682,4 @@ app.get('/api/process/status/:jobId', (req, res) => {
     res.json(job);
 });
 
-app.liste
+app.listen(PORT, '0.0.0.0', () => console.log(`Turbo Server Complete na porta ${PORT}`));
