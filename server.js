@@ -368,8 +368,10 @@ async function handleExport(job, uploadDir, callback) {
             // Duration driven by narration audio
             let dur = 5;
             if (scene.audio) dur = (await getExactDuration(scene.audio.path)) || dur;
-            // Enforce minimum duration for transitions
-            if (dur < 1.0) dur = 1.0; 
+            
+            // GARANTIR DURAÇÃO MÍNIMA: Aumenta a duração para 1.5s ou o necessário para a transição
+            const transDur = 0.75; // 750ms transition
+            if (dur < transDur * 1.5) dur = transDur * 1.5; 
             
             const args = [];
             
@@ -465,7 +467,7 @@ async function handleExport(job, uploadDir, callback) {
             
             let filter = "";
             let accumOffset = 0;
-            const transDur = 0.5; // Fixed 500ms transition
+            const transDur = 0.75; // Aumentado para 750ms para ser visível
             const transName = getTransitionXfade(transitionType);
             
             for (let i = 0; i < clipPaths.length - 1; i++) {
