@@ -2,108 +2,106 @@
 export function getTransitionXfade(transId) {
     const id = transId?.toLowerCase() || 'fade';
 
-    // Lista Oficial de XFADE do FFmpeg: https://trac.ffmpeg.org/wiki/Xfade
+    // MAPA DE "TRADUÇÃO" PARA FILTROS NATIVOS DO FFMPEG
+    // Referência XFADE: https://trac.ffmpeg.org/wiki/Xfade
     const map = {
-        // --- Clássicos ---
-        'cut': 'fade', // Fallback suave
-        'fade': 'fade',
-        'black': 'fadeblack',
-        'white': 'fadewhite',
-        'mix': 'dissolve',
+        // === BÁSICOS ===
+        'cut': 'fade',          // Fallback para evitar erro
+        'fade': 'fade',         // Fade cruzado clássico
+        'mix': 'dissolve',      // Dissolver suave
+        'black': 'fadeblack',   // Fade para preto
+        'white': 'fadewhite',   // Fade para branco (Flash)
 
-        // --- Movimento (Slides & Wipes) ---
+        // === GEOMÉTRICOS (FORMAS) ===
+        'circle-open': 'circleopen',   // Círculo abrindo (Íris)
+        'circle-close': 'circleclose', // Círculo fechando
+        'porta abrir': 'horzopen',     // Porta de celeiro abrindo (Horizontal)
+        'door-open': 'horzopen',       // (Inglês)
+        'door-close': 'horzclose',     // Porta fechando
+        'vert-open': 'vertopen',       // Porta vertical (Olho)
+        'relogio': 'radial',           // Ponteiro de relógio
+        'clock': 'radial',             // (Inglês)
+        'clock-wipe': 'radial',        // (Alias)
+        'spiral': 'spiral',            // Espiral
+        'spiral-wipe': 'spiral',       // (Alias)
+        'diamond': 'diagdist',         // Diamante/Losango
+        'diamond-zoom': 'diagdist',    // (Alias)
+
+        // === MOVIMENTO (SLIDES) ===
         'slide-left': 'slideleft',
         'slide-right': 'slideright',
         'slide-up': 'slideup',
         'slide-down': 'slidedown',
+        'push-left': 'pushleft',       // Empurrar (diferente de slide)
+        'push-right': 'pushright',
+        'whip-left': 'slideleft',      // Whip é um slide rápido
+        'whip-right': 'slideright',
+        'whip chicote': 'slideleft',   // (Alias PT)
+
+        // === WIPES (VARREDURAS) ===
         'wipe-left': 'wipeleft',
         'wipe-right': 'wiperight',
         'wipe-up': 'wipeup',
         'wipe-down': 'wipedown',
-        'push-left': 'pushleft',
-        'push-right': 'pushright',
 
-        // --- Zoom & Warp ---
+        // === EFEITOS ARTÍSTICOS (SIMULADOS) ===
+        // Fumaça/Dreams -> Dissolve é o mais próximo nativo sem plugins
+        'fumaca': 'dissolve',          
+        'smoke-reveal': 'dissolve',
+        
+        // Rasgo de Papel -> Corte Horizontal (Slice)
+        'rasgo de papel': 'hlslice',   
+        'paper-rip': 'hlslice',
+        
+        // Gota D'água -> Círculo abrindo (Onda)
+        'gota dagua': 'circleopen',    
+        'water-ripple': 'circleopen',
+        
+        // Efeitos de Luz -> Flash Branco (Estouro)
+        'god rays': 'fadewhite',       
+        'god-rays': 'fadewhite',
+        'lens flare': 'circleopen',    // Íris lembra abertura de lente
+        'lens-flare': 'circleopen',
+        'flash-bang': 'fadewhite',
+        'burn': 'fadewhite',           
+        'queimadura de filme': 'fadewhite',
+
+        // Glitch -> Pixelização
+        'glitch': 'pixelize',
+        'pixelize': 'pixelize',
+        'datamosh': 'hblur',           // Blur horizontal parece defeito
+
+        // Outros
         'zoom-in': 'zoomin',
         'zoom-out': 'zoomout',
-        'zoom-spin-fast': 'radial', // Radial simula giro melhor que zoomin puro
-        'whip-left': 'slideleft', // Whip é um slide rápido
-        'whip-right': 'slideright',
-        'whip-up': 'slideup',
-        'whip-down': 'slidedown',
-        'blur-warp': 'dissolve', // Não existe blur nativo em xfade, usa dissolve
-        'elastic-left': 'slideleft',
-
-        // --- Glitch & Cyberpunk ---
-        'glitch': 'pixelize',
-        'color-glitch': 'pixelize',
-        'pixelize': 'pixelize',
-        'datamosh': 'pixelize',
-        'hologram': 'dissolve',
-        'cyber-zoom': 'zoomin',
-        'digital-noise': 'dissolve',
-        'rgb-split': 'dissolve',
-        'scan-line-v': 'vslice', // Vslice parece scanline
-        'block-glitch': 'hblur', // Horizontal blur parece glitch
-
-        // --- Formas & Geometria ---
-        'circle-open': 'circleopen',
-        'circle-close': 'circleclose',
-        'diamond-zoom': 'diagtl',
-        'clock-wipe': 'clock',
-        'checker-wipe': 'checkerboard',
-        'blind-h': 'horzopen',
-        'blind-v': 'vertopen',
-        'spiral-wipe': 'spiral',
-        'triangle-wipe': 'diagbl',
-        'star-zoom': 'circleopen', // Fallback visual
-
-        // --- Luz & Atmosfera ---
-        'flash-bang': 'fadewhite',
-        'burn': 'fadewhite', // Queimadura de filme = branco estourado
-        'light-leak-tr': 'dissolve',
-        'lens-flare': 'circleopen', // Iris abrindo
-        'god-rays': 'dissolve',
-        'glow-intense': 'dissolve',
-        'flash-black': 'fadeblack',
-
-        // --- Artístico & Textura ---
-        'oil-paint': 'dissolve',
-        'ink-splash': 'radial', // Tinta se espalhando
-        'paper-rip': 'hlslice', // Corte horizontal parece rasgo
-        'page-turn': 'slideleft', // Fallback, page turn real requer GL
-        'water-ripple': 'circleopen', // Círculo abrindo = gota
-        'smoke-reveal': 'dissolve', // Fumaça = Dissolve suave
-        'sketch-reveal': 'diagtl',
-        'liquid-melt': 'slidedown', // Derreter = deslizar p/ baixo
-
-        // --- 3D & Perspectiva ---
-        'cube-rotate-l': 'slideleft',
-        'cube-rotate-r': 'slideright',
-        'door-open': 'horzopen', // Porta abrindo
-        'flip-card': 'hlslice',
-        'room-fly': 'zoomin',
-        'film-roll': 'slidedown'
+        'rect-crop': 'rectcrop'
     };
 
+    // Retorna o filtro mapeado ou 'fade' se não encontrar
+    // Importante: FFmpeg é case-sensitive nos nomes dos filtros, geralmente tudo minúsculo
     return map[id] || 'fade';
 }
 
-export function buildTransitionFilter(clipCount, transitionType, durations, transitionDuration = 0.5) {
+export function buildTransitionFilter(clipCount, transitionType, durations, transitionDuration = 0.75) {
     const filters = [];
-    let accumulatedDuration = durations[0] || 5;
+    // Ajuste: A primeira duração é usada como base
+    let accumulatedDuration = durations[0]; 
     const isCut = transitionType === 'cut';
-    // Se for cut, transição é quase instantânea (0.05), senão usa o padrão
-    const safeTransDur = isCut ? 0.05 : Math.min(transitionDuration, 1.0);
+    
+    // Se for 'cut', fazemos uma transição super rápida (0.1s) que é imperceptível, 
+    // mas mantém a lógica do xfade para não quebrar o pipeline
+    const safeTransDur = isCut ? 0.1 : Math.min(transitionDuration, 1.5);
 
     for (let i = 0; i < clipCount - 1; i++) {
-        // O offset é o momento exato onde a transição começa
-        // Deve ser: Duração Acumulada - Duração da Transição
+        // Offset precisa ser calculado com precisão
+        // Offset = Onde termina o clipe anterior MENOS a duração da transição
+        // (A transição come o final do clipe A e o início do clipe B)
         const offset = accumulatedDuration - safeTransDur;
         
-        const vIn1 = i === 0 ? "[0:v]" : `[v_tmp${i}]`;
-        const vIn2 = `[${i + 1}:v]`;
-        const vOut = `[v_tmp${i + 1}]`;
+        // Labels dos streams no grafo do FFmpeg
+        const vIn1 = i === 0 ? "[0:v]" : `[v_tmp${i}]`; // O primeiro vem do input 0, os outros dos temp
+        const vIn2 = `[${i + 1}:v]`;                    // Próximo input de vídeo
+        const vOut = `[v_tmp${i + 1}]`;                 // Saída temporária
         
         const aIn1 = i === 0 ? "[0:a]" : `[a_tmp${i}]`;
         const aIn2 = `[${i + 1}:a]`;
@@ -111,15 +109,18 @@ export function buildTransitionFilter(clipCount, transitionType, durations, tran
 
         const safeTrans = getTransitionXfade(transitionType);
         
-        // Offset deve ser sempre positivo e ter 3 casas decimais
+        // Garante que o offset nunca seja negativo
         const fmtOffset = Math.max(0, offset).toFixed(3);
 
+        // Monta o filtro XFADE (Vídeo)
         filters.push(`${vIn1}${vIn2}xfade=transition=${safeTrans}:duration=${safeTransDur}:offset=${fmtOffset}${vOut}`);
+        
+        // Monta o filtro ACROSSFADE (Áudio) - sempre crossfade suave
         filters.push(`${aIn1}${aIn2}acrossfade=d=${safeTransDur}:c1=tri:c2=tri${aOut}`);
 
-        // Atualiza a duração acumulada:
-        // Nova duração = Acumulado + Duração do Próximo Clipe - Transição (pois ela 'come' tempo)
-        accumulatedDuration = (accumulatedDuration + (durations[i+1] || 5)) - safeTransDur;
+        // Atualiza a duração acumulada para o próximo loop
+        // Nova Duração = Duração Acumulada + Duração do Próximo Clipe - Transição
+        accumulatedDuration = (accumulatedDuration + durations[i+1]) - safeTransDur;
     }
 
     const mapV = `[v_tmp${clipCount - 1}]`;
