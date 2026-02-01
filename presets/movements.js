@@ -33,11 +33,21 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
         'mov-zoom-crash-in': `zoompan=z='min(3, 1.0+0.1*on)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
         'mov-dolly-vertigo': `zoompan=z='1.0+(0.4*${p_zoom})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
         
-        // --- 3. PANORÂMICAS ---
+        // --- 3. PANORÂMICAS (SIMPLES) ---
         'mov-pan-slow-l': `zoompan=z=1.5:x='(iw/2-(iw/zoom/2)) + (iw/8 * ${p_zoom})':y='ih/2-(ih/zoom/2)'${zdur}`,
         'mov-pan-slow-r': `zoompan=z=1.5:x='(iw/2-(iw/zoom/2)) - (iw/8 * ${p_zoom})':y='ih/2-(ih/zoom/2)'${zdur}`,
         'mov-pan-slow-u': `zoompan=z=1.5:x='iw/2-(iw/zoom/2)':y='(ih/2-(ih/zoom/2)) + (ih/8 * ${p_zoom})'${zdur}`,
         'mov-pan-slow-d': `zoompan=z=1.5:x='iw/2-(iw/zoom/2)':y='(ih/2-(ih/zoom/2)) - (ih/8 * ${p_zoom})'${zdur}`,
+
+        // --- 3.1 PANORÂMICAS (DIAGONAIS) ---
+        // TL: Top-Left (Cima Esquerda) -> X diminui, Y diminui
+        'mov-pan-diag-tl': `zoompan=z=1.5:x='(iw/2-(iw/zoom/2)) - (iw/8 * ${p_zoom})':y='(ih/2-(ih/zoom/2)) - (ih/8 * ${p_zoom})'${zdur}`,
+        // TR: Top-Right (Cima Direita) -> X aumenta, Y diminui
+        'mov-pan-diag-tr': `zoompan=z=1.5:x='(iw/2-(iw/zoom/2)) + (iw/8 * ${p_zoom})':y='(ih/2-(ih/zoom/2)) - (ih/8 * ${p_zoom})'${zdur}`,
+        // BL: Bottom-Left (Baixo Esquerda) -> X diminui, Y aumenta
+        'mov-pan-diag-bl': `zoompan=z=1.5:x='(iw/2-(iw/zoom/2)) - (iw/8 * ${p_zoom})':y='(ih/2-(ih/zoom/2)) + (ih/8 * ${p_zoom})'${zdur}`,
+        // BR: Bottom-Right (Baixo Direita) -> X aumenta, Y aumenta
+        'mov-pan-diag-br': `zoompan=z=1.5:x='(iw/2-(iw/zoom/2)) + (iw/8 * ${p_zoom})':y='(ih/2-(ih/zoom/2)) + (ih/8 * ${p_zoom})'${zdur}`,
 
         // --- 4. BLUR & FOCO ---
         'mov-blur-in': `zoompan=z='min(1.15, 1.0+0.001*on)'${zdur}${blurIn}`,
