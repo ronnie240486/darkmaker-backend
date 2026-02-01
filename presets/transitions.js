@@ -1,127 +1,120 @@
 
-// presets/transitions.js
-
 export function getTransitionXfade(transId) {
+    const id = transId?.toLowerCase() || 'fade';
+
     const map = {
-        // --- CLÁSSICOS ---
+        // --- Clássicos ---
+        'cut': 'fade',
         'fade': 'fade',
         'black': 'fadeblack',
         'white': 'fadewhite',
-        'cut': 'cut',
-        'dissolve': 'dissolve',
         'mix': 'dissolve',
 
-        // --- WIPES & SLIDES ---
-        'wipe-up': 'wipeup',
-        'wipe-down': 'wipedown',
-        'wipe-left': 'wipeleft',
-        'wipe-right': 'wiperight',
+        // --- Movimento (Slides & Wipes) ---
         'slide-left': 'slideleft',
         'slide-right': 'slideright',
         'slide-up': 'slideup',
         'slide-down': 'slidedown',
-        'push-left': 'slideleft',
-        'push-right': 'slideright',
+        'wipe-left': 'wipeleft',
+        'wipe-right': 'wiperight',
+        'wipe-up': 'wipeup',
+        'wipe-down': 'wipedown',
+        'push-left': 'pushleft',
+        'push-right': 'pushright',
 
-        // --- GEOMÉTRICOS ---
-        'circle-open': 'circleopen',
-        'circle-close': 'circleclose',
-        'checker-wipe': 'checkerboard',
-        'spiral-wipe': 'spiral',
-        'diamond-zoom': 'diagtl',
-        'clock-wipe': 'clock',
-        'rect-crop': 'rectcrop',
-        'star-zoom': 'circleopen', // Fallback
-        'blind-h': 'horzopen',
-        'blind-v': 'vertopen',
-        'triangle-wipe': 'diagbl',
-
-        // --- GLITCH & DIGITAL ---
-        'glitch': 'glitchdisplace',
-        'datamosh': 'glitchdisplace',
-        'pixelize': 'pixelize',
-        'hologram': 'holographic',
-        'block-glitch': 'mosaic',
-        'rgb-split': 'glitchmem',
-        'color-glitch': 'glitchmem',
-        'cyber-zoom': 'zoomin',
-        'digital-noise': 'pixelize',
-        'scan-line-v': 'vuslice',
-
-        // --- ZOOM & WARP ---
+        // --- Zoom & Warp ---
         'zoom-in': 'zoomin',
         'zoom-out': 'zoomout',
-        'zoom-spin-fast': 'radial',
-        'blur-warp': 'blur',
+        'zoom-spin-fast': 'zoomin', // Simulated
+        'whip-left': 'smoothleft',
+        'whip-right': 'smoothright',
+        'whip-up': 'smoothup',
+        'whip-down': 'smoothdown',
+        'blur-warp': 'hblur',
         'elastic-left': 'slideleft',
-        'whip-left': 'whipleft',
-        'whip-right': 'whipright',
-        'whip-up': 'slideup', // Fallback if whipup not avail
-        'whip-down': 'slidedown',
 
-        // --- 3D & PERSPECTIVA ---
-        'cube-rotate-l': 'slideleft', // No 3d cube in std xfade
-        'cube-rotate-r': 'slideright',
-        'door-open': 'horzopen',
-        'flip-card': 'squeezev',
-        'room-fly': 'zoomin',
-        'film-roll': 'slideup',
-        
-        // --- NATURAIS & LUZ ---
-        'water-ripple': 'ripple',
-        'ink-splash': 'dissolve',
-        'smoke-reveal': 'dissolve',
+        // --- Glitch & Cyberpunk ---
+        'glitch': 'pixelize',
+        'color-glitch': 'pixelize',
+        'pixelize': 'pixelize',
+        'datamosh': 'pixelize',
+        'hologram': 'dissolve',
+        'cyber-zoom': 'zoomin',
+        'digital-noise': 'dissolve',
+        'rgb-split': 'dissolve',
+        'scan-line-v': 'vslice',
+        'block-glitch': 'pixelize',
+
+        // --- Formas & Geometria ---
+        'circle-open': 'circleopen',
+        'circle-close': 'circleclose',
+        'diamond-zoom': 'diagtl',
+        'clock-wipe': 'clock',
+        'checker-wipe': 'checkerboard',
+        'blind-h': 'horzopen',
+        'blind-v': 'vertopen',
+        'spiral-wipe': 'spiral',
+        'triangle-wipe': 'radial',
+        'star-zoom': 'circleopen',
+
+        // --- Luz & Atmosfera ---
         'flash-bang': 'fadewhite',
-        'burn': 'dissolve',
-        'light-leak-tr': 'fadewhite',
+        'burn': 'fadeblack',
+        'light-leak-tr': 'dissolve',
         'lens-flare': 'dissolve',
         'god-rays': 'dissolve',
-        'glow-intense': 'fadewhite',
+        'glow-intense': 'dissolve',
         'flash-black': 'fadeblack',
-        
-        // --- ARTISTIC ---
-        'oil-paint': 'dissolve',
-        'paper-rip': 'hblur',
-        'page-turn': 'slideleft',
-        'sketch-reveal': 'dissolve',
-        'liquid-melt': 'dissolve'
+
+        // --- Artístico & Textura ---
+        'oil-paint': 'hblur',
+        'ink-splash': 'radial',
+        'paper-rip': 'slidedown',
+        'page-turn': 'slidedown',
+        'water-ripple': 'ripple',
+        'smoke-reveal': 'fade',
+        'sketch-reveal': 'hslice',
+        'liquid-melt': 'slidedown',
+
+        // --- 3D & Perspectiva ---
+        'cube-rotate-l': 'slideleft',
+        'cube-rotate-r': 'slideright',
+        'door-open': 'horzopen',
+        'flip-card': 'hlslice',
+        'room-fly': 'zoomin',
+        'film-roll': 'slidedown'
     };
-    // Default to fade if unknown
-    return map[transId] || 'fade';
+
+    return map[id] || 'fade';
 }
 
-export function buildTransitionFilter(clipCount, transitionType, durations, transitionDuration = 1) {
+export function buildTransitionFilter(clipCount, transitionType, durations, transitionDuration = 0.5) {
     const filters = [];
-    let accumulatedDuration = 0;
-
-    const getDur = (i) => Array.isArray(durations) ? (durations[i] || 5) : durations;
-
-    // Start with the first clip duration
-    accumulatedDuration = getDur(0);
+    let accumulatedDuration = durations[0] || 5;
+    const isCut = transitionType === 'cut';
+    const safeTransDur = isCut ? 0.05 : Math.min(transitionDuration, 1.0);
 
     for (let i = 0; i < clipCount - 1; i++) {
-        // Offset is calculated based on the accumulated end time of the previous sequence minus transition overlap
-        const offset = accumulatedDuration - transitionDuration;
-
-        const vIn1 = i === 0 ? "[0:v]" : `[v${i}]`;
+        const offset = accumulatedDuration - safeTransDur;
+        
+        const vIn1 = i === 0 ? "[0:v]" : `[v_tmp${i}]`;
         const vIn2 = `[${i + 1}:v]`;
-        const vOut = `[v${i + 1}]`;
+        const vOut = `[v_tmp${i + 1}]`;
+        
+        const aIn1 = i === 0 ? "[0:a]" : `[a_tmp${i}]`;
+        const aIn2 = `[${i + 1}:a]`;
+        const aOut = `[a_tmp${i + 1}]`;
+
         const safeTrans = getTransitionXfade(transitionType);
         
-        // Always force format to yuv420p to avoid pixel format mismatch during xfade
-        filters.push(`${vIn1}${vIn2}xfade=transition=${safeTrans}:duration=${transitionDuration}:offset=${offset},format=yuv420p${vOut}`);
+        filters.push(`${vIn1}${vIn2}xfade=transition=${safeTrans}:duration=${safeTransDur}:offset=${offset.toFixed(3)}${vOut}`);
+        filters.push(`${aIn1}${aIn2}acrossfade=d=${safeTransDur}:c1=tri:c2=tri${aOut}`);
 
-        const aIn1 = i === 0 ? "[0:a]" : `[a${i}]`;
-        const aIn2 = `[${i + 1}:a]`;
-        const aOut = `[a${i + 1}]`;
-        filters.push(`${aIn1}${aIn2}acrossfade=d=${transitionDuration}:c1=tri:c2=tri${aOut}`);
-
-        // Update accumulated duration: add next clip duration, subtract the overlap consumed by transition
-        accumulatedDuration = accumulatedDuration + getDur(i + 1) - transitionDuration;
+        accumulatedDuration = (accumulatedDuration + (durations[i+1] || 5)) - safeTransDur;
     }
 
-    const mapV = `[v${clipCount - 1}]`;
-    const mapA = `[a${clipCount - 1}]`;
+    const mapV = `[v_tmp${clipCount - 1}]`;
+    const mapA = `[a_tmp${clipCount - 1}]`;
 
     return { 
         filterComplex: filters.join(';'), 
