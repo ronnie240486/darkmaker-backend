@@ -531,10 +531,10 @@ async function handleExport(job, uploadDir, callback) {
         }, 600000);
 
     } catch (e) {
-        console.error("ERRO CRÍTICO NO EXPORT:", e);
-        if (jobs[job.id]) { jobs[job.id].status = 'failed'; jobs[job.id].error = e.message; }
-    }
+    console.error("ERRO CRÍTICO NO EXPORT:", e);
+    return res.status(500).json({ error: "Erro no servidor ao exportar o vídeo", details: e.message });
 }
+
 
 // === ROTAS ===
 
