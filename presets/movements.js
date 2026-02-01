@@ -51,26 +51,31 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
         'mov-pan-fast-l': `zoompan=z=2.0:x='(iw/2-(iw/zoom/2)) + (iw/5 * ${p})':y='ih/2-(ih/zoom/2)'${zdur}`,
         'mov-pan-fast-r': `zoompan=z=2.0:x='(iw/2-(iw/zoom/2)) - (iw/5 * ${p})':y='ih/2-(ih/zoom/2)'${zdur}`,
 
-        // --- BLUR IN (desfoca → foca) ---
-    'mov-blur-in': `gblur=sigma='12*(1-p)':steps=1,zoompan=z='1+0.08*p'${zdur}`,
+         // BLUR IN (desfocado → foco)
+    'mov-blur-in': `
+        gblur=sigma=10:steps=1,
+        zoompan=z='1.1-0.1*p'${zdur}
+    `,
 
-    // --- BLUR OUT (foca → desfoca) ---
-    'mov-blur-out': `gblur=sigma='12*p':steps=1,zoompan=z='1.08-0.08*p'${zdur}`,
+    // BLUR OUT (foco → desfocado)
+    'mov-blur-out': `
+        gblur=sigma=10:steps=1,
+        zoompan=z='1+0.1*p'${zdur}
+    `,
 
-    // --- BLUR PULSE (efeito respirando) ---
-    'mov-blur-pulse': `gblur=sigma='6*abs(sin(2*PI*p))':steps=1,zoompan=z='1.02+0.02*sin(2*PI*p)'${zdur},vignette=a=PI/4`,
+    // BLUR PULSE (pulso leve)
+    'mov-blur-pulse': `
+        gblur=sigma=8:steps=1,
+        zoompan=z='1.05+0.03*sin(2*PI*p)'${zdur},
+        vignette=a=PI/6
+    `,
 
-    // --- TILT-SHIFT SEGURO (versão leve que nunca quebra) ---
-    'mov-tilt-shift': `gblur=sigma=2:steps=1,vignette=a=PI/5,zoompan=z='1.05+0.05*p'${zdur}`,
-
-
-        // --- 5. EFEITOS ESPECIAIS ---
-        'handheld-1': `zoompan=z=1.3:x='iw/2-(iw/zoom/2)+15*sin(on/10)':y='ih/2-(ih/zoom/2)+15*cos(on/12)'${zdur}`,
-        'earthquake': `zoompan=z=1.3:x='iw/2-(iw/zoom/2)+40*(random(1)-0.5)':y='ih/2-(ih/zoom/2)+40*(random(1)-0.5)'${zdur}`,
-        
-        'mov-rgb-shift-move': `zoompan=z=1.1${zdur},rgbashift=rh=10:bv=10`,
-        'mov-glitch-snap': `zoompan=z='if(mod(on,30)<3, 1.3, 1.0)'${zdur},noise=alls=10:allf=t`
-    };
+    // Tilt-shift leve (sempre funciona)
+    'mov-tilt-shift': `
+        gblur=sigma=4:steps=1,
+        vignette=a=PI/5,
+        zoompan=z='1.05+0.05*p'${zdur}
+    `,
 
     const selectedFilter = moves[moveId] || moves['kenburns'];
     
