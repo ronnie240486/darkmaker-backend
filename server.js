@@ -24,6 +24,7 @@ const UPLOAD_DIR = path.join(__dirname, 'uploads');
 const OUTPUT_DIR = path.join(__dirname, 'outputs');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
+// Garantir diretórios existem
 [UPLOAD_DIR, OUTPUT_DIR, PUBLIC_DIR].forEach(dir => {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
@@ -36,7 +37,7 @@ const getVideoArgs = () => [
     '-profile:v', 'baseline', 
     '-pix_fmt', 'yuv420p',
     '-movflags', '+faststart',
-    '-r', '30', // Padronizado para 30fps para evitar glitches de tempo
+    '-r', '30', 
     '-threads', '0' 
 ];
 
@@ -48,6 +49,10 @@ const getAudioArgs = () => [
 
 const getExactDuration = (filePath) => {
     return new Promise((resolve) => {
+        if (!fs.existsSync(filePath)) {
+            resolve(0);
+            return;
+        }
         execFile(ffprobePath.path, [
             '-v', 'error', 
             '-show_entries', 'format=duration', 
@@ -65,8 +70,14 @@ const getExactDuration = (filePath) => {
 
 async function buildFrontend() {
     try {
-        if (fs.existsSync('index.html')) fs.copyFileSync('index.html', path.join(PUBLIC_DIR, 'index.html'));
-        if (fs.existsSync('index.css')) fs.copyFileSync('index.css', path.join(PUBLIC_DIR, 'index.css'));
+        const srcIndex = path.join(__dirname, 'index.html');
+        const destIndex = path.join(PUBLIC_DIR, 'index.html');
+        const srcCss = path.join(__dirname, 'index.css');
+        const destCss = path.join(PUBLIC_DIR, 'index.css');
+
+        if (fs.existsSync(srcIndex)) fs.copyFileSync(srcIndex, destIndex);
+        if (fs.existsSync(srcCss)) fs.copyFileSync(srcCss, destCss);
+
         await esbuild.build({
             entryPoints: ['index.tsx'],
             bundle: true,
@@ -78,7 +89,9 @@ async function buildFrontend() {
             define: { 'process.env.API_KEY': JSON.stringify(GEMINI_KEY), 'global': 'window' },
             loader: { '.tsx': 'tsx', '.ts': 'ts', '.css': 'css' },
         });
-    } catch (e) { console.error("Build Warning:", e.message); }
+    } catch (e) { 
+        console.error("Build Warning (Non-critical):", e.message); 
+    }
 }
 await buildFrontend();
 
@@ -96,7 +109,162 @@ const uploadAny = multer({ storage }).any();
 
 const jobs = {};
 
-// ... (Functions getToolCommand etc. are preserved via logic below)
+function getAudioToolCommand(action, inputFiles, params, outputPath) {
+    const input = inputFiles[0]?.path;
+    const args = [];
+    if (action !== 'join') args.push('-i', input);
+    const audioCodec = ['-c:a', 'libmp3lame', '-q:a', '2'];
+
+    switch (action) {
+        case 'clean-audio': args.push('-af', 'highpass=f=200,lowpass=f=3000,afftdn=nf=-25', ...audioCodec); break;
+        case 'normalize': args.push('-af', 'loudnorm=I=-16:TP=-1.5:LRA=11', ...audioCodec); break;
+        case 'speed':
+            const speed = parseFloat(params.speed || params.value || '1.0');
+            let atempoChain = "";
+            let currentSpeed = speed;
+            while (currentSpeed > 2.0) { atempoChain += "atempo=2.0,"; currentSpeed /= 2.0; }
+            while (currentSpeed < 0.5) { atempoChain += "atempo=0.5,"; currentSpeed *= 2.0; }
+            atempoChain += `atempo=${currentSpeed}`;
+            args.push('-af', atempoChain, ...audioCodec);
+            break;
+        case 'pitch':
+            const n = parseFloat(params.pitch || params.value || '0');
+            const newRate = Math.round(44100 * Math.pow(2, n / 12.0));
+            const tempoVal = 1.0 / Math.pow(2, n / 12.0);
+            let tempoFilter = "";
+            let rem = tempoVal;
+            while (rem > 2.0) { tempoFilter += ",atempo=2.0"; rem /= 2.0; }
+            while (rem < 0.5) { tempoFilter += ",atempo=0.5"; rem *= 2.0; }
+            tempoFilter += `,atempo=${rem}`;
+            args.push('-af', `asetrate=${newRate},aresample=44100${tempoFilter}`, ...audioCodec);
+            break;
+        case 'bass-boost':
+            const gain = params.gain || params.value || '10';
+            args.push('-af', `bass=g=${gain}:f=100`, ...audioCodec);
+            break;
+        case 'reverb': args.push('-af', 'aecho=0.8:0.9:1000:0.3', ...audioCodec); break;
+        case '8d-audio': args.push('-af', 'apulsator=hz=0.125', ...audioCodec); break;
+        case 'reverse': args.push('-af', 'areverse', ...audioCodec); break;
+        case 'join':
+            const listPath = path.join(path.dirname(inputFiles[0].path), `join_audio_${Date.now()}.txt`);
+            const fileLines = inputFiles.map(f => `file '${f.path}'`).join('\n');
+            fs.writeFileSync(listPath, fileLines);
+            args.push('-f', 'concat', '-safe', '0', '-i', listPath, ...audioCodec);
+            break;
+        case 'convert':
+            const fmt = params.format || 'mp3';
+            if (fmt === 'wav') args.push('-c:a', 'pcm_s16le');
+            else if (fmt === 'ogg') args.push('-c:a', 'libvorbis');
+            else args.push(...audioCodec);
+            break;
+        default: args.push(...audioCodec);
+    }
+    args.push(outputPath);
+    return args;
+}
+
+function getToolCommand(action, inputFiles, params, outputPath) {
+    const isAudioAction = ['clean-audio', 'pitch-shift', 'speed', 'bass-boost', 'reverb', 'normalize', '8d-audio', 'join'].includes(action);
+    const isAudioFile = inputFiles[0]?.mimetype?.includes('audio');
+    
+    if (isAudioAction || (isAudioFile && action !== 'convert' && action !== 'join')) {
+        let audioAction = action;
+        if(action === 'pitch-shift') audioAction = 'pitch';
+        return getAudioToolCommand(audioAction, inputFiles, params, outputPath);
+    }
+
+    const input = inputFiles[0]?.path;
+    const args = [];
+    if (action !== 'join') args.push('-i', input);
+
+    switch (action) {
+        case 'upscale':
+            const targetRes = params.upscaleTarget === '4k' ? '3840:2160' : params.upscaleTarget === '2k' ? '2560:1440' : '1920:1080';
+            args.push('-vf', `scale=${targetRes}:flags=lanczos,unsharp=5:5:1.0:5:5:0.0`, ...getVideoArgs(), '-c:a', 'copy');
+            break;
+        case 'interpolation':
+            const fps = params.targetFps || '60';
+            const slowMo = params.slowMo === 'true' || params.slowMo === true;
+            const filter = `minterpolate='mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1:fps=${fps}'`;
+            if (slowMo) args.push('-vf', `${filter},setpts=2.0*PTS`, '-r', fps, ...getVideoArgs());
+            else args.push('-vf', filter, '-r', fps, ...getVideoArgs());
+            break;
+        case 'colorize':
+            const colorFilter = 'eq=saturation=1.1'; // Simplificado
+            args.push('-vf', colorFilter, ...getVideoArgs(), '-c:a', 'copy');
+            break;
+        case 'stabilize': args.push('-vf', 'deshake', ...getVideoArgs(), '-c:a', 'copy'); break;
+        case 'motion-blur':
+            const shutter = params.shutter || '180';
+            args.push('-vf', `minterpolate=fps=24:mi_mode=mci:mc_mode=aobmc:shutter_angle=${shutter}`, ...getVideoArgs());
+            break;
+        case 'clean-video':
+            const strength = params.strength === 'high' ? '6.0' : params.strength === 'low' ? '2.0' : '4.0';
+            args.push('-vf', `hqdn3d=${strength}:${strength}:3.0:3.0`, ...getVideoArgs(), '-c:a', 'copy');
+            break;
+        case 'cut':
+            const start = params.start || '0';
+            const end = params.end;
+            args.push('-ss', start);
+            if (end) args.push('-to', end);
+            args.push('-c', 'copy');
+            break;
+        case 'join':
+            const listPath = path.join(path.dirname(inputFiles[0].path), `join_vid_${Date.now()}.txt`);
+            const fileLines = inputFiles.map(f => `file '${f.path}'`).join('\n');
+            fs.writeFileSync(listPath, fileLines);
+            args.push('-f', 'concat', '-safe', '0', '-i', listPath, '-c', 'copy');
+            break;
+        case 'compress':
+            const crf = params.crf || '28';
+            args.push('-c:v', 'libx264', '-crf', crf, '-preset', 'medium', '-c:a', 'aac', '-b:a', '128k');
+            break;
+        case 'convert':
+            const outFormat = params.format || 'mp4';
+            if(outFormat === 'mp4') args.push('-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac');
+            else if (outFormat === 'webm') args.push('-c:v', 'libvpx-vp9', '-b:v', '2M', '-c:a', 'libopus');
+            else args.push(...getVideoArgs());
+            break;
+        case 'reverse': args.push('-vf', 'reverse', '-af', 'areverse', ...getVideoArgs()); break;
+        case 'speed':
+            const vSpeed = parseFloat(params.speed || '1.0');
+            const setpts = (1 / vSpeed).toFixed(4);
+            let aFilter = "";
+            let s = vSpeed;
+            while(s > 2.0) { aFilter += "atempo=2.0,"; s/=2.0; }
+            while(s < 0.5) { aFilter += "atempo=0.5,"; s*=2.0; }
+            aFilter += `atempo=${s}`;
+            args.push('-filter_complex', `[0:v]setpts=${setpts}*PTS[v];[0:a]${aFilter}[a]`, '-map', '[v]', '-map', '[a]', ...getVideoArgs());
+            break;
+        case 'resize':
+            const ratio = params.ratio || '16:9';
+            let scaleFilter = "scale=1280:720";
+            if (ratio === '9:16') scaleFilter = "scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280";
+            if (ratio === '1:1') scaleFilter = "scale=1080:1080:force_original_aspect_ratio=increase,crop=1080:1080";
+            if (ratio === '4:3') scaleFilter = "scale=1024:768:force_original_aspect_ratio=increase,crop=1024:768";
+            args.push('-vf', scaleFilter, ...getVideoArgs(), '-c:a', 'copy');
+            break;
+        case 'watermark':
+            const text = params.text || "Watermark";
+            const pos = params.position || "bottom-right";
+            let posExp = "x=w-tw-10:y=h-th-10";
+            if (pos === 'bottom-left') posExp = "x=10:y=h-th-10";
+            if (pos === 'top-right') posExp = "x=w-tw-10:y=10";
+            if (pos === 'center') posExp = "x=(w-text_w)/2:y=(h-text_h)/2";
+            args.push('-vf', `drawtext=text='${text}':fontcolor=white:fontsize=24:box=1:boxcolor=black@0.5:boxborderw=5:${posExp}`, ...getVideoArgs(), '-c:a', 'copy');
+            break;
+        case 'gif':
+            const gifW = params.width || '480';
+            const gifFps = params.fps || '15';
+            args.push('-vf', `fps=${gifFps},scale=${gifW}:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse`);
+            break;
+        case 'remove-audio': args.push('-c:v', 'copy', '-an'); break;
+        case 'extract-audio': args.push('-vn', '-c:a', 'libmp3lame', '-q:a', '2'); break;
+        default: args.push('-c', 'copy');
+    }
+    args.push(outputPath);
+    return args;
+}
 
 function createFFmpegJob(jobId, args, expectedDuration, res) {
     if (!jobs[jobId]) return;
@@ -209,23 +377,22 @@ async function handleExport(job, uploadDir, callback) {
             const args = [];
             
             // 1. Input Visual [0:v]
-            // CORREÇÃO CRÍTICA: Loop Infinito + Tempo de Segurança
-            // Adicionamos +5 segundos extras na leitura da imagem para garantir que o stream
-            // não acabe antes do processamento de áudio/zoompan.
+            // CORREÇÃO: Usar -loop 1 e -t explícito para garantir duração
             if (scene.visual?.mimetype?.includes('image')) {
-                args.push('-loop', '1', '-t', (totalSceneDur + 5).toFixed(2), '-i', scene.visual.path);
+                args.push('-loop', '1', '-t', (totalSceneDur + 2).toFixed(3), '-i', scene.visual.path);
             } else if (scene.visual) {
-                // Para vídeos, usamos stream_loop -1 para garantir que preencha o tempo
-                args.push('-stream_loop', '-1', '-t', (totalSceneDur + 5).toFixed(2), '-i', scene.visual.path);
+                args.push('-stream_loop', '-1', '-t', (totalSceneDur + 2).toFixed(3), '-i', scene.visual.path);
             } else {
-                args.push('-f', 'lavfi', '-i', `color=c=black:s=${targetW}x${targetH}:d=${totalSceneDur + 5}`);
+                args.push('-f', 'lavfi', '-i', `color=c=black:s=${targetW}x${targetH}:d=${(totalSceneDur + 2).toFixed(3)}`);
             }
 
             // 2. Input Áudio (Voz) [1:a]
             if (scene.audio) {
                 args.push('-i', scene.audio.path);
             } else {
-                args.push('-f', 'lavfi', '-i', 'anullsrc=cl=stereo:sr=44100');
+                // IMPORTANT: Generate dummy audio to avoid map error.
+                // FIX: Ensure duration is a valid number string to prevent 'invalid argument'.
+                args.push('-f', 'lavfi', '-i', `anullsrc=cl=stereo:sr=44100:d=${(totalSceneDur + 2).toFixed(3)}`);
             }
 
             // 3. Input SFX (Opcional) [2:a]
@@ -239,6 +406,7 @@ async function handleExport(job, uploadDir, callback) {
             let filterComplex = "";
             let audioMap = "[a_out]";
             
+            // Se tiver SFX, mistura. Se não, apenas passa o áudio (voz ou silêncio)
             if (hasSfx) {
                 filterComplex += `[1:a]volume=1.5,apad=pad_dur=2,asetpts=PTS-STARTPTS[voice];[2:a]volume=${sfxVolume},apad=pad_dur=2,asetpts=PTS-STARTPTS[sfx];[voice][sfx]amix=inputs=2:duration=longest:dropout_transition=0,aresample=async=1[a_out];`;
             } else {
@@ -246,17 +414,17 @@ async function handleExport(job, uploadDir, callback) {
             }
 
             // Visual Movement & Scaling Logic
-            // Passamos a duração exata para o gerador de filtros para ele calcular os frames corretamente
-            const moveFilter = getMovementFilter(movement, totalSceneDur, targetW, targetH);
+            // Ensure target dimension inputs are integers
+            const moveFilter = getMovementFilter(movement, totalSceneDur, Math.floor(targetW), Math.floor(targetH));
             
-            // O scale e setsar=1 estão embutidos em getMovementFilter para segurança
+            // Aplicar movimento ao input 0
             filterComplex += `[0:v]${moveFilter}[v_out]`;
 
             args.push(
                 '-filter_complex', filterComplex,
                 '-map', '[v_out]',
                 '-map', audioMap,
-                '-t', totalSceneDur.toFixed(3), // Corta exatamente no tempo desejado
+                '-t', totalSceneDur.toFixed(3),
                 ...getVideoArgs(), 
                 ...getAudioArgs(),
                 clipPath
@@ -320,7 +488,7 @@ async function handleExport(job, uploadDir, callback) {
                 accumOffset += videoClipDurations[i] - transDur;
                 const safeOffset = Math.max(0, accumOffset);
 
-                // Força o formato de pixel antes do xfade para garantir compatibilidade
+                // Força o formato de pixel antes do xfade
                 filter += `${vSrc}${vNext}xfade=transition=${transName}:duration=${transDur}:offset=${safeOffset.toFixed(3)}[v_tmp${i+1}];`;
                 filter += `${aSrc}${aNext}acrossfade=d=${transDur}:c1=tri:c2=tri[a_tmp${i+1}];`;
             }
@@ -345,7 +513,7 @@ async function handleExport(job, uploadDir, callback) {
         }
 
         if (transitionType !== 'cut' || bgMusicFile) {
-             finalArgs.push('-c:v', 'libx264', '-preset', 'ultrafast', '-c:a', 'aac', '-b:a', '192k');
+             finalArgs.push('-c:v', 'libx264', '-preset', 'ultrafast', '-c:a', 'aac', '-b:a', '192k', '-shortest');
         }
         
         finalArgs.push(outputPath);
@@ -366,168 +534,6 @@ async function handleExport(job, uploadDir, callback) {
         console.error("ERRO CRÍTICO NO EXPORT:", e);
         if (jobs[job.id]) { jobs[job.id].status = 'failed'; jobs[job.id].error = e.message; }
     }
-}
-
-// INJEÇÃO DAS ROTAS E UTILS (GETTOOLCOMMAND) PARA MANTER O ARQUIVO FUNCIONAL
-// ... (Código anterior de AudioToolCommand e getToolCommand aqui seria repetido, mas para brevidade, assumimos que já existe ou foi injetado nas mudanças anteriores. O foco aqui foi o handleExport e os argumentos)
-
-// Importante: Re-definir as funções auxiliares necessárias se o arquivo for sobrescrito
-function getAudioToolCommand(action, inputFiles, params, outputPath) {
-    const input = inputFiles[0]?.path;
-    const args = [];
-    if (action !== 'join') args.push('-i', input);
-    const audioCodec = ['-c:a', 'libmp3lame', '-q:a', '2'];
-
-    switch (action) {
-        case 'clean-audio': args.push('-af', 'highpass=f=200,lowpass=f=3000,afftdn=nf=-25', ...audioCodec); break;
-        case 'normalize': args.push('-af', 'loudnorm=I=-16:TP=-1.5:LRA=11', ...audioCodec); break;
-        case 'speed':
-            const speed = parseFloat(params.speed || params.value || '1.0');
-            let atempoChain = "";
-            let currentSpeed = speed;
-            while (currentSpeed > 2.0) { atempoChain += "atempo=2.0,"; currentSpeed /= 2.0; }
-            while (currentSpeed < 0.5) { atempoChain += "atempo=0.5,"; currentSpeed *= 2.0; }
-            atempoChain += `atempo=${currentSpeed}`;
-            args.push('-af', atempoChain, ...audioCodec);
-            break;
-        case 'pitch':
-            const n = parseFloat(params.pitch || params.value || '0');
-            const newRate = Math.round(44100 * Math.pow(2, n / 12.0));
-            const tempoVal = 1.0 / Math.pow(2, n / 12.0);
-            let tempoFilter = "";
-            let rem = tempoVal;
-            while (rem > 2.0) { tempoFilter += ",atempo=2.0"; rem /= 2.0; }
-            while (rem < 0.5) { tempoFilter += ",atempo=0.5"; rem *= 2.0; }
-            tempoFilter += `,atempo=${rem}`;
-            args.push('-af', `asetrate=${newRate},aresample=44100${tempoFilter}`, ...audioCodec);
-            break;
-        case 'bass-boost':
-            const gain = params.gain || params.value || '10';
-            args.push('-af', `bass=g=${gain}:f=100`, ...audioCodec);
-            break;
-        case 'reverb': args.push('-af', 'aecho=0.8:0.9:1000:0.3', ...audioCodec); break;
-        case '8d-audio': args.push('-af', 'apulsator=hz=0.125', ...audioCodec); break;
-        case 'reverse': args.push('-af', 'areverse', ...audioCodec); break;
-        case 'join':
-            const listPath = path.join(path.dirname(inputFiles[0].path), `join_audio_${Date.now()}.txt`);
-            const fileLines = inputFiles.map(f => `file '${f.path}'`).join('\n');
-            fs.writeFileSync(listPath, fileLines);
-            args.push('-f', 'concat', '-safe', '0', '-i', listPath, ...audioCodec);
-            break;
-        case 'convert':
-            const fmt = params.format || 'mp3';
-            if (fmt === 'wav') args.push('-c:a', 'pcm_s16le');
-            else if (fmt === 'ogg') args.push('-c:a', 'libvorbis');
-            else args.push(...audioCodec);
-            break;
-        default: args.push(...audioCodec);
-    }
-    args.push(outputPath);
-    return args;
-}
-
-function getToolCommand(action, inputFiles, params, outputPath) {
-    const isAudioAction = ['clean-audio', 'pitch-shift', 'speed', 'bass-boost', 'reverb', 'normalize', '8d-audio', 'join'].includes(action);
-    const isAudioFile = inputFiles[0]?.mimetype?.includes('audio');
-    
-    if (isAudioAction || (isAudioFile && action !== 'convert' && action !== 'join')) {
-        let audioAction = action;
-        if(action === 'pitch-shift') audioAction = 'pitch';
-        return getAudioToolCommand(audioAction, inputFiles, params, outputPath);
-    }
-
-    const input = inputFiles[0]?.path;
-    const args = [];
-    if (action !== 'join') args.push('-i', input);
-
-    switch (action) {
-        case 'upscale':
-            const targetRes = params.upscaleTarget === '4k' ? '3840:2160' : params.upscaleTarget === '2k' ? '2560:1440' : '1920:1080';
-            args.push('-vf', `scale=${targetRes}:flags=lanczos,unsharp=5:5:1.0:5:5:0.0`, ...getVideoArgs(), '-c:a', 'copy');
-            break;
-        case 'interpolation':
-            const fps = params.targetFps || '60';
-            const slowMo = params.slowMo === 'true' || params.slowMo === true;
-            const filter = `minterpolate='mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1:fps=${fps}'`;
-            if (slowMo) args.push('-vf', `${filter},setpts=2.0*PTS`, '-r', fps, ...getVideoArgs());
-            else args.push('-vf', filter, '-r', fps, ...getVideoArgs());
-            break;
-        case 'colorize':
-            const style = params.style || 'realistic';
-            const colorFilter = 'eq=saturation=1.1'; // Simplificado
-            args.push('-vf', colorFilter, ...getVideoArgs(), '-c:a', 'copy');
-            break;
-        case 'stabilize': args.push('-vf', 'deshake', ...getVideoArgs(), '-c:a', 'copy'); break;
-        case 'motion-blur':
-            const shutter = params.shutter || '180';
-            args.push('-vf', `minterpolate=fps=24:mi_mode=mci:mc_mode=aobmc:shutter_angle=${shutter}`, ...getVideoArgs());
-            break;
-        case 'clean-video':
-            const strength = params.strength === 'high' ? '6.0' : params.strength === 'low' ? '2.0' : '4.0';
-            args.push('-vf', `hqdn3d=${strength}:${strength}:3.0:3.0`, ...getVideoArgs(), '-c:a', 'copy');
-            break;
-        case 'cut':
-            const start = params.start || '0';
-            const end = params.end;
-            args.push('-ss', start);
-            if (end) args.push('-to', end);
-            args.push('-c', 'copy');
-            break;
-        case 'join':
-            const listPath = path.join(path.dirname(inputFiles[0].path), `join_vid_${Date.now()}.txt`);
-            const fileLines = inputFiles.map(f => `file '${f.path}'`).join('\n');
-            fs.writeFileSync(listPath, fileLines);
-            args.push('-f', 'concat', '-safe', '0', '-i', listPath, '-c', 'copy');
-            break;
-        case 'compress':
-            const crf = params.crf || '28';
-            args.push('-c:v', 'libx264', '-crf', crf, '-preset', 'medium', '-c:a', 'aac', '-b:a', '128k');
-            break;
-        case 'convert':
-            const outFormat = params.format || 'mp4';
-            if(outFormat === 'mp4') args.push('-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac');
-            else if (outFormat === 'webm') args.push('-c:v', 'libvpx-vp9', '-b:v', '2M', '-c:a', 'libopus');
-            else args.push(...getVideoArgs());
-            break;
-        case 'reverse': args.push('-vf', 'reverse', '-af', 'areverse', ...getVideoArgs()); break;
-        case 'speed':
-            const vSpeed = parseFloat(params.speed || '1.0');
-            const setpts = (1 / vSpeed).toFixed(4);
-            let aFilter = "";
-            let s = vSpeed;
-            while(s > 2.0) { aFilter += "atempo=2.0,"; s/=2.0; }
-            while(s < 0.5) { aFilter += "atempo=0.5,"; s*=2.0; }
-            aFilter += `atempo=${s}`;
-            args.push('-filter_complex', `[0:v]setpts=${setpts}*PTS[v];[0:a]${aFilter}[a]`, '-map', '[v]', '-map', '[a]', ...getVideoArgs());
-            break;
-        case 'resize':
-            const ratio = params.ratio || '16:9';
-            let scaleFilter = "scale=1280:720";
-            if (ratio === '9:16') scaleFilter = "scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280";
-            if (ratio === '1:1') scaleFilter = "scale=1080:1080:force_original_aspect_ratio=increase,crop=1080:1080";
-            if (ratio === '4:3') scaleFilter = "scale=1024:768:force_original_aspect_ratio=increase,crop=1024:768";
-            args.push('-vf', scaleFilter, ...getVideoArgs(), '-c:a', 'copy');
-            break;
-        case 'watermark':
-            const text = params.text || "Watermark";
-            const pos = params.position || "bottom-right";
-            let posExp = "x=w-tw-10:y=h-th-10";
-            if (pos === 'bottom-left') posExp = "x=10:y=h-th-10";
-            if (pos === 'top-right') posExp = "x=w-tw-10:y=10";
-            if (pos === 'center') posExp = "x=(w-text_w)/2:y=(h-text_h)/2";
-            args.push('-vf', `drawtext=text='${text}':fontcolor=white:fontsize=24:box=1:boxcolor=black@0.5:boxborderw=5:${posExp}`, ...getVideoArgs(), '-c:a', 'copy');
-            break;
-        case 'gif':
-            const gifW = params.width || '480';
-            const gifFps = params.fps || '15';
-            args.push('-vf', `fps=${gifFps},scale=${gifW}:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse`);
-            break;
-        case 'remove-audio': args.push('-c:v', 'copy', '-an'); break;
-        case 'extract-audio': args.push('-vn', '-c:a', 'libmp3lame', '-q:a', '2'); break;
-        default: args.push('-c', 'copy');
-    }
-    args.push(outputPath);
-    return args;
 }
 
 app.post('/api/process/start/:action', uploadAny, (req, res) => {
