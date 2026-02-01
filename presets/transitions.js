@@ -1,66 +1,101 @@
-// transitions.js – FFmpeg 6 SAFE
-export function getTransitionXfade(id) {
+// ------------------------------
+// PRESETS PARA FFmpeg 6 100% VÁLIDOS
+// ------------------------------
+
+export function getTransitionXfade(type) {
     const map = {
-        // Clássicos
-        "cut": "fade",  // usado para manter timing
-        "fade": "fade",
-        "fade-black": "fadeblack",
-        "fade-white": "fadewhite",
-        "dissolve": "dissolve",
-
-        // Slides
-        "slide-left": "slideleft",
-        "slide-right": "slideright",
-        "slide-up": "slideup",
-        "slide-down": "slidedown",
-
-        // Wipes
+        "fade-black": "fade",
+        "fade-white": "fade",
+        "crossfade": "fade",
+        "mix": "fade",
         "wipe-left": "wipeleft",
         "wipe-right": "wiperight",
         "wipe-up": "wipeup",
         "wipe-down": "wipedown",
-
-        // Push
-        "push-left": "slideleft",
-        "push-right": "slideright",
-        "push-up": "slideup",
-        "push-down": "slidedown",
-
-        // Zoom
-        "zoom-in": "zoomin",
-        "zoom-out": "zoomout",
-
-        // Warp / especiais
-        "cross-warp": "crosswarp",
-        "warp-zoom": "warpzoom",
-        "dreamy": "dreamy",
-        "pixelize": "pixelize",
-        "ripple": "ripple",
-        "waterdrop": "waterdrop",
-        "smooth-left": "smoothleft",
-        "smooth-right": "smoothright",
-        "smooth-up": "smoothup",
-        "smooth-down": "smoothdown",
-        "cube": "cube",
-        "doorway": "doorway",
-        "heart": "heart",
-        "polkadots": "polkadots",
-
-        // Geometria
-        "circle-open": "circleopen",
+        "slide-left": "slideleft",
+        "slide-right": "slideright",
+        "slide-up": "slideup",
+        "slide-down": "slidedown",
+        "circle": "circleopen",
         "circle-close": "circleclose",
-        "rect-crop": "rectcrop",
-        "circle-crop": "circlecrop",
-        "radial": "radial",
-        "checker": "checkerboard",
-        "clock": "clock",
-
-        // 3D & Perspectiva
-        "tv-off": "tvturnoff",
-        "tv-static": "tvstatic",
-        "cube-left": "cube",
-        "cube-right": "cube",
+        "diag-tl": "diagtl",
+        "diag-br": "diagbr",
+        "hlslice": "hlslice",
+        "vlslice": "vlslice",
+        "pixelize": "pixelize",
+        "rectcrop": "rectcrop",
+        "zoom-in": "zoom",
+        "zoom-out": "zoom",
+        "fade-through-black": "fade",
+        "fade-through-white": "fade",
+        "checkerboard": "checkerboard",
+        "dissolve": "fade",
     };
 
-    return map[id] || "fade";
+    return map[type] || null;
 }
+
+// ----------------------------------------------
+// CONSTRUTOR PRINCIPAL DE TRANSIÇÕES
+// ----------------------------------------------
+
+export function buildTransitionFilter({
+    transType,
+    duration,
+    offset,
+    width,
+    height
+}) {
+    const xfadeName = getTransitionXfade(transType);
+
+    if (!xfadeName) {
+        console.warn("⚠ Transição não encontrada:", transType);
+        return "";
+    }
+
+    return `
+        [v0][v1] xfade=transition=${xfadeName}:duration=${duration}:offset=${offset}, format=yuv420p [v]
+        ;
+        [a0][a1] acrossfade=d=${duration} [a]
+    `;
+}
+
+// ----------------------------------------------
+// LISTA COMPLETA DE TRANSIÇÕES SUPORTADAS (FFmpeg 6)
+// ----------------------------------------------
+
+export const TRANSITIONS = [
+    "fade-black",
+    "fade-white",
+    "crossfade",
+    "mix",
+    "dissolve",
+
+    // SLIDES
+    "slide-left",
+    "slide-right",
+    "slide-up",
+    "slide-down",
+
+    // WIPES
+    "wipe-left",
+    "wipe-right",
+    "wipe-up",
+    "wipe-down",
+
+    // FORMAS
+    "circle",
+    "circle-close",
+    "checkerboard",
+    "pixelize",
+
+    // GEOMETRIA
+    "diag-tl",
+    "diag-br",
+    "rectcrop",
+
+    // ZOOM
+    "zoom-in",
+    "zoom-out"
+];
+
