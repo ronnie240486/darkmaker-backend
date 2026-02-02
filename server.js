@@ -29,7 +29,7 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
 
-// CONFIGURAÇÃO TURBO (ULTRAFAST)
+// CONFIGURAÇÃO TURBO (BASE)
 const getVideoArgs = () => [
     '-c:v', 'libx264',
     '-preset', 'ultrafast',
@@ -494,8 +494,17 @@ async function handleExport(job, uploadDir, callback) {
             }
         }
 
+        // CRITICAL FIX: RE-ENCODE WITH YUV420P AND FASTSTART TO FIX BLACK SCREEN
         if (transitionType !== 'cut' || bgMusicFile) {
-             finalArgs.push('-c:v', 'libx264', '-preset', 'ultrafast', '-c:a', 'aac', '-b:a', '192k', '-shortest');
+             finalArgs.push(
+                 '-c:v', 'libx264', 
+                 '-preset', 'veryfast', 
+                 '-pix_fmt', 'yuv420p', 
+                 '-movflags', '+faststart',
+                 '-c:a', 'aac', 
+                 '-b:a', '192k', 
+                 '-shortest'
+             );
         }
         
         finalArgs.push(outputPath);
