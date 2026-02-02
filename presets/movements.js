@@ -6,8 +6,9 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
     
     // ==========================================================================================
     // PRE-SCALE 2x: Otimizado para performance e qualidade
+    // Force even dimensions for libx264 compatibility: trunc(w/2)*2
     // ==========================================================================================
-    const pre = `scale=${targetW*2}:${targetH*2}:force_original_aspect_ratio=increase,crop=${targetW*2}:${targetH*2},setsar=1`;
+    const pre = `scale=trunc(${targetW*2}/2)*2:trunc(${targetH*2}/2)*2:force_original_aspect_ratio=increase,crop=trunc(${targetW*2}/2)*2:trunc(${targetH*2}/2)*2,setsar=1`;
     
     // Zoompan Base Config
     const zdur = `:d=${totalFrames*2}:s=${targetW}x${targetH}:fps=${fps}`;
@@ -85,7 +86,7 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
         'mov-jelly-wobble': `zoompan=z='1.05+0.05*sin(on/5)':x='iw/2-(iw/zoom/2)+20*sin(on/6)':y='ih/2-(ih/zoom/2)+15*cos(on/7)'${zdur},boxblur=2:1`,
 
         // Elástico (Rubber Band) - CORRIGIDO:
-        // Usa abs(sin) para criar um movimento de puxar e soltar (bounce) contínuo.
+        // Usa abs(sin) para criar um movimento de puxar e soltar (bounce) contínu.
         'mov-rubber-band': `zoompan=z='1.0+0.3*abs(sin(on/15))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
 
         // Pop Up
@@ -96,7 +97,8 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
     };
 
     const selectedFilter = moves[moveId] || moves['kenburns'];
-    const post = `scale=${targetW}:${targetH}:flags=lanczos,setsar=1,fps=${fps},format=yuv420p`;
+    // Force even output dimensions
+    const post = `scale=trunc(${targetW}/2)*2:trunc(${targetH}/2)*2:flags=lanczos,setsar=1,fps=${fps},format=yuv420p`;
     
     return `${pre},${selectedFilter},${post}`;
 }
