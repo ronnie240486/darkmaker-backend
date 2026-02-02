@@ -536,6 +536,36 @@ async function handleExport(job, uploadDir, callback) {
     }
 }
 
+// === NOVO PROXY GENÉRICO PARA APIs EXTERNAS (DefAPI, Runway, etc.) ===
+app.post('/api/proxy', async (req, res) => {
+    const { url, method, headers, body } = req.body;
+    
+    if (!url) return res.status(400).json({ error: "Missing 'url' parameter" });
+
+    try {
+        console.log(`[PROXY] ${method || 'GET'} -> ${url}`);
+        const response = await fetch(url, {
+            method: method || 'GET',
+            headers: headers || {},
+            body: body ? JSON.stringify(body) : undefined
+        });
+
+        // Tenta parsear JSON, senão retorna texto
+        let data;
+        const contentType = response.headers.get("content-type");
+        if (contentType && contentType.indexOf("application/json") !== -1) {
+            data = await response.json();
+        } else {
+            data = await response.text();
+        }
+
+        res.status(response.status).json(data);
+    } catch (e) {
+        console.error("[PROXY ERROR]", e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
 app.post('/api/process/start/:action', uploadAny, (req, res) => {
     const action = req.params.action;
     const jobId = `${action}_${Date.now()}`;
