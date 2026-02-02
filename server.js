@@ -329,8 +329,11 @@ async function handleExport(job, uploadDir, callback) {
     const movement = jobConfig?.movement || 'static';
     const transitionType = jobConfig?.transition || 'cut';
     const aspectRatio = jobConfig?.aspectRatio || '16:9';
-    let musicVolume = parseFloat(jobConfig?.musicVolume || 0.2);
-    let sfxVolume = parseFloat(jobConfig?.sfxVolume || 0.5);
+    
+    // CORREÇÃO: Usar operador ternário ou verificação explícita de undefined
+    // para permitir volume 0. A lógica `||` transformava 0 em 0.2/0.5.
+    let musicVolume = (jobConfig?.musicVolume !== undefined) ? parseFloat(jobConfig.musicVolume) : 0.2;
+    let sfxVolume = (jobConfig?.sfxVolume !== undefined) ? parseFloat(jobConfig.sfxVolume) : 0.5;
 
     let targetW = 1280, targetH = 720;
     if (aspectRatio === '9:16') { targetW = 720; targetH = 1280; }
@@ -405,6 +408,7 @@ async function handleExport(job, uploadDir, callback) {
             let audioMap = "[a_out]";
             
             if (hasSfx) {
+                // Aqui sfxVolume pode ser 0 e será respeitado
                 filterComplex += `[1:a]volume=1.5,apad=pad_dur=2,asetpts=PTS-STARTPTS[voice];[2:a]volume=${sfxVolume},apad=pad_dur=2,asetpts=PTS-STARTPTS[sfx];[voice][sfx]amix=inputs=2:duration=longest:dropout_transition=0,aresample=async=1[a_out];`;
             } else {
                 filterComplex += `[1:a]volume=1.5,apad=pad_dur=2,asetpts=PTS-STARTPTS,aresample=async=1[a_out];`;
@@ -455,6 +459,7 @@ async function handleExport(job, uploadDir, callback) {
             if (bgMusicFile) {
                 finalArgs.push('-i', bgMusicFile.path);
                 finalArgs.push(
+                    // Aqui musicVolume pode ser 0 e será respeitado
                     '-filter_complex', `[1:a]volume=${musicVolume},aloop=loop=-1:size=2e+09[bgm];[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=0[a_final]`,
                     '-map', '0:v', '-map', '[a_final]'
                 );
@@ -483,6 +488,7 @@ async function handleExport(job, uploadDir, callback) {
             if (bgMusicFile) {
                 finalArgs.push('-i', bgMusicFile.path);
                 const bgmIdx = clipPaths.length; 
+                // Aqui musicVolume pode ser 0 e será respeitado
                 filter += `[${bgmIdx}:a]volume=${musicVolume},aloop=loop=-1:size=2e+09[bgm];${finalALabel}[bgm]amix=inputs=2:duration=first:dropout_transition=0[a_final]`;
                 const filterPath = path.join(uploadDir, `filter_${job.id}.txt`);
                 fs.writeFileSync(filterPath, filter);
