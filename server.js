@@ -109,6 +109,7 @@ const uploadAny = multer({ storage }).any();
 
 const jobs = {};
 
+// ... (Get Tool Commands helper functions omitted for brevity, logic remains same) ...
 function getAudioToolCommand(action, inputFiles, params, outputPath) {
     const input = inputFiles[0]?.path;
     const args = [];
@@ -377,7 +378,6 @@ async function handleExport(job, uploadDir, callback) {
             const args = [];
             
             // 1. Input Visual [0:v]
-            // CORREÇÃO: Usar -loop 1 e -t explícito para garantir duração
             if (scene.visual?.mimetype?.includes('image')) {
                 args.push('-loop', '1', '-t', (totalSceneDur + 2).toFixed(3), '-i', scene.visual.path);
             } else if (scene.visual) {
@@ -390,8 +390,6 @@ async function handleExport(job, uploadDir, callback) {
             if (scene.audio) {
                 args.push('-i', scene.audio.path);
             } else {
-                // IMPORTANT: Generate dummy audio to avoid map error.
-                // FIX: Ensure duration is a valid number string to prevent 'invalid argument'.
                 args.push('-f', 'lavfi', '-i', `anullsrc=cl=stereo:sr=44100:d=${(totalSceneDur + 2).toFixed(3)}`);
             }
 
@@ -406,7 +404,6 @@ async function handleExport(job, uploadDir, callback) {
             let filterComplex = "";
             let audioMap = "[a_out]";
             
-            // Se tiver SFX, mistura. Se não, apenas passa o áudio (voz ou silêncio)
             if (hasSfx) {
                 filterComplex += `[1:a]volume=1.5,apad=pad_dur=2,asetpts=PTS-STARTPTS[voice];[2:a]volume=${sfxVolume},apad=pad_dur=2,asetpts=PTS-STARTPTS[sfx];[voice][sfx]amix=inputs=2:duration=longest:dropout_transition=0,aresample=async=1[a_out];`;
             } else {
@@ -414,10 +411,7 @@ async function handleExport(job, uploadDir, callback) {
             }
 
             // Visual Movement & Scaling Logic
-            // Ensure target dimension inputs are integers
             const moveFilter = getMovementFilter(movement, totalSceneDur, Math.floor(targetW), Math.floor(targetH));
-            
-            // Aplicar movimento ao input 0
             filterComplex += `[0:v]${moveFilter}[v_out]`;
 
             args.push(
@@ -454,13 +448,10 @@ async function handleExport(job, uploadDir, callback) {
         let finalArgs = [];
         
         if (transitionType === 'cut' || clipPaths.length < 2) {
-            // --- CONCAT SIMPLES (CUT) ---
             const listPath = path.join(uploadDir, `list_${job.id}.txt`);
             const fileContent = clipPaths.map(p => `file '${path.resolve(p).replace(/\\/g, '/')}'`).join('\n');
             fs.writeFileSync(listPath, fileContent);
-            
             finalArgs = ['-f', 'concat', '-safe', '0', '-i', listPath];
-            
             if (bgMusicFile) {
                 finalArgs.push('-i', bgMusicFile.path);
                 finalArgs.push(
@@ -471,37 +462,28 @@ async function handleExport(job, uploadDir, callback) {
                 finalArgs.push('-c', 'copy');
             }
         } else {
-            // --- XFADE COMPLEXO (TRANSIÇÕES) ---
             clipPaths.forEach(p => finalArgs.push('-i', p));
-            
             let filter = "";
             let accumOffset = 0;
             const transDur = 1.0; 
             const transName = getTransitionXfade(transitionType);
-            
             for (let i = 0; i < clipPaths.length - 1; i++) {
                 const vSrc = (i === 0) ? `[0:v]` : `[v_tmp${i}]`;
                 const aSrc = (i === 0) ? `[0:a]` : `[a_tmp${i}]`;
                 const vNext = `[${i+1}:v]`;
                 const aNext = `[${i+1}:a]`;
-                
                 accumOffset += videoClipDurations[i] - transDur;
                 const safeOffset = Math.max(0, accumOffset);
-
-                // Força o formato de pixel antes do xfade
                 filter += `${vSrc}${vNext}xfade=transition=${transName}:duration=${transDur}:offset=${safeOffset.toFixed(3)}[v_tmp${i+1}];`;
                 filter += `${aSrc}${aNext}acrossfade=d=${transDur}:c1=tri:c2=tri[a_tmp${i+1}];`;
             }
-            
             const lastIdx = clipPaths.length - 1;
             const finalVLabel = `[v_tmp${lastIdx}]`;
             const finalALabel = `[a_tmp${lastIdx}]`;
-            
             if (bgMusicFile) {
                 finalArgs.push('-i', bgMusicFile.path);
                 const bgmIdx = clipPaths.length; 
                 filter += `[${bgmIdx}:a]volume=${musicVolume},aloop=loop=-1:size=2e+09[bgm];${finalALabel}[bgm]amix=inputs=2:duration=first:dropout_transition=0[a_final]`;
-                
                 const filterPath = path.join(uploadDir, `filter_${job.id}.txt`);
                 fs.writeFileSync(filterPath, filter);
                 finalArgs.push('-filter_complex_script', filterPath, '-map', finalVLabel, '-map', '[a_final]');
@@ -542,15 +524,14 @@ app.post('/api/proxy', async (req, res) => {
     
     if (!url) return res.status(400).json({ error: "Missing 'url' parameter" });
 
-    // Aumentado para 90s para dar margem à DefAPI (que pode ser lenta)
+    // Timeout de 120 segundos para operações pesadas de IA
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 90000);
+    const timeoutId = setTimeout(() => controller.abort(), 120000);
 
     try {
         console.log(`[PROXY REQUEST] ${method || 'GET'} -> ${url}`);
         if(body) console.log(`[PROXY BODY] Preview:`, JSON.stringify(body).substring(0, 150));
         
-        // Verifica se 'fetch' existe globalmente (Node 18+)
         if (typeof fetch === 'undefined') {
             throw new Error("Node.js version too old. Global fetch not found.");
         }
@@ -566,26 +547,19 @@ app.post('/api/proxy', async (req, res) => {
 
         console.log(`[PROXY RESPONSE] Status: ${response.status} ${response.statusText}`);
 
-        // Tenta parsear JSON, senão retorna texto, mas loga se houver erro
-        let data;
-        const contentType = response.headers.get("content-type");
         const responseText = await response.text();
-
+        let data;
+        
         try {
-            if (contentType && contentType.indexOf("application/json") !== -1) {
-                data = JSON.parse(responseText);
-            } else {
-                data = responseText;
-            }
+            data = JSON.parse(responseText);
         } catch (e) {
             console.error("[PROXY PARSE ERROR]", e);
-            data = responseText; // Retorna texto bruto se falhar o JSON
+            data = { raw_response: responseText }; // Devolve como objeto para não quebrar JSON frontend
         }
 
         if (!response.ok) {
             console.error("[PROXY API ERROR BODY]:", responseText);
-            // Retorna o corpo do erro da API original para o frontend tratar
-            return res.status(response.status).json(typeof data === 'object' ? data : { error: data, message: response.statusText });
+            return res.status(response.status).json(data);
         }
 
         res.status(response.status).json(data);
@@ -597,6 +571,7 @@ app.post('/api/proxy', async (req, res) => {
     }
 });
 
+// ... (Rest of Express handlers for process/start) ...
 app.post('/api/process/start/:action', uploadAny, (req, res) => {
     const action = req.params.action;
     const jobId = `${action}_${Date.now()}`;
