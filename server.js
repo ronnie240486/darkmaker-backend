@@ -542,9 +542,9 @@ app.post('/api/proxy', async (req, res) => {
     
     if (!url) return res.status(400).json({ error: "Missing 'url' parameter" });
 
-    // Configura o timeout via AbortController (60 segundos)
+    // Aumentado para 90s para dar margem à DefAPI (que pode ser lenta)
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 60000);
+    const timeoutId = setTimeout(() => controller.abort(), 90000);
 
     try {
         console.log(`[PROXY REQUEST] ${method || 'GET'} -> ${url}`);
@@ -574,17 +574,19 @@ app.post('/api/proxy', async (req, res) => {
             }
         } catch (e) {
             console.error("[PROXY PARSE ERROR]", e);
-            data = responseText;
+            data = responseText; // Retorna texto bruto se falhar o JSON
         }
 
         if (!response.ok) {
             console.error("[PROXY API ERROR BODY]:", responseText);
+            // Retorna o corpo do erro da API original para o frontend tratar
+            return res.status(response.status).json(typeof data === 'object' ? data : { error: data, message: response.statusText });
         }
 
         res.status(response.status).json(data);
     } catch (e) {
         console.error("[PROXY FETCH ERROR]", e);
-        res.status(500).json({ error: e.message || "Proxy request failed/timed out" });
+        res.status(500).json({ error: e.message || "Proxy request failed/timed out", details: e.toString() });
     } finally {
         clearTimeout(timeoutId);
     }
