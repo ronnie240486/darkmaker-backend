@@ -550,6 +550,11 @@ app.post('/api/proxy', async (req, res) => {
         console.log(`[PROXY REQUEST] ${method || 'GET'} -> ${url}`);
         if(body) console.log(`[PROXY BODY] Preview:`, JSON.stringify(body).substring(0, 150));
         
+        // Verifica se 'fetch' existe globalmente (Node 18+)
+        if (typeof fetch === 'undefined') {
+            throw new Error("Node.js version too old. Global fetch not found.");
+        }
+
         const response = await fetch(url, {
             method: method || 'GET',
             headers: headers || {},
