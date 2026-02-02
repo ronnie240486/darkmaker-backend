@@ -543,25 +543,39 @@ app.post('/api/proxy', async (req, res) => {
     if (!url) return res.status(400).json({ error: "Missing 'url' parameter" });
 
     try {
-        console.log(`[PROXY] ${method || 'GET'} -> ${url}`);
+        console.log(`[PROXY REQUEST] ${method || 'GET'} -> ${url}`);
+        
         const response = await fetch(url, {
             method: method || 'GET',
             headers: headers || {},
             body: body ? JSON.stringify(body) : undefined
         });
 
-        // Tenta parsear JSON, senão retorna texto
+        console.log(`[PROXY RESPONSE] Status: ${response.status} ${response.statusText}`);
+
+        // Tenta parsear JSON, senão retorna texto, mas loga se houver erro
         let data;
         const contentType = response.headers.get("content-type");
-        if (contentType && contentType.indexOf("application/json") !== -1) {
-            data = await response.json();
-        } else {
-            data = await response.text();
+        const responseText = await response.text();
+
+        try {
+            if (contentType && contentType.indexOf("application/json") !== -1) {
+                data = JSON.parse(responseText);
+            } else {
+                data = responseText;
+            }
+        } catch (e) {
+            console.error("[PROXY PARSE ERROR]", e);
+            data = responseText;
+        }
+
+        if (!response.ok) {
+            console.error("[PROXY API ERROR BODY]:", responseText);
         }
 
         res.status(response.status).json(data);
     } catch (e) {
-        console.error("[PROXY ERROR]", e);
+        console.error("[PROXY FETCH ERROR]", e);
         res.status(500).json({ error: e.message });
     }
 });
