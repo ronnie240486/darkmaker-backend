@@ -23,7 +23,10 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
         // --- 1. ESTÁTICO & SUAVE ---
         'static': `zoompan=z=1.0:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
         'kenburns': `zoompan=z='min(1.2, 1.0+0.001*on)':x='(iw/2-(iw/zoom/2))':y='(ih/2-(ih/zoom/2))'${zdur}`,
-        'mov-3d-float': `zoompan=z='1.05+0.03*sin(on/80)':x='iw/2-(iw/zoom/2)+10*sin(on/60)':y='ih/2-(ih/zoom/2)+10*cos(on/70)'${zdur}`,
+        
+        // Flutuar (Float) - CORRIGIDO (Zero-G Feel):
+        // Zoom base 1.2 para segurança. Movimento lento e orgânico nos eixos X/Y.
+        'mov-3d-float': `zoompan=z='1.2+0.02*sin(on/150)':x='iw/2-(iw/zoom/2)+20*sin(on/120)':y='ih/2-(ih/zoom/2)+15*cos(on/140)'${zdur}`,
         
         'mov-tilt-up-slow': `zoompan=z=1.3:x='iw/2-(iw/zoom/2)':y='(ih/2-(ih/zoom/2)) + (ih/10 * ${p_zoom})'${zdur}`,
         'mov-tilt-down-slow': `zoompan=z=1.3:x='iw/2-(iw/zoom/2)':y='(ih/2-(ih/zoom/2)) - (ih/10 * ${p_zoom})'${zdur}`,
@@ -81,11 +84,9 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
         // --- 7. ELÁSTICO & DIVERTIDO (CORRIGIDO FINAL) ---
 
         // Zoom Wobble: O foco oscila e a câmera "dança" levemente de um lado pro outro.
-        // Correção: Aumentado zoom base para 1.25 e frequência para ser um balanço real e não drift.
         'mov-zoom-wobble': `zoompan=z='1.25+0.02*sin(on/30)':x='iw/2-(iw/zoom/2)+40*sin(on/20)':y='ih/2-(ih/zoom/2)+30*cos(on/25)'${zdur}`,
 
-        // Gelatina (Jelly Wobble) - CORRIGIDO:
-        // Usa 3 frequências diferentes rápidas (Zoom/X/Y) para criar instabilidade "mole".
+        // Gelatina (Jelly Wobble):
         'mov-jelly-wobble': `zoompan=z='1.2+0.03*sin(on/15)':x='iw/2-(iw/zoom/2)+30*sin(on/10)':y='ih/2-(ih/zoom/2)+30*cos(on/12)'${zdur},boxblur=2:1`,
 
         // Elástico (Rubber Band)
