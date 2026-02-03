@@ -80,15 +80,15 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
 
         // --- 7. ELÁSTICO & DIVERTIDO (CORRIGIDO FINAL) ---
 
-        // Zoom Wobble: O foco oscila e a câmera "dança" levemente.
-        // Correção: Aumentei o Zoom base para 1.2 para evitar bordas pretas durante o movimento.
-        'mov-zoom-wobble': `zoompan=z='1.2+0.05*sin(on/40)':x='iw/2-(iw/zoom/2)+30*sin(on/50)':y='ih/2-(ih/zoom/2)+20*cos(on/60)'${zdur}`,
+        // Zoom Wobble: O foco oscila e a câmera "dança" levemente de um lado pro outro.
+        // Correção: Aumentado zoom base para 1.25 e frequência para ser um balanço real e não drift.
+        'mov-zoom-wobble': `zoompan=z='1.25+0.02*sin(on/30)':x='iw/2-(iw/zoom/2)+40*sin(on/20)':y='ih/2-(ih/zoom/2)+30*cos(on/25)'${zdur}`,
 
         // Gelatina (Jelly Wobble) - CORRIGIDO:
-        // Usa 3 frequências diferentes (Zoom/X/Y) para criar instabilidade "mole".
-        'mov-jelly-wobble': `zoompan=z='1.15+0.05*sin(on/25)':x='iw/2-(iw/zoom/2)+25*sin(on/30)':y='ih/2-(ih/zoom/2)+25*cos(on/35)'${zdur},boxblur=2:1`,
+        // Usa 3 frequências diferentes rápidas (Zoom/X/Y) para criar instabilidade "mole".
+        'mov-jelly-wobble': `zoompan=z='1.2+0.03*sin(on/15)':x='iw/2-(iw/zoom/2)+30*sin(on/10)':y='ih/2-(ih/zoom/2)+30*cos(on/12)'${zdur},boxblur=2:1`,
 
-        // Elástico (Rubber Band) - CORRIGIDO:
+        // Elástico (Rubber Band)
         'mov-rubber-band': `zoompan=z='1.0+0.3*abs(sin(on/15))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
 
         // Pop Up
