@@ -1,6 +1,7 @@
 
 export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 720) {
-    const d = parseFloat(durationSec) || 5;
+    // Garantir que duration seja número e tenha fallback
+    const d = parseFloat(durationSec) > 0 ? parseFloat(durationSec) : 5;
     const fps = 30; 
     const totalFrames = Math.ceil(d * fps);
     
@@ -14,16 +15,19 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
     const zdur = `:d=${totalFrames*2}:s=${targetW}x${targetH}:fps=${fps}`;
     const p_zoom = `(on/${totalFrames})`; 
 
-    // --- FILTROS DE BLUR AUXILIARES ---
-    const blurIn = `,boxblur=20:1:enable='lt(t,0.5)',boxblur=10:1:enable='between(t,0.5,1.0)',boxblur=5:1:enable='between(t,1.0,1.5)',boxblur=2:1:enable='between(t,1.5,2.0)'`;
+    // --- FILTROS DE BLUR AUXILIARES (CORRIGIDOS) ---
     
-    // MODIFICADO: Blur Out agora é progressivo desde o início
-    // 0% a 40% do tempo: Blur fraco (2px)
-    // 40% a 80% do tempo: Blur médio (8px)
-    // > 80% do tempo: Blur forte (25px)
-    const blurOut = `,boxblur=2:1:enable='lt(t,${d}*0.4)',boxblur=8:1:enable='between(t,${d}*0.4,${d}*0.8)',boxblur=25:1:enable='gt(t,${d}*0.8)'`;
+    // Blur In: Começa muito desfocado (40px) e foca rápido (até 30% do tempo)
+    // Depois fica nítido.
+    const blurIn = `,boxblur=40:2:enable='lt(t,${d*0.15})',boxblur=10:1:enable='between(t,${d*0.15},${d*0.3})'`;
     
-    const pulseBlur = `,boxblur=15:1:enable='between(mod(t,3),0,0.2)'`;
+    // Blur Out: Começa nítido.
+    // 50% do tempo: Começa um blur leve (5px).
+    // 75% do tempo: Blur pesado (30px).
+    // Isso garante que "fique o mesmo" apenas na primeira metade, depois muda drasticamente.
+    const blurOut = `,boxblur=5:1:enable='between(t,${d*0.5},${d*0.8})',boxblur=40:3:enable='gte(t,${d*0.8})'`;
+    
+    const pulseBlur = `,boxblur=15:1:enable='between(mod(t,2),0,0.5)'`; // Pulso a cada 2s
 
     const moves = {
         // --- 1. ESTÁTICO & SUAVE ---
@@ -31,8 +35,6 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
         'kenburns': `zoompan=z='min(1.2, 1.0+0.001*on)':x='(iw/2-(iw/zoom/2))':y='(ih/2-(ih/zoom/2))'${zdur}`,
         
         // Flutuar (Float) - VERSÃO ULTRA (High Intensity):
-        // Zoom base 1.5 para permitir balanço amplo. Amplitude X: 150px, Y: 80px.
-        // Ciclos mais rápidos (divisores 70/90) para curva visível em vídeos curtos.
         'mov-3d-float': `zoompan=z='1.5+0.05*sin(on/80)':x='iw/2-(iw/zoom/2)+150*sin(on/70)':y='ih/2-(ih/zoom/2)+80*cos(on/90)'${zdur}`,
         
         'mov-tilt-up-slow': `zoompan=z=1.3:x='iw/2-(iw/zoom/2)':y='(ih/2-(ih/zoom/2)) + (ih/10 * ${p_zoom})'${zdur}`,
@@ -51,13 +53,9 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
         'mov-pan-slow-d': `zoompan=z=1.5:x='iw/2-(iw/zoom/2)':y='(ih/2-(ih/zoom/2)) - (ih/8 * ${p_zoom})'${zdur}`,
 
         // --- 3.1 PANORÂMICAS (DIAGONAIS) ---
-        // TL: Top-Left (Cima Esquerda) -> X diminui, Y diminui
         'mov-pan-diag-tl': `zoompan=z=1.5:x='(iw/2-(iw/zoom/2)) - (iw/8 * ${p_zoom})':y='(ih/2-(ih/zoom/2)) - (ih/8 * ${p_zoom})'${zdur}`,
-        // TR: Top-Right (Cima Direita) -> X aumenta, Y diminui
         'mov-pan-diag-tr': `zoompan=z=1.5:x='(iw/2-(iw/zoom/2)) + (iw/8 * ${p_zoom})':y='(ih/2-(ih/zoom/2)) - (ih/8 * ${p_zoom})'${zdur}`,
-        // BL: Bottom-Left (Baixo Esquerda) -> X diminui, Y aumenta
         'mov-pan-diag-bl': `zoompan=z=1.5:x='(iw/2-(iw/zoom/2)) - (iw/8 * ${p_zoom})':y='(ih/2-(ih/zoom/2)) + (ih/8 * ${p_zoom})'${zdur}`,
-        // BR: Bottom-Right (Baixo Direita) -> X aumenta, Y aumenta
         'mov-pan-diag-br': `zoompan=z=1.5:x='(iw/2-(iw/zoom/2)) + (iw/8 * ${p_zoom})':y='(ih/2-(ih/zoom/2)) + (ih/8 * ${p_zoom})'${zdur}`,
 
         // --- 4. BLUR & FOCO ---
@@ -77,36 +75,17 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
         'mov-run': `zoompan=z=1.1:x='iw/2-(iw/zoom/2)+10*sin(on/15)':y='ih/2-(ih/zoom/2)+20*abs(sin(on/8))'${zdur}`,
         
         // --- 6. GLITCH & CAOS ---
-        // RGB Shift Move: Movimento ondulante + alteração de cor
         'mov-rgb-shift-move': `zoompan=z='1.1+0.05*sin(on/15)'${zdur},hue=h='20*sin(10*t)'`,
-        
-        // Snap Glitch: Zoom rápido "quadrado" + Ruído
         'mov-glitch-snap': `zoompan=z='if(gt(sin(on/5),0.9), 1.4, 1.05)'${zdur},noise=alls=20:allf=t`,
-        
-        // Glitch Skid: Movimento lateral rápido e curto (jitter) + Desfoque de movimento
         'mov-glitch-skid': `zoompan=z=1.1:x='iw/2-(iw/zoom/2)+30*sin(on*20)':y='ih/2-(ih/zoom/2)'${zdur},boxblur=4:1`,
-        
-        // Shake Violento: Movimento rápido + Blur forte
         'mov-shake-violent': `zoompan=z=1.3:x='iw/2-(iw/zoom/2)+60*sin(on*10)':y='ih/2-(ih/zoom/2)+60*cos(on*12)'${zdur},boxblur=10:1`,
-        
-        // Vibração Sônica: Micro-vibração vertical
         'mov-vibrate': `zoompan=z=1.1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)+10*sin(on*50)'${zdur},boxblur=2:1`,
 
-        // --- 7. ELÁSTICO & DIVERTIDO (CORRIGIDO FINAL) ---
-
-        // Zoom Wobble: O foco oscila e a câmera "dança" levemente de um lado pro outro.
+        // --- 7. ELÁSTICO & DIVERTIDO ---
         'mov-zoom-wobble': `zoompan=z='1.25+0.02*sin(on/30)':x='iw/2-(iw/zoom/2)+40*sin(on/20)':y='ih/2-(ih/zoom/2)+30*cos(on/25)'${zdur}`,
-
-        // Gelatina (Jelly Wobble):
         'mov-jelly-wobble': `zoompan=z='1.2+0.03*sin(on/15)':x='iw/2-(iw/zoom/2)+30*sin(on/10)':y='ih/2-(ih/zoom/2)+30*cos(on/12)'${zdur},boxblur=2:1`,
-
-        // Elástico (Rubber Band)
         'mov-rubber-band': `zoompan=z='1.0+0.3*abs(sin(on/15))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
-
-        // Pop Up
         'mov-pop-up': `zoompan=z='min(1.2, 1.0+(on/10)*0.2)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
-
-        // Bounce Drop
         'mov-bounce-drop': `zoompan=z=1.3:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2) - 150*cos(on/5)/(1+on*0.1)'${zdur}`
     };
 
