@@ -13,6 +13,9 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
     // Zoompan Base Config
     const zdur = `:d=${totalFrames*2}:s=${targetW}x${targetH}:fps=${fps}`;
     const p_zoom = `(on/${totalFrames})`; 
+    
+    // Base Zoompan for non-zoompan effects (like rotate)
+    const z_static = `zoompan=z=1.0${zdur}`;
 
     // --- FILTROS DE BLUR AUXILIARES ---
     const blurIn = `,boxblur=20:1:enable='lt(t,0.5)',boxblur=10:1:enable='between(t,0.5,1.0)',boxblur=5:1:enable='between(t,1.0,1.5)',boxblur=2:1:enable='between(t,1.5,2.0)'`;
@@ -24,7 +27,6 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
         'static': `zoompan=z=1.0:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
         'kenburns': `zoompan=z='min(1.2, 1.0+0.001*on)':x='(iw/2-(iw/zoom/2))':y='(ih/2-(ih/zoom/2))'${zdur}`,
         
-        // Flutuar (Float) - VERSÃO ULTRA (High Intensity):
         'mov-3d-float': `zoompan=z='1.5+0.05*sin(on/80)':x='iw/2-(iw/zoom/2)+150*sin(on/70)':y='ih/2-(ih/zoom/2)+80*cos(on/90)'${zdur}`,
         
         'mov-tilt-up-slow': `zoompan=z=1.3:x='iw/2-(iw/zoom/2)':y='(ih/2-(ih/zoom/2)) + (ih/10 * ${p_zoom})'${zdur}`,
@@ -34,7 +36,6 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
         'zoom-in': `zoompan=z='min(1.5, 1.0+(0.5*${p_zoom}))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
         'zoom-out': `zoompan=z='max(1.0, 1.5-(0.5*${p_zoom}))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
         'mov-zoom-crash-in': `zoompan=z='min(3, 1.0+0.1*on)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
-        'mov-zoom-crash-out': `zoompan=z='max(1.0, 3-0.1*on)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
         'mov-dolly-vertigo': `zoompan=z='1.0+(0.4*${p_zoom})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
         
         // --- 3. PANORÂMICAS ---
@@ -42,8 +43,6 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
         'mov-pan-slow-r': `zoompan=z=1.5:x='(iw/2-(iw/zoom/2)) - (iw/8 * ${p_zoom})':y='ih/2-(ih/zoom/2)'${zdur}`,
         'mov-pan-slow-u': `zoompan=z=1.5:x='iw/2-(iw/zoom/2)':y='(ih/2-(ih/zoom/2)) + (ih/8 * ${p_zoom})'${zdur}`,
         'mov-pan-slow-d': `zoompan=z=1.5:x='iw/2-(iw/zoom/2)':y='(ih/2-(ih/zoom/2)) - (ih/8 * ${p_zoom})'${zdur}`,
-        'mov-pan-fast-l': `zoompan=z=1.2:x='(iw/2-(iw/zoom/2)) + (iw/3 * ${p_zoom})':y='ih/2-(ih/zoom/2)'${zdur}`,
-        'mov-pan-fast-r': `zoompan=z=1.2:x='(iw/2-(iw/zoom/2)) - (iw/3 * ${p_zoom})':y='ih/2-(ih/zoom/2)'${zdur}`,
         'mov-pan-diag-tl': `zoompan=z=1.5:x='(iw/2-(iw/zoom/2)) - (iw/8 * ${p_zoom})':y='(ih/2-(ih/zoom/2)) - (ih/8 * ${p_zoom})'${zdur}`,
         'mov-pan-diag-br': `zoompan=z=1.5:x='(iw/2-(iw/zoom/2)) + (iw/8 * ${p_zoom})':y='(ih/2-(ih/zoom/2)) + (ih/8 * ${p_zoom})'${zdur}`,
 
@@ -53,13 +52,12 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
         'mov-blur-pulse': `zoompan=z='1.05+0.02*sin(on/30)'${zdur}${pulseBlur}`,
         'mov-tilt-shift': `zoompan=z=1.1${zdur},boxblur=2:1,vignette=a=PI/4`,
 
-        // --- 5. REALISMO & CÂMERA ---
+        // --- 5. EFEITOS ESPECIAIS & REALISMO ---
         'handheld-1': `zoompan=z=1.2:x='iw/2-(iw/zoom/2)+8*sin(on/15)':y='ih/2-(ih/zoom/2)+8*cos(on/18)'${zdur}`,
         'handheld-2': `zoompan=z=1.2:x='iw/2-(iw/zoom/2)+15*sin(on/12)':y='ih/2-(ih/zoom/2)+12*cos(on/15)'${zdur}`,
         'earthquake': `zoompan=z=1.2:x='iw/2-(iw/zoom/2)+20*sin(on*50)':y='ih/2-(ih/zoom/2)+20*cos(on*43)'${zdur}`,
         'mov-jitter-x': `zoompan=z=1.1:x='iw/2-(iw/zoom/2)+15*sin(on*20)':y='ih/2-(ih/zoom/2)'${zdur}`,
         'mov-walk': `zoompan=z=1.1:x='iw/2-(iw/zoom/2)+5*sin(on/30)':y='ih/2-(ih/zoom/2)+10*abs(sin(on/15))'${zdur}`,
-        'mov-run': `zoompan=z=1.1:x='iw/2-(iw/zoom/2)+10*sin(on/15)':y='ih/2-(ih/zoom/2)+20*abs(sin(on/8))'${zdur}`,
         
         // --- 6. GLITCH & CAOS ---
         'mov-rgb-shift-move': `zoompan=z='1.1+0.05*sin(on/15)'${zdur},hue=h='20*sin(10*t)'`,
@@ -75,16 +73,22 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
         'mov-pop-up': `zoompan=z='min(1.2, 1.0+(on/10)*0.2)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
         'mov-bounce-drop': `zoompan=z=1.3:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2) - 150*cos(on/5)/(1+on*0.1)'${zdur}`,
 
-        // --- 8. 3D & ROTAÇÃO (NOVOS) ---
-        'mov-3d-roll': `zoompan=z=1.4:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur},rotate=a='t*0.5':c=black@0`,
-        'mov-3d-swing-l': `zoompan=z=1.4:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur},rotate=a='0.15*sin(2*PI*t/4)':c=black@0`,
-        'mov-3d-swing-r': `zoompan=z=1.4:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur},rotate=a='-0.15*sin(2*PI*t/4)':c=black@0`,
-        'mov-3d-spin-axis': `zoompan=z='1.3+0.2*cos(2*PI*on/(fps*3))':x='iw/2-(iw/zoom/2) + (iw/4)*sin(2*PI*on/(fps*3))':y='ih/2-(ih/zoom/2)'${zdur}`,
-        'mov-3d-flip-x': `zoompan=z=1.5:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2) + (ih/3)*cos(2*PI*on/(fps*2))'${zdur}`,
-        'mov-3d-flip-y': `zoompan=z=1.5:x='iw/2-(iw/zoom/2) + (iw/3)*cos(2*PI*on/(fps*2))':y='ih/2-(ih/zoom/2)'${zdur}`
+        // --- 8. 3D & ROTAÇÃO (ADDED MISSING KEYS) ---
+        // Uses rotate filter for Z-axis rotation and dynamic zoompan for X/Y simulations
+        'mov-3d-roll': `${z_static},rotate=a='0.5*t':ow=iw:oh=ih:c=black@0`,
+        'mov-3d-swing-l': `${z_static},rotate=a='0.1*sin(1.5*t)':ow=iw:oh=ih:c=black@0`,
+        'mov-3d-swing-r': `${z_static},rotate=a='-0.1*sin(1.5*t)':ow=iw:oh=ih:c=black@0`,
+        
+        // Simulating Spin Axis (Z-axis spin)
+        'mov-3d-spin-axis': `${z_static},rotate=a='t':ow=iw:oh=ih:c=black@0`,
+        
+        // Simulating Flips via aggressive scaling/panning (Pseudo-3D)
+        'mov-3d-flip-x': `zoompan=z='1.0+0.5*abs(sin(on/10))':y='ih/2-(ih/zoom/2)+100*sin(on/5)':x='iw/2-(iw/zoom/2)'${zdur}`,
+        'mov-3d-flip-y': `zoompan=z='1.0+0.5*abs(sin(on/10))':x='iw/2-(iw/zoom/2)+100*sin(on/5)':y='ih/2-(ih/zoom/2)'${zdur}`
     };
 
     const selectedFilter = moves[moveId] || moves['kenburns'];
+    // Force even output dimensions
     const post = `scale=trunc(${targetW}/2)*2:trunc(${targetH}/2)*2:flags=lanczos,setsar=1,fps=${fps},format=yuv420p`;
     
     return `${pre},${selectedFilter},${post}`;
