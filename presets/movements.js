@@ -1,3 +1,4 @@
+
 export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 720) {
     const d = parseFloat(durationSec) || 5;
     const fps = 30; 
@@ -5,9 +6,8 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
     
     // ==========================================================================================
     // PRE-SCALE 2x: Otimizado para performance e qualidade
-    // Force even dimensions for libx264 compatibility: trunc(w/2)*2
     // ==========================================================================================
-    const pre = `scale=trunc(${targetW*2}/2)*2:trunc(${targetH*2}/2)*2:force_original_aspect_ratio=increase,crop=trunc(${targetW*2}/2)*2:trunc(${targetH*2}/2)*2,setsar=1`;
+    const pre = `scale=${targetW*2}:${targetH*2}:force_original_aspect_ratio=increase,crop=${targetW*2}:${targetH*2},setsar=1`;
     
     // Zoompan Base Config
     const zdur = `:d=${totalFrames*2}:s=${targetW}x${targetH}:fps=${fps}`;
@@ -22,11 +22,7 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
         // --- 1. ESTÁTICO & SUAVE ---
         'static': `zoompan=z=1.0:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
         'kenburns': `zoompan=z='min(1.2, 1.0+0.001*on)':x='(iw/2-(iw/zoom/2))':y='(ih/2-(ih/zoom/2))'${zdur}`,
-        
-        // Flutuar (Float) - VERSÃO ULTRA (High Intensity):
-        // Zoom base 1.5 para permitir balanço amplo. Amplitude X: 150px, Y: 80px.
-        // Ciclos mais rápidos (divisores 70/90) para curva visível em vídeos curtos.
-        'mov-3d-float': `zoompan=z='1.5+0.05*sin(on/80)':x='iw/2-(iw/zoom/2)+150*sin(on/70)':y='ih/2-(ih/zoom/2)+80*cos(on/90)'${zdur}`,
+        'mov-3d-float': `zoompan=z='1.05+0.03*sin(on/80)':x='iw/2-(iw/zoom/2)+10*sin(on/60)':y='ih/2-(ih/zoom/2)+10*cos(on/70)'${zdur}`,
         
         'mov-tilt-up-slow': `zoompan=z=1.3:x='iw/2-(iw/zoom/2)':y='(ih/2-(ih/zoom/2)) + (ih/10 * ${p_zoom})'${zdur}`,
         'mov-tilt-down-slow': `zoompan=z=1.3:x='iw/2-(iw/zoom/2)':y='(ih/2-(ih/zoom/2)) - (ih/10 * ${p_zoom})'${zdur}`,
@@ -63,11 +59,7 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
 
         // --- 5. EFEITOS ESPECIAIS & MOVIMENTO REALISTA ---
         'handheld-1': `zoompan=z=1.2:x='iw/2-(iw/zoom/2)+8*sin(on/15)':y='ih/2-(ih/zoom/2)+8*cos(on/18)'${zdur}`,
-        'handheld-2': `zoompan=z=1.2:x='iw/2-(iw/zoom/2)+15*sin(on/12)':y='ih/2-(ih/zoom/2)+12*cos(on/15)'${zdur}`,
         'earthquake': `zoompan=z=1.2:x='iw/2-(iw/zoom/2)+20*sin(on*50)':y='ih/2-(ih/zoom/2)+20*cos(on*43)'${zdur}`,
-        'mov-jitter-x': `zoompan=z=1.1:x='iw/2-(iw/zoom/2)+15*sin(on*20)':y='ih/2-(ih/zoom/2)'${zdur}`,
-        'mov-walk': `zoompan=z=1.1:x='iw/2-(iw/zoom/2)+5*sin(on/30)':y='ih/2-(ih/zoom/2)+10*abs(sin(on/15))'${zdur}`,
-        'mov-run': `zoompan=z=1.1:x='iw/2-(iw/zoom/2)+10*sin(on/15)':y='ih/2-(ih/zoom/2)+20*abs(sin(on/8))'${zdur}`,
         
         // --- 6. GLITCH & CAOS ---
         // RGB Shift Move: Movimento ondulante + alteração de cor
@@ -87,13 +79,13 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
 
         // --- 7. ELÁSTICO & DIVERTIDO (CORRIGIDO FINAL) ---
 
-        // Zoom Wobble: O foco oscila e a câmera "dança" levemente de um lado pro outro.
-        'mov-zoom-wobble': `zoompan=z='1.25+0.02*sin(on/30)':x='iw/2-(iw/zoom/2)+40*sin(on/20)':y='ih/2-(ih/zoom/2)+30*cos(on/25)'${zdur}`,
+        // Gelatina (Jelly Wobble) - CORRIGIDO:
+        // Usa 3 frequências diferentes (Zoom/X/Y) para criar instabilidade "mole".
+        // Adiciona blur leve constante para suavidade "gelatinosa".
+        'mov-jelly-wobble': `zoompan=z='1.05+0.05*sin(on/5)':x='iw/2-(iw/zoom/2)+20*sin(on/6)':y='ih/2-(ih/zoom/2)+15*cos(on/7)'${zdur},boxblur=2:1`,
 
-        // Gelatina (Jelly Wobble):
-        'mov-jelly-wobble': `zoompan=z='1.2+0.03*sin(on/15)':x='iw/2-(iw/zoom/2)+30*sin(on/10)':y='ih/2-(ih/zoom/2)+30*cos(on/12)'${zdur},boxblur=2:1`,
-
-        // Elástico (Rubber Band)
+        // Elástico (Rubber Band) - CORRIGIDO:
+        // Usa abs(sin) para criar um movimento de puxar e soltar (bounce) contínuo.
         'mov-rubber-band': `zoompan=z='1.0+0.3*abs(sin(on/15))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
 
         // Pop Up
@@ -104,8 +96,7 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
     };
 
     const selectedFilter = moves[moveId] || moves['kenburns'];
-    // Force even output dimensions
-    const post = `scale=trunc(${targetW}/2)*2:trunc(${targetH}/2)*2:flags=lanczos,setsar=1,fps=${fps},format=yuv420p`;
+    const post = `scale=${targetW}:${targetH}:flags=lanczos,setsar=1,fps=${fps},format=yuv420p`;
     
     return `${pre},${selectedFilter},${post}`;
 }
