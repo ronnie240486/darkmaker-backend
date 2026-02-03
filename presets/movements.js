@@ -64,7 +64,11 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
 
         // --- 5. EFEITOS ESPECIAIS & MOVIMENTO REALISTA ---
         'handheld-1': `zoompan=z=1.2:x='iw/2-(iw/zoom/2)+8*sin(on/15)':y='ih/2-(ih/zoom/2)+8*cos(on/18)'${zdur}`,
+        'handheld-2': `zoompan=z=1.2:x='iw/2-(iw/zoom/2)+15*sin(on/12)':y='ih/2-(ih/zoom/2)+12*cos(on/15)'${zdur}`,
         'earthquake': `zoompan=z=1.2:x='iw/2-(iw/zoom/2)+20*sin(on*50)':y='ih/2-(ih/zoom/2)+20*cos(on*43)'${zdur}`,
+        'mov-jitter-x': `zoompan=z=1.1:x='iw/2-(iw/zoom/2)+15*sin(on*20)':y='ih/2-(ih/zoom/2)'${zdur}`,
+        'mov-walk': `zoompan=z=1.1:x='iw/2-(iw/zoom/2)+5*sin(on/30)':y='ih/2-(ih/zoom/2)+10*abs(sin(on/15))'${zdur}`,
+        'mov-run': `zoompan=z=1.1:x='iw/2-(iw/zoom/2)+10*sin(on/15)':y='ih/2-(ih/zoom/2)+20*abs(sin(on/8))'${zdur}`,
         
         // --- 6. GLITCH & CAOS ---
         // RGB Shift Move: Movimento ondulante + alteração de cor
