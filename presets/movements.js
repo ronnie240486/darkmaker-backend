@@ -24,9 +24,9 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
         'static': `zoompan=z=1.0:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
         'kenburns': `zoompan=z='min(1.2, 1.0+0.001*on)':x='(iw/2-(iw/zoom/2))':y='(ih/2-(ih/zoom/2))'${zdur}`,
         
-        // Flutuar (Float) - CORRIGIDO (Zero-G Feel):
-        // Zoom base 1.2 para segurança. Movimento lento e orgânico nos eixos X/Y.
-        'mov-3d-float': `zoompan=z='1.2+0.02*sin(on/150)':x='iw/2-(iw/zoom/2)+20*sin(on/120)':y='ih/2-(ih/zoom/2)+15*cos(on/140)'${zdur}`,
+        // Flutuar (Float) - CORRIGIDO V2 (Movimento Amplo):
+        // Zoom base 1.3 (+ forte) | Amplitude X: 60px | Amplitude Y: 40px | Respiração Zoom: 0.08
+        'mov-3d-float': `zoompan=z='1.3+0.08*sin(on/80)':x='iw/2-(iw/zoom/2)+60*sin(on/100)':y='ih/2-(ih/zoom/2)+40*cos(on/120)'${zdur}`,
         
         'mov-tilt-up-slow': `zoompan=z=1.3:x='iw/2-(iw/zoom/2)':y='(ih/2-(ih/zoom/2)) + (ih/10 * ${p_zoom})'${zdur}`,
         'mov-tilt-down-slow': `zoompan=z=1.3:x='iw/2-(iw/zoom/2)':y='(ih/2-(ih/zoom/2)) - (ih/10 * ${p_zoom})'${zdur}`,
