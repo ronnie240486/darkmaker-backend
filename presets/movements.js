@@ -76,27 +76,15 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
         'mov-bounce-drop': `zoompan=z=1.3:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2) - 150*cos(on/5)/(1+on*0.1)'${zdur}`,
 
         // --- 8. 3D & ROTAÇÃO (NOVOS) ---
-        // Simulações 2D/3D usando Rotate e ZoomPan
-        
-        // Rolamento (Roll): Rotação contínua no eixo Z
         'mov-3d-roll': `zoompan=z=1.4:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur},rotate=a='t*0.5':c=black@0`,
-        
-        // Pêndulo (Swing): Rotação oscilante suave
         'mov-3d-swing-l': `zoompan=z=1.4:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur},rotate=a='0.15*sin(2*PI*t/4)':c=black@0`,
         'mov-3d-swing-r': `zoompan=z=1.4:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur},rotate=a='-0.15*sin(2*PI*t/4)':c=black@0`,
-
-        // 3D Spin (Eixo Y): Simulado com zoom pulsante e pan lateral sincronizado (efeito de "respiração" 3D)
         'mov-3d-spin-axis': `zoompan=z='1.3+0.2*cos(2*PI*on/(fps*3))':x='iw/2-(iw/zoom/2) + (iw/4)*sin(2*PI*on/(fps*3))':y='ih/2-(ih/zoom/2)'${zdur}`,
-
-        // 3D Flip X (Cambalhota): Simulado com scan vertical rápido
         'mov-3d-flip-x': `zoompan=z=1.5:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2) + (ih/3)*cos(2*PI*on/(fps*2))'${zdur}`,
-
-        // 3D Flip Y (Giro): Simulado com scan horizontal rápido
         'mov-3d-flip-y': `zoompan=z=1.5:x='iw/2-(iw/zoom/2) + (iw/3)*cos(2*PI*on/(fps*2))':y='ih/2-(ih/zoom/2)'${zdur}`
     };
 
     const selectedFilter = moves[moveId] || moves['kenburns'];
-    // Force even output dimensions
     const post = `scale=trunc(${targetW}/2)*2:trunc(${targetH}/2)*2:flags=lanczos,setsar=1,fps=${fps},format=yuv420p`;
     
     return `${pre},${selectedFilter},${post}`;
