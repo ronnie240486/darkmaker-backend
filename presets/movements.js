@@ -16,7 +16,13 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
 
     // --- FILTROS DE BLUR AUXILIARES ---
     const blurIn = `,boxblur=20:1:enable='lt(t,0.5)',boxblur=10:1:enable='between(t,0.5,1.0)',boxblur=5:1:enable='between(t,1.0,1.5)',boxblur=2:1:enable='between(t,1.5,2.0)'`;
-    const blurOut = `,boxblur=2:1:enable='between(t,${d-2.0},${d-1.5})',boxblur=5:1:enable='between(t,${d-1.5},${d-1.0})',boxblur=10:1:enable='between(t,${d-1.0},${d-0.5})',boxblur=20:1:enable='gt(t,${d-0.5})'`;
+    
+    // MODIFICADO: Blur Out agora é progressivo desde o início
+    // 0% a 40% do tempo: Blur fraco (2px)
+    // 40% a 80% do tempo: Blur médio (8px)
+    // > 80% do tempo: Blur forte (25px)
+    const blurOut = `,boxblur=2:1:enable='lt(t,${d}*0.4)',boxblur=8:1:enable='between(t,${d}*0.4,${d}*0.8)',boxblur=25:1:enable='gt(t,${d}*0.8)'`;
+    
     const pulseBlur = `,boxblur=15:1:enable='between(mod(t,3),0,0.2)'`;
 
     const moves = {
