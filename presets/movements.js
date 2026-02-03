@@ -24,9 +24,10 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
         'static': `zoompan=z=1.0:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
         'kenburns': `zoompan=z='min(1.2, 1.0+0.001*on)':x='(iw/2-(iw/zoom/2))':y='(ih/2-(ih/zoom/2))'${zdur}`,
         
-        // Flutuar (Float) - CORRIGIDO V2 (Movimento Amplo):
-        // Zoom base 1.3 (+ forte) | Amplitude X: 60px | Amplitude Y: 40px | Respiração Zoom: 0.08
-        'mov-3d-float': `zoompan=z='1.3+0.08*sin(on/80)':x='iw/2-(iw/zoom/2)+60*sin(on/100)':y='ih/2-(ih/zoom/2)+40*cos(on/120)'${zdur}`,
+        // Flutuar (Float) - VERSÃO ULTRA (High Intensity):
+        // Zoom base 1.5 para permitir balanço amplo. Amplitude X: 150px, Y: 80px.
+        // Ciclos mais rápidos (divisores 70/90) para curva visível em vídeos curtos.
+        'mov-3d-float': `zoompan=z='1.5+0.05*sin(on/80)':x='iw/2-(iw/zoom/2)+150*sin(on/70)':y='ih/2-(ih/zoom/2)+80*cos(on/90)'${zdur}`,
         
         'mov-tilt-up-slow': `zoompan=z=1.3:x='iw/2-(iw/zoom/2)':y='(ih/2-(ih/zoom/2)) + (ih/10 * ${p_zoom})'${zdur}`,
         'mov-tilt-down-slow': `zoompan=z=1.3:x='iw/2-(iw/zoom/2)':y='(ih/2-(ih/zoom/2)) - (ih/10 * ${p_zoom})'${zdur}`,
