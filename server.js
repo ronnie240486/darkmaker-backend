@@ -24,12 +24,12 @@ const UPLOAD_DIR = path.join(__dirname, 'uploads');
 const OUTPUT_DIR = path.join(__dirname, 'outputs');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
-// Garantir diretórios
+// Garantir diretórios existem
 [UPLOAD_DIR, OUTPUT_DIR, PUBLIC_DIR].forEach(dir => {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
 
-// --- CONFIGURAÇÕES DO FFMPEG ---
+// CONFIGURAÇÃO TURBO (BASE)
 const getVideoArgs = () => [
     '-c:v', 'libx264',
     '-preset', 'ultrafast',
@@ -69,16 +69,16 @@ const getExactDuration = (filePath) => {
     });
 };
 
-// --- BUILD FRONTEND ---
 async function buildFrontend() {
     try {
         const srcIndex = path.join(__dirname, 'index.html');
         const destIndex = path.join(PUBLIC_DIR, 'index.html');
         const srcCss = path.join(__dirname, 'index.css');
         const destCss = path.join(PUBLIC_DIR, 'index.css');
+
         if (fs.existsSync(srcIndex)) fs.copyFileSync(srcIndex, destIndex);
         if (fs.existsSync(srcCss)) fs.copyFileSync(srcCss, destCss);
-        
+
         await esbuild.build({
             entryPoints: ['index.tsx'],
             bundle: true,
@@ -90,11 +90,12 @@ async function buildFrontend() {
             define: { 'process.env.API_KEY': JSON.stringify(GEMINI_KEY), 'global': 'window' },
             loader: { '.tsx': 'tsx', '.ts': 'ts', '.css': 'css' },
         });
-    } catch (e) { console.error("Build Warning:", e.message); }
+    } catch (e) { 
+        console.error("Build Warning (Non-critical):", e.message); 
+    }
 }
 await buildFrontend();
 
-// --- MIDDLEWARE ---
 app.use(cors());
 app.use(express.json({ limit: '1000mb' }));
 app.use(express.urlencoded({ extended: true, limit: '1000mb' }));
@@ -131,7 +132,6 @@ function getAudioToolCommand(action, inputFiles, params, outputPath) {
         case 'pitch':
             const n = parseFloat(params.pitch || params.value || '0');
             const newRate = Math.round(44100 * Math.pow(2, n / 12.0));
-            // Compensar tempo para manter duração original
             const tempoVal = 1.0 / Math.pow(2, n / 12.0);
             let tempoFilter = "";
             let rem = tempoVal;
@@ -170,7 +170,6 @@ function getToolCommand(action, inputFiles, params, outputPath) {
     const isAudioAction = ['clean-audio', 'pitch-shift', 'speed', 'bass-boost', 'reverb', 'normalize', '8d-audio', 'join'].includes(action);
     const isAudioFile = inputFiles[0]?.mimetype?.includes('audio');
     
-    // Redireciona para ferramentas de áudio se for ação de áudio ou arquivo de áudio (exceto convert/join que podem ser ambíguos)
     if (isAudioAction || (isAudioFile && action !== 'convert' && action !== 'join')) {
         let audioAction = action;
         if(action === 'pitch-shift') audioAction = 'pitch';
@@ -269,15 +268,61 @@ function getToolCommand(action, inputFiles, params, outputPath) {
     return args;
 }
 
-// --- TURBO VIDEO EXPORT LOGIC ---
+function createFFmpegJob(jobId, args, expectedDuration, res) {
+    if (!jobs[jobId]) return;
+    jobs[jobId].status = 'processing';
+    if (res && !res.headersSent) res.status(202).json({ jobId });
+    
+    const ffmpeg = spawn(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-stats', '-y', ...args]);
+    
+    let stderrLog = "";
+    ffmpeg.stderr.on('data', d => {
+        const line = d.toString();
+        stderrLog += line; 
+        if(line.includes('time=')) {
+             const timeMatch = line.match(/time=(\d{2}:\d{2}:\d{2}\.\d{2})/);
+             if (timeMatch && expectedDuration > 0) {
+                const cur = timeToSeconds(timeMatch[1]);
+                let p = Math.round((cur / expectedDuration) * 100);
+                if (p > 99) p = 99; 
+                if (jobs[jobId]) jobs[jobId].progress = p;
+            }
+        }
+    });
+
+    ffmpeg.on('close', code => {
+        if (!jobs[jobId]) return;
+        if (code === 0) {
+            jobs[jobId].status = 'completed';
+            jobs[jobId].progress = 100;
+            jobs[jobId].downloadUrl = `/outputs/${path.basename(args[args.length - 1])}`;
+        } else {
+            console.error(`[JOB ${jobId}] Failed. Code: ${code}`);
+            console.error(`[JOB ${jobId}] Log Tail:`, stderrLog.slice(-500));
+            jobs[jobId].status = 'failed';
+            jobs[jobId].error = `FFmpeg Error (Code ${code}). Check server logs.`;
+        }
+    });
+}
+
+function timeToSeconds(timeStr) {
+    if (!timeStr) return 0;
+    const parts = timeStr.split(':');
+    return (parseFloat(parts[0]) * 3600) + (parseFloat(parts[1]) * 60) + parseFloat(parts[2]);
+}
+
+// === ENGINE DE EXPORTAÇÃO FRAGMENTADA (TURBO V2) ===
 async function handleExport(job, uploadDir, callback) {
     const outputName = `render_${job.id}.mp4`;
     const outputPath = path.join(OUTPUT_DIR, outputName);
+    
     let jobConfig = job.params;
-    if (typeof jobConfig === 'string') { try { jobConfig = JSON.parse(jobConfig); } catch(e) {} }
-    else if (jobConfig && jobConfig.config) {
-        if (typeof jobConfig.config === 'string') { try { jobConfig = JSON.parse(jobConfig.config); } catch(e) {} }
-        else { jobConfig = jobConfig.config; }
+    if (typeof jobConfig === 'string') {
+        try { jobConfig = JSON.parse(jobConfig); } catch(e) {}
+    } else if (jobConfig && jobConfig.config) {
+        if (typeof jobConfig.config === 'string') {
+            try { jobConfig = JSON.parse(jobConfig.config); } catch(e) {}
+        } else { jobConfig = jobConfig.config; }
     }
 
     const movement = jobConfig?.movement || 'static';
@@ -292,13 +337,19 @@ async function handleExport(job, uploadDir, callback) {
     try {
         const sceneMap = {};
         let bgMusicFile = null;
+
         job.files.forEach(f => {
-            if (f.originalname.includes('background_music')) { bgMusicFile = f; }
-            else {
+            if (f.originalname.includes('background_music')) {
+                bgMusicFile = f;
+            } else {
                 const match = f.originalname.match(/scene_(\d+)(?:_(sfx))?\.?/);
                 if (match) {
                     const idx = parseInt(match[1]);
-                    let type = f.originalname.includes('_sfx') ? 'sfx' : (f.mimetype.includes('audio') ? 'audio' : 'visual');
+                    let type = 'visual';
+                    if (match[2] === 'sfx') type = 'sfx';
+                    else if (f.mimetype.includes('audio')) type = 'audio';
+                    else type = 'visual';
+                    
                     if (!sceneMap[idx]) sceneMap[idx] = {};
                     sceneMap[idx][type] = f;
                 }
@@ -308,8 +359,8 @@ async function handleExport(job, uploadDir, callback) {
         const sortedScenes = Object.keys(sceneMap).sort((a,b) => a - b).map(k => sceneMap[k]);
         const clipPaths = [];
         const videoClipDurations = [];
-        
-        // --- ESTABILIDADE: Duração reduzida e Padding seguro ---
+
+        // --- TRANSITION OPTIMIZATION: 0.5s for faster cuts ---
         const TRANS_DUR = 0.5; 
         const TRANS_PADDING = (transitionType === 'cut') ? 0.2 : 0.7;
 
@@ -317,26 +368,44 @@ async function handleExport(job, uploadDir, callback) {
         for (let i = 0; i < sortedScenes.length; i++) {
             const scene = sortedScenes[i];
             const clipPath = path.join(uploadDir, `temp_${job.id}_${i}.mp4`);
+            
             let audioDur = 0;
-            if (scene.audio) { audioDur = await getExactDuration(scene.audio.path); }
+            if (scene.audio) {
+                audioDur = await getExactDuration(scene.audio.path);
+            }
             const baseDur = audioDur > 0 ? audioDur : 5;
             const totalSceneDur = baseDur + TRANS_PADDING;
             
             const args = [];
+            
+            // 1. Input Visual [0:v]
             if (scene.visual?.mimetype?.includes('image')) {
-                args.push('-loop', '1', '-t', (totalSceneDur + 0.5).toFixed(3), '-i', scene.visual.path);
+                args.push('-loop', '1', '-t', (totalSceneDur + 1).toFixed(3), '-i', scene.visual.path);
             } else if (scene.visual) {
-                args.push('-stream_loop', '-1', '-t', (totalSceneDur + 0.5).toFixed(3), '-i', scene.visual.path);
+                args.push('-stream_loop', '-1', '-t', (totalSceneDur + 1).toFixed(3), '-i', scene.visual.path);
             } else {
-                args.push('-f', 'lavfi', '-i', `color=c=black:s=${targetW}x${targetH}:d=${(totalSceneDur + 0.5).toFixed(3)}`);
+                args.push('-f', 'lavfi', '-i', `color=c=black:s=${targetW}x${targetH}:d=${(totalSceneDur + 1).toFixed(3)}`);
             }
-            if (scene.audio) { args.push('-i', scene.audio.path); }
-            else { args.push('-f', 'lavfi', '-i', `anullsrc=cl=stereo:sr=44100:d=${(totalSceneDur + 0.5).toFixed(3)}`); }
-            if (scene.sfx) { args.push('-i', scene.sfx.path); }
 
+            // 2. Input Áudio (Voz) [1:a]
+            if (scene.audio) {
+                args.push('-i', scene.audio.path);
+            } else {
+                args.push('-f', 'lavfi', '-i', `anullsrc=cl=stereo:sr=44100:d=${(totalSceneDur + 1).toFixed(3)}`);
+            }
+
+            // 3. Input SFX (Opcional) [2:a]
+            let hasSfx = false;
+            if (scene.sfx) {
+                args.push('-i', scene.sfx.path);
+                hasSfx = true;
+            }
+
+            // Audio Mixing Logic 
             let filterComplex = "";
             let audioMap = "[a_final_sync]";
-            if (scene.sfx) {
+            
+            if (hasSfx) {
                 filterComplex += `[1:a]volume=1.5,aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS[voice];`;
                 filterComplex += `[2:a]volume=${sfxVolume},aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS[sfx];`;
                 filterComplex += `[voice][sfx]amix=inputs=2:duration=first:dropout_transition=0,aresample=async=1[a_final_sync];`;
@@ -344,6 +413,7 @@ async function handleExport(job, uploadDir, callback) {
                 filterComplex += `[1:a]volume=1.5,aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS,aresample=async=1[a_final_sync];`;
             }
 
+            // Visual Movement & Scaling Logic
             const moveFilter = getMovementFilter(movement, totalSceneDur, targetW, targetH);
             filterComplex += `[0:v]${moveFilter},setsar=1,format=yuv420p[v_final_sync]`;
 
@@ -359,115 +429,95 @@ async function handleExport(job, uploadDir, callback) {
 
             await new Promise((resolve, reject) => {
                 const p = spawn(ffmpegPath, ['-y', ...args]);
-                p.on('close', c => c === 0 ? resolve() : reject(new Error(`Erro Cena ${i}`)));
+                p.on('close', c => c === 0 ? resolve() : reject(new Error(`Erro Render Cena ${i}`)));
             });
             
-            const realDur = await getExactDuration(clipPath);
-            videoClipDurations.push(realDur);
+            const actualDur = await getExactDuration(clipPath);
+            videoClipDurations.push(actualDur);
             clipPaths.push(clipPath);
+            
             if(jobs[job.id]) jobs[job.id].progress = Math.round((i / sortedScenes.length) * 70);
         }
 
-        // PASSO 2: CONCATENAÇÃO COM TRANSICÃO
+        // PASSO 2: CONCATENAÇÃO (CUT vs XFADE)
         let finalArgs = [];
+        
         if (transitionType === 'cut' || clipPaths.length < 2) {
             const listPath = path.join(uploadDir, `list_${job.id}.txt`);
-            fs.writeFileSync(listPath, clipPaths.map(p => `file '${path.resolve(p).replace(/\\/g, '/')}'`).join('\n'));
+            const fileContent = clipPaths.map(p => `file '${path.resolve(p).replace(/\\/g, '/')}'`).join('\n');
+            fs.writeFileSync(listPath, fileContent);
             finalArgs = ['-f', 'concat', '-safe', '0', '-i', listPath];
             if (bgMusicFile) {
                 finalArgs.push('-i', bgMusicFile.path);
-                finalArgs.push('-filter_complex', `[1:a]volume=${musicVolume},aresample=44100,aloop=loop=-1:size=2e+09[bgm];[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=0[a_final]`, '-map', '0:v', '-map', '[a_final]');
-            } else { finalArgs.push('-c', 'copy'); }
+                finalArgs.push(
+                    '-filter_complex', `[1:a]volume=${musicVolume},aloop=loop=-1:size=2e+09[bgm];[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=0[a_final]`,
+                    '-map', '0:v', '-map', '[a_final]'
+                );
+            } else {
+                finalArgs.push('-c', 'copy');
+            }
         } else {
             clipPaths.forEach(p => finalArgs.push('-i', p));
             let filter = "";
             let accumOffset = 0;
             const transName = getTransitionXfade(transitionType);
-
+            
             for (let i = 0; i < clipPaths.length - 1; i++) {
                 const vSrc = (i === 0) ? `[0:v]` : `[v_tmp${i}]`;
                 const aSrc = (i === 0) ? `[0:a]` : `[a_tmp${i}]`;
                 
-                // --- ESTABILIDADE: Cálculo de Offset Seguro ---
+                // --- SAFE OFFSET CALCULATION (0.5s Transition) ---
                 const safeOffset = Math.max(0, (accumOffset + videoClipDurations[i]) - TRANS_DUR - 0.05);
                 
                 filter += `${vSrc}[${i+1}:v]xfade=transition=${transName}:duration=${TRANS_DUR}:offset=${safeOffset.toFixed(3)}[v_tmp${i+1}];`;
                 filter += `${aSrc}[${i+1}:a]acrossfade=d=${TRANS_DUR}:c1=tri:c2=tri[a_tmp${i+1}];`;
                 
-                accumOffset = safeOffset; 
+                accumOffset = safeOffset;
             }
             
             const lastIdx = clipPaths.length - 1;
+            const finalVLabel = `[v_tmp${lastIdx}]`;
+            const finalALabel = `[a_tmp${lastIdx}]`;
+            
             if (bgMusicFile) {
                 finalArgs.push('-i', bgMusicFile.path);
-                filter += `[${clipPaths.length}:a]volume=${musicVolume},aresample=44100,aloop=loop=-1:size=2e+09[bgm];[a_tmp${lastIdx}][bgm]amix=inputs=2:duration=first:dropout_transition=0[a_final]`;
-                finalArgs.push('-filter_complex', filter, '-map', `[v_tmp${lastIdx}]`, '-map', '[a_final]');
+                const bgmIdx = clipPaths.length; 
+                filter += `[${bgmIdx}:a]volume=${musicVolume},aloop=loop=-1:size=2e+09[bgm];${finalALabel}[bgm]amix=inputs=2:duration=first:dropout_transition=0[a_final]`;
+                finalArgs.push('-filter_complex', filter, '-map', finalVLabel, '-map', '[a_final]');
             } else {
-                finalArgs.push('-filter_complex', filter, '-map', `[v_tmp${lastIdx}]`, '-map', `[a_tmp${lastIdx}]`);
+                finalArgs.push('-filter_complex', filter, '-map', finalVLabel, '-map', finalALabel);
             }
             finalArgs.push(...getVideoArgs(), ...getAudioArgs());
         }
 
         finalArgs.push(outputPath);
-        const totalExpected = videoClipDurations.reduce((a,b) => a+b, 0) - (clipPaths.length - 1) * TRANS_DUR;
-        callback(job.id, finalArgs, totalExpected);
+        const totalDuration = videoClipDurations.reduce((a,b) => a+b, 0) - (clipPaths.length - 1) * TRANS_DUR;
+        callback(job.id, finalArgs, totalDuration);
+
+        // Cleanup
+        setTimeout(() => {
+            clipPaths.forEach(p => { if(fs.existsSync(p)) fs.unlinkSync(p); });
+            const listPath = path.join(uploadDir, `list_${job.id}.txt`);
+            if(fs.existsSync(listPath)) fs.unlinkSync(listPath);
+        }, 600000);
 
     } catch (e) {
+        console.error("ERRO CRÍTICO NO EXPORT:", e);
         if (jobs[job.id]) { jobs[job.id].status = 'failed'; jobs[job.id].error = e.message; }
     }
 }
 
-function createFFmpegJob(jobId, args, expectedDuration, res) {
-    if (!jobs[jobId]) return;
-    jobs[jobId].status = 'processing';
-    if (res && !res.headersSent) res.status(202).json({ jobId });
-    const ffmpeg = spawn(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-stats', '-y', ...args]);
-    
-    let stderrLog = "";
-    ffmpeg.stderr.on('data', d => {
-        const line = d.toString();
-        stderrLog += line;
-        if(line.includes('time=')) {
-             const timeMatch = line.match(/time=(\d{2}:\d{2}:\d{2}\.\d{2})/);
-             if (timeMatch && expectedDuration > 0) {
-                const cur = timeToSeconds(timeMatch[1]);
-                let p = Math.round((cur / expectedDuration) * 100);
-                if (jobs[jobId]) jobs[jobId].progress = Math.max(Math.min(p, 99), (jobs[jobId].progress || 0));
-            }
-        }
-    });
-    ffmpeg.on('close', code => {
-        if (!jobs[jobId]) return;
-        if (code === 0) {
-            jobs[jobId].status = 'completed';
-            jobs[jobId].progress = 100;
-            jobs[jobId].downloadUrl = `/outputs/${path.basename(args[args.length - 1])}`;
-        } else {
-            console.error(`Job ${jobId} failed. Log:`, stderrLog.slice(-500));
-            jobs[jobId].status = 'failed';
-            jobs[jobId].error = `FFmpeg Error (Code ${code})`;
-        }
-    });
-}
+// === API ROUTES ===
 
-function timeToSeconds(timeStr) {
-    if (!timeStr) return 0;
-    const parts = timeStr.split(':');
-    return (parseFloat(parts[0]) * 3600) + (parseFloat(parts[1]) * 60) + parseFloat(parts[2]);
-}
-
-// --- API ROUTES ---
-
-// 1. Proxy para APIs Externas (Runway, Sora, HeyGen)
 app.post('/api/proxy', async (req, res) => {
     const { url, method, headers, body } = req.body;
     if (!url) return res.status(400).json({ error: "Missing 'url' parameter" });
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 120000); // 2min timeout
+    const timeoutId = setTimeout(() => controller.abort(), 120000);
 
     try {
-        console.log(`[PROXY] ${method || 'GET'} -> ${url}`);
+        console.log(`[PROXY REQUEST] ${method || 'GET'} -> ${url}`);
         const response = await fetch(url, {
             method: method || 'GET',
             headers: headers || {},
@@ -486,13 +536,12 @@ app.post('/api/proxy', async (req, res) => {
         }
         res.status(response.status).json(data);
     } catch (e) {
-        res.status(500).json({ error: e.message || "Proxy Failed" });
+        res.status(500).json({ error: e.message || "Proxy request failed/timed out" });
     } finally {
         clearTimeout(timeoutId);
     }
 });
 
-// 2. Processamento Geral (Ferramentas de Áudio/Vídeo)
 app.post('/api/process/start/:action', uploadAny, (req, res) => {
     const action = req.params.action;
     const jobId = `${action}_${Date.now()}`;
@@ -509,12 +558,14 @@ app.post('/api/process/start/:action', uploadAny, (req, res) => {
 
     const outputName = `processed_${jobId}.${ext}`;
     const outputPath = path.join(OUTPUT_DIR, outputName);
+    
     jobs[jobId] = { id: jobId, status: 'pending', progress: 0, files: req.files, params: req.body };
     
     try {
         let params = req.body;
-        if (req.body.config) { try { params = JSON.parse(req.body.config); } catch(e){} }
-        
+        if (req.body.config) {
+            try { params = JSON.parse(req.body.config); } catch(e){}
+        }
         const args = getToolCommand(action, req.files, params, outputPath); 
         createFFmpegJob(jobId, args, 30, res);
     } catch (e) {
@@ -523,12 +574,49 @@ app.post('/api/process/start/:action', uploadAny, (req, res) => {
     }
 });
 
-// 3. Processamento de Imagem
+// Route Alias for "Edit Video" to use same process
+app.post('/api/edit/start/:action', uploadAny, (req, res) => {
+    // Redirect logic handled inside process/start generic handler essentially
+    // But kept for compatibility if frontend calls it
+    const action = req.params.action;
+    const jobId = `edit_${action}_${Date.now()}`;
+    const outputName = `edit_${jobId}.mp4`;
+    const outputPath = path.join(OUTPUT_DIR, outputName);
+    jobs[jobId] = { id: jobId, status: 'pending', progress: 0, files: req.files, params: req.body };
+    try {
+        let params = req.body;
+        if (req.body.config) { try { params = JSON.parse(req.body.config); } catch(e){} }
+        const args = getToolCommand(action, req.files, params, outputPath);
+        createFFmpegJob(jobId, args, 30, res);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 app.post('/api/image/start/:action', uploadAny, (req, res) => {
     const action = req.params.action;
     const jobId = `img_${action}_${Date.now()}`;
     if(!req.files || req.files.length === 0) return res.status(400).json({error: "No file"});
-    
     const file = req.files[0];
     const ext = path.extname(file.originalname);
     const outputName = `img_${jobId}${ext}`;
+    const outputPath = path.join(OUTPUT_DIR, outputName);
+    fs.copyFileSync(file.path, outputPath);
+    jobs[jobId] = { id: jobId, status: 'completed', progress: 100, downloadUrl: `/outputs/${outputName}` };
+    res.json({ jobId });
+});
+
+app.post('/api/render/start', uploadAny, (req, res) => {
+    const jobId = `render_${Date.now()}`;
+    jobs[jobId] = { id: jobId, status: 'processing', progress: 0, files: req.files, params: req.body };
+    res.status(202).json({ jobId });
+    handleExport(jobs[jobId], UPLOAD_DIR, (id, args, dur) => createFFmpegJob(id, args, dur, null));
+});
+
+app.get('/api/process/status/:jobId', (req, res) => {
+    const job = jobs[req.params.jobId];
+    if (!job) return res.status(404).json({ status: 'not_found' });
+    res.json(job);
+});
+
+app.listen(PORT, '0.0.0.0', () => console.log(`Turbo Server V3 Complete running on port ${PORT}`));
