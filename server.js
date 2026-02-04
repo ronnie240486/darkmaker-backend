@@ -10,6 +10,7 @@ import ffmpegPath from 'ffmpeg-static';
 import ffprobePath from 'ffprobe-static';
 import * as esbuild from 'esbuild';
 
+// IMPORTAÇÃO DOS PRESETS DE MOVIMENTO E TRANSIÇÃO
 import { getMovementFilter } from './presets/movements.js';
 import { getTransitionXfade } from './presets/transitions.js';
 
@@ -24,36 +25,30 @@ const UPLOAD_DIR = path.join(__dirname, 'uploads');
 const OUTPUT_DIR = path.join(__dirname, 'outputs');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
-// Garantir diretórios existem
 [UPLOAD_DIR, OUTPUT_DIR, PUBLIC_DIR].forEach(dir => {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
 
-// CONFIGURAÇÃO TURBO (BASE)
+// CONFIGURAÇÃO TURBO (ULTRAFAST)
 const getVideoArgs = () => [
     '-c:v', 'libx264',
     '-preset', 'ultrafast',
     '-tune', 'zerolatency',
-    '-profile:v', 'main', 
+    '-profile:v', 'baseline', 
     '-pix_fmt', 'yuv420p',
     '-movflags', '+faststart',
-    '-r', '30', 
+    '-r', '24',
     '-threads', '0' 
 ];
 
 const getAudioArgs = () => [
     '-c:a', 'aac',
     '-b:a', '192k', 
-    '-ar', '44100',
-    '-ac', '2'
+    '-ar', '44100'
 ];
 
 const getExactDuration = (filePath) => {
     return new Promise((resolve) => {
-        if (!fs.existsSync(filePath)) {
-            resolve(0);
-            return;
-        }
         execFile(ffprobePath.path, [
             '-v', 'error', 
             '-show_entries', 'format=duration', 
@@ -71,14 +66,8 @@ const getExactDuration = (filePath) => {
 
 async function buildFrontend() {
     try {
-        const srcIndex = path.join(__dirname, 'index.html');
-        const destIndex = path.join(PUBLIC_DIR, 'index.html');
-        const srcCss = path.join(__dirname, 'index.css');
-        const destCss = path.join(PUBLIC_DIR, 'index.css');
-
-        if (fs.existsSync(srcIndex)) fs.copyFileSync(srcIndex, destIndex);
-        if (fs.existsSync(srcCss)) fs.copyFileSync(srcCss, destCss);
-
+        if (fs.existsSync('index.html')) fs.copyFileSync('index.html', path.join(PUBLIC_DIR, 'index.html'));
+        if (fs.existsSync('index.css')) fs.copyFileSync('index.css', path.join(PUBLIC_DIR, 'index.css'));
         await esbuild.build({
             entryPoints: ['index.tsx'],
             bundle: true,
@@ -90,9 +79,7 @@ async function buildFrontend() {
             define: { 'process.env.API_KEY': JSON.stringify(GEMINI_KEY), 'global': 'window' },
             loader: { '.tsx': 'tsx', '.ts': 'ts', '.css': 'css' },
         });
-    } catch (e) { 
-        console.error("Build Warning (Non-critical):", e.message); 
-    }
+    } catch (e) { console.error(e); }
 }
 await buildFrontend();
 
@@ -110,7 +97,16 @@ const uploadAny = multer({ storage }).any();
 
 const jobs = {};
 
-// --- FERRAMENTAS DE ÁUDIO ---
+// === PRESETS DE COR ===
+const COLOR_PRESETS = {
+    'realistic': 'eq=saturation=1.1,colorbalance=rm=0.05:gm=0.05:bm=-0.05',
+    'vintage': 'colorbalance=rs=0.2:bs=-0.2,eq=gamma=1.2:saturation=0.8,vignette',
+    'teal_orange': 'colorbalance=rs=0.1:gs=-0.1:bs=-0.2:rm=-0.1:gm=-0.05:bm=0.1:rh=0.1:gh=0.1:bh=-0.1,eq=saturation=1.2',
+    'bw_noir': 'hue=s=0,eq=contrast=1.6:brightness=-0.1,vignette',
+    'cyberpunk': 'colorbalance=bs=0.3:rs=0.2,eq=saturation=1.4:contrast=1.2',
+    'vibrant': 'eq=saturation=1.5:contrast=1.1'
+};
+
 function getAudioToolCommand(action, inputFiles, params, outputPath) {
     const input = inputFiles[0]?.path;
     const args = [];
@@ -149,7 +145,7 @@ function getAudioToolCommand(action, inputFiles, params, outputPath) {
         case 'reverse': args.push('-af', 'areverse', ...audioCodec); break;
         case 'join':
             const listPath = path.join(path.dirname(inputFiles[0].path), `join_audio_${Date.now()}.txt`);
-            const fileLines = inputFiles.map(f => `file '${f.path.replace(/\\/g, '/')}'`).join('\n');
+            const fileLines = inputFiles.map(f => `file '${f.path}'`).join('\n');
             fs.writeFileSync(listPath, fileLines);
             args.push('-f', 'concat', '-safe', '0', '-i', listPath, ...audioCodec);
             break;
@@ -165,7 +161,6 @@ function getAudioToolCommand(action, inputFiles, params, outputPath) {
     return args;
 }
 
-// --- FERRAMENTAS DE VÍDEO & GERAIS ---
 function getToolCommand(action, inputFiles, params, outputPath) {
     const isAudioAction = ['clean-audio', 'pitch-shift', 'speed', 'bass-boost', 'reverb', 'normalize', '8d-audio', 'join'].includes(action);
     const isAudioFile = inputFiles[0]?.mimetype?.includes('audio');
@@ -193,7 +188,9 @@ function getToolCommand(action, inputFiles, params, outputPath) {
             else args.push('-vf', filter, '-r', fps, ...getVideoArgs());
             break;
         case 'colorize':
-            args.push('-vf', 'eq=saturation=1.2:contrast=1.1', ...getVideoArgs(), '-c:a', 'copy');
+            const style = params.style || 'realistic';
+            let colorFilter = COLOR_PRESETS[style] || COLOR_PRESETS['realistic'];
+            args.push('-vf', colorFilter, ...getVideoArgs(), '-c:a', 'copy');
             break;
         case 'stabilize': args.push('-vf', 'deshake', ...getVideoArgs(), '-c:a', 'copy'); break;
         case 'motion-blur':
@@ -213,7 +210,7 @@ function getToolCommand(action, inputFiles, params, outputPath) {
             break;
         case 'join':
             const listPath = path.join(path.dirname(inputFiles[0].path), `join_vid_${Date.now()}.txt`);
-            const fileLines = inputFiles.map(f => `file '${f.path.replace(/\\/g, '/')}'`).join('\n');
+            const fileLines = inputFiles.map(f => `file '${f.path}'`).join('\n');
             fs.writeFileSync(listPath, fileLines);
             args.push('-f', 'concat', '-safe', '0', '-i', listPath, '-c', 'copy');
             break;
@@ -268,17 +265,23 @@ function getToolCommand(action, inputFiles, params, outputPath) {
     return args;
 }
 
+// === FUNÇÕES UTILITÁRIAS ===
+function timeToSeconds(timeStr) {
+    if (!timeStr) return 0;
+    const parts = timeStr.split(':');
+    return (parseFloat(parts[0]) * 3600) + (parseFloat(parts[1]) * 60) + parseFloat(parts[2]);
+}
+
 function createFFmpegJob(jobId, args, expectedDuration, res) {
     if (!jobs[jobId]) return;
     jobs[jobId].status = 'processing';
     if (res && !res.headersSent) res.status(202).json({ jobId });
     
+    console.log(`[JOB ${jobId}] CMD: ffmpeg ${args.join(' ')}`);
     const ffmpeg = spawn(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-stats', '-y', ...args]);
     
-    let stderrLog = "";
     ffmpeg.stderr.on('data', d => {
         const line = d.toString();
-        stderrLog += line; 
         if(line.includes('time=')) {
              const timeMatch = line.match(/time=(\d{2}:\d{2}:\d{2}\.\d{2})/);
              if (timeMatch && expectedDuration > 0) {
@@ -297,21 +300,15 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
             jobs[jobId].progress = 100;
             jobs[jobId].downloadUrl = `/outputs/${path.basename(args[args.length - 1])}`;
         } else {
-            console.error(`[JOB ${jobId}] Failed. Code: ${code}`);
-            console.error(`[JOB ${jobId}] Log Tail:`, stderrLog.slice(-500));
+            console.error(`[JOB ${jobId}] Falha: ${code}`);
             jobs[jobId].status = 'failed';
-            jobs[jobId].error = `FFmpeg Error (Code ${code}). Check server logs.`;
+            jobs[jobId].error = 'FFmpeg processing failed code ' + code;
         }
     });
 }
 
-function timeToSeconds(timeStr) {
-    if (!timeStr) return 0;
-    const parts = timeStr.split(':');
-    return (parseFloat(parts[0]) * 3600) + (parseFloat(parts[1]) * 60) + parseFloat(parts[2]);
-}
-
-// === ENGINE DE EXPORTAÇÃO FRAGMENTADA (TURBO V2) ===
+// === ENGINE DE EXPORTAÇÃO FRAGMENTADA (TURBO) ===
+// (Código completo da renderização turbo para vídeos longos)
 async function handleExport(job, uploadDir, callback) {
     const outputName = `render_${job.id}.mp4`;
     const outputPath = path.join(OUTPUT_DIR, outputName);
@@ -328,8 +325,8 @@ async function handleExport(job, uploadDir, callback) {
     const movement = jobConfig?.movement || 'static';
     const transitionType = jobConfig?.transition || 'cut';
     const aspectRatio = jobConfig?.aspectRatio || '16:9';
-    let musicVolume = (jobConfig?.musicVolume !== undefined) ? parseFloat(jobConfig.musicVolume) : 0.2;
-    let sfxVolume = (jobConfig?.sfxVolume !== undefined) ? parseFloat(jobConfig.sfxVolume) : 0.5;
+    let musicVolume = parseFloat(jobConfig?.musicVolume || 0.2);
+    let sfxVolume = parseFloat(jobConfig?.sfxVolume || 0.5);
 
     let targetW = 1280, targetH = 720;
     if (aspectRatio === '9:16') { targetW = 720; targetH = 1280; }
@@ -338,6 +335,7 @@ async function handleExport(job, uploadDir, callback) {
         const sceneMap = {};
         let bgMusicFile = null;
 
+        // Categorize files
         job.files.forEach(f => {
             if (f.originalname.includes('background_music')) {
                 bgMusicFile = f;
@@ -360,38 +358,38 @@ async function handleExport(job, uploadDir, callback) {
         const clipPaths = [];
         const videoClipDurations = [];
 
-        // --- TRANSITION OPTIMIZATION: 0.5s for faster cuts ---
-        const TRANS_DUR = 0.5; 
-        const TRANS_PADDING = (transitionType === 'cut') ? 0.2 : 0.7;
+        // CONFIGURAÇÃO DE TRANSIÇÃO (CORREÇÃO DE TEMPO)
+        // Reduzido para 0.5s para ser mais rápido (snappy)
+        const transDur = 0.5;
 
         // PASSO 1: RENDERIZAR CADA CENA INDIVIDUALMENTE
         for (let i = 0; i < sortedScenes.length; i++) {
             const scene = sortedScenes[i];
             const clipPath = path.join(uploadDir, `temp_${job.id}_${i}.mp4`);
             
-            let audioDur = 0;
-            if (scene.audio) {
-                audioDur = await getExactDuration(scene.audio.path);
-            }
-            const baseDur = audioDur > 0 ? audioDur : 5;
-            const totalSceneDur = baseDur + TRANS_PADDING;
+            // Duration driven strictly by narration audio
+            let dur = 5;
+            if (scene.audio) dur = (await getExactDuration(scene.audio.path)) || 5;
+            
+            // Garantir duração mínima para suportar a transição
+            if (dur < transDur + 0.1) dur = transDur + 0.1; 
             
             const args = [];
             
             // 1. Input Visual [0:v]
             if (scene.visual?.mimetype?.includes('image')) {
-                args.push('-loop', '1', '-t', (totalSceneDur + 1).toFixed(3), '-i', scene.visual.path);
+                args.push('-framerate', '24', '-loop', '1', '-i', scene.visual.path);
             } else if (scene.visual) {
-                args.push('-stream_loop', '-1', '-t', (totalSceneDur + 1).toFixed(3), '-i', scene.visual.path);
+                args.push('-stream_loop', '-1', '-i', scene.visual.path);
             } else {
-                args.push('-f', 'lavfi', '-i', `color=c=black:s=${targetW}x${targetH}:d=${(totalSceneDur + 1).toFixed(3)}`);
+                args.push('-f', 'lavfi', '-i', `color=c=black:s=${targetW}x${targetH}:d=${dur}`);
             }
 
             // 2. Input Áudio (Voz) [1:a]
             if (scene.audio) {
                 args.push('-i', scene.audio.path);
             } else {
-                args.push('-f', 'lavfi', '-i', `anullsrc=cl=stereo:sr=44100:d=${(totalSceneDur + 1).toFixed(3)}`);
+                args.push('-f', 'lavfi', '-i', 'anullsrc=cl=stereo:sr=44100');
             }
 
             // 3. Input SFX (Opcional) [2:a]
@@ -401,27 +399,33 @@ async function handleExport(job, uploadDir, callback) {
                 hasSfx = true;
             }
 
-            // Audio Mixing Logic 
+            // Audio Mixing Logic
             let filterComplex = "";
-            let audioMap = "[a_final_sync]";
+            let audioMap = "[a_out]";
             
             if (hasSfx) {
-                filterComplex += `[1:a]volume=1.5,aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS[voice];`;
-                filterComplex += `[2:a]volume=${sfxVolume},aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS[sfx];`;
-                filterComplex += `[voice][sfx]amix=inputs=2:duration=first:dropout_transition=0,aresample=async=1[a_final_sync];`;
+                filterComplex += `[1:a]volume=1.5[voice];[2:a]volume=${sfxVolume}[sfx];[voice][sfx]amix=inputs=2:duration=first:dropout_transition=0[a_out];`;
             } else {
-                filterComplex += `[1:a]volume=1.5,aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS,aresample=async=1[a_final_sync];`;
+                filterComplex += `[1:a]volume=1.5[a_out];`;
             }
 
             // Visual Movement & Scaling Logic
-            const moveFilter = getMovementFilter(movement, totalSceneDur, targetW, targetH);
-            filterComplex += `[0:v]${moveFilter},setsar=1,format=yuv420p[v_final_sync]`;
+            const moveFilter = getMovementFilter(movement, dur, targetW, targetH);
+            
+            if (scene.visual?.mimetype?.includes('image')) {
+                filterComplex += `[0:v]${moveFilter}[v_out]`;
+            } else {
+                filterComplex += `[0:v]scale=${targetW}:${targetH}:force_original_aspect_ratio=increase,crop=${targetW}:${targetH},setsar=1,fps=24,format=yuv420p[v_out]`;
+            }
 
+            // IMPORTANTE: Definir a duração EXATA do clipe de vídeo para bater com o áudio.
+            // O ffmpeg vai cortar o vídeo gerado exatamente no fim do áudio.
+            // O xfade posterior comerá o final deste clipe e o início do próximo, criando a transição.
             args.push(
                 '-filter_complex', filterComplex,
-                '-map', '[v_final_sync]',
+                '-map', '[v_out]',
                 '-map', audioMap,
-                '-t', totalSceneDur.toFixed(3),
+                '-t', dur.toFixed(3),
                 ...getVideoArgs(), 
                 ...getAudioArgs(),
                 clipPath
@@ -429,24 +433,28 @@ async function handleExport(job, uploadDir, callback) {
 
             await new Promise((resolve, reject) => {
                 const p = spawn(ffmpegPath, ['-y', ...args]);
-                p.on('close', c => c === 0 ? resolve() : reject(new Error(`Erro Render Cena ${i}`)));
+                p.on('close', c => c === 0 ? resolve() : reject(new Error(`Erro ao renderizar cena ${i}`)));
             });
             
+            // Get precise duration for sync
             const actualDur = await getExactDuration(clipPath);
             videoClipDurations.push(actualDur);
             clipPaths.push(clipPath);
             
-            if(jobs[job.id]) jobs[job.id].progress = Math.round((i / sortedScenes.length) * 70);
+            if(jobs[job.id]) jobs[job.id].progress = Math.round((i / sortedScenes.length) * 80);
         }
 
         // PASSO 2: CONCATENAÇÃO (CUT vs XFADE)
         let finalArgs = [];
         
         if (transitionType === 'cut' || clipPaths.length < 2) {
+            // --- CONCAT SIMPLES (CUT) ---
             const listPath = path.join(uploadDir, `list_${job.id}.txt`);
             const fileContent = clipPaths.map(p => `file '${path.resolve(p).replace(/\\/g, '/')}'`).join('\n');
             fs.writeFileSync(listPath, fileContent);
+            
             finalArgs = ['-f', 'concat', '-safe', '0', '-i', listPath];
+            
             if (bgMusicFile) {
                 finalArgs.push('-i', bgMusicFile.path);
                 finalArgs.push(
@@ -457,7 +465,9 @@ async function handleExport(job, uploadDir, callback) {
                 finalArgs.push('-c', 'copy');
             }
         } else {
+            // --- XFADE COMPLEXO (TRANSIÇÕES) ---
             clipPaths.forEach(p => finalArgs.push('-i', p));
+            
             let filter = "";
             let accumOffset = 0;
             const transName = getTransitionXfade(transitionType);
@@ -465,14 +475,23 @@ async function handleExport(job, uploadDir, callback) {
             for (let i = 0; i < clipPaths.length - 1; i++) {
                 const vSrc = (i === 0) ? `[0:v]` : `[v_tmp${i}]`;
                 const aSrc = (i === 0) ? `[0:a]` : `[a_tmp${i}]`;
+                const vNext = `[${i+1}:v]`;
+                const aNext = `[${i+1}:a]`;
                 
-                // --- SAFE OFFSET CALCULATION (0.5s Transition) ---
-                const safeOffset = Math.max(0, (accumOffset + videoClipDurations[i]) - TRANS_DUR - 0.05);
+                // Offset de transição: Inicia a transição 'transDur' ANTES do clipe atual acabar.
+                // Isso garante que a parte visual da cena mude exatamente enquanto o áudio faz o crossfade.
+                // accumOffset rastreia onde o corte "duro" estaria, e subtraímos a duração da transição.
+                if (i === 0) {
+                    accumOffset = videoClipDurations[0] - transDur;
+                } else {
+                    // Adiciona a duração do clipe anterior (já descontado da transição anterior)
+                    accumOffset += (videoClipDurations[i] - transDur);
+                }
                 
-                filter += `${vSrc}[${i+1}:v]xfade=transition=${transName}:duration=${TRANS_DUR}:offset=${safeOffset.toFixed(3)}[v_tmp${i+1}];`;
-                filter += `${aSrc}[${i+1}:a]acrossfade=d=${TRANS_DUR}:c1=tri:c2=tri[a_tmp${i+1}];`;
-                
-                accumOffset = safeOffset;
+                const safeOffset = Math.max(0, accumOffset);
+
+                filter += `${vSrc}${vNext}xfade=transition=${transName}:duration=${transDur}:offset=${safeOffset.toFixed(3)}[v_tmp${i+1}];`;
+                filter += `${aSrc}${aNext}acrossfade=d=${transDur}:c1=tri:c2=tri[a_tmp${i+1}];`;
             }
             
             const lastIdx = clipPaths.length - 1;
@@ -483,22 +502,33 @@ async function handleExport(job, uploadDir, callback) {
                 finalArgs.push('-i', bgMusicFile.path);
                 const bgmIdx = clipPaths.length; 
                 filter += `[${bgmIdx}:a]volume=${musicVolume},aloop=loop=-1:size=2e+09[bgm];${finalALabel}[bgm]amix=inputs=2:duration=first:dropout_transition=0[a_final]`;
-                finalArgs.push('-filter_complex', filter, '-map', finalVLabel, '-map', '[a_final]');
+                
+                const filterPath = path.join(uploadDir, `filter_${job.id}.txt`);
+                fs.writeFileSync(filterPath, filter);
+                finalArgs.push('-filter_complex_script', filterPath, '-map', finalVLabel, '-map', '[a_final]');
             } else {
-                finalArgs.push('-filter_complex', filter, '-map', finalVLabel, '-map', finalALabel);
+                const filterPath = path.join(uploadDir, `filter_${job.id}.txt`);
+                fs.writeFileSync(filterPath, filter);
+                finalArgs.push('-filter_complex_script', filterPath, '-map', finalVLabel, '-map', finalALabel);
             }
-            finalArgs.push(...getVideoArgs(), ...getAudioArgs());
         }
 
+        if (transitionType !== 'cut' || bgMusicFile) {
+             finalArgs.push('-c:v', 'libx264', '-preset', 'ultrafast', '-c:a', 'aac', '-b:a', '192k');
+        }
+        
         finalArgs.push(outputPath);
-        const totalDuration = videoClipDurations.reduce((a,b) => a+b, 0) - (clipPaths.length - 1) * TRANS_DUR;
+        
+        const totalDuration = videoClipDurations.reduce((a,b) => a+b, 0);
         callback(job.id, finalArgs, totalDuration);
 
         // Cleanup
         setTimeout(() => {
             clipPaths.forEach(p => { if(fs.existsSync(p)) fs.unlinkSync(p); });
             const listPath = path.join(uploadDir, `list_${job.id}.txt`);
+            const filterPath = path.join(uploadDir, `filter_${job.id}.txt`);
             if(fs.existsSync(listPath)) fs.unlinkSync(listPath);
+            if(fs.existsSync(filterPath)) fs.unlinkSync(filterPath);
         }, 600000);
 
     } catch (e) {
@@ -507,46 +537,15 @@ async function handleExport(job, uploadDir, callback) {
     }
 }
 
-// === API ROUTES ===
-
-app.post('/api/proxy', async (req, res) => {
-    const { url, method, headers, body } = req.body;
-    if (!url) return res.status(400).json({ error: "Missing 'url' parameter" });
-
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 120000);
-
-    try {
-        console.log(`[PROXY REQUEST] ${method || 'GET'} -> ${url}`);
-        const response = await fetch(url, {
-            method: method || 'GET',
-            headers: headers || {},
-            body: body ? JSON.stringify(body) : undefined,
-            signal: controller.signal
-        });
-        clearTimeout(timeoutId);
-
-        const responseText = await response.text();
-        let data;
-        try { data = JSON.parse(responseText); } 
-        catch (e) { data = { raw_response: responseText }; }
-
-        if (!response.ok) {
-            return res.status(response.status).json(data);
-        }
-        res.status(response.status).json(data);
-    } catch (e) {
-        res.status(500).json({ error: e.message || "Proxy request failed/timed out" });
-    } finally {
-        clearTimeout(timeoutId);
-    }
-});
+// === ROTAS ===
 
 app.post('/api/process/start/:action', uploadAny, (req, res) => {
     const action = req.params.action;
     const jobId = `${action}_${Date.now()}`;
     let ext = 'mp4';
-    if (['clean-audio', 'speed', 'pitch', 'bass-boost', 'reverb', 'normalize', '8d-audio', 'join', 'convert', 'extract-audio'].includes(action)) {
+    
+    // Define extensão de saída baseada na ação
+    if (['clean-audio', 'speed', 'pitch', 'bass-boost', 'reverb', 'normalize', '8d-audio', 'join'].includes(action)) {
         if (req.files[0]?.mimetype?.includes('audio')) ext = 'mp3';
         if (action === 'convert' && req.body.format) ext = req.body.format;
         if (action === 'extract-audio') ext = 'mp3';
@@ -559,64 +558,36 @@ app.post('/api/process/start/:action', uploadAny, (req, res) => {
     const outputName = `processed_${jobId}.${ext}`;
     const outputPath = path.join(OUTPUT_DIR, outputName);
     
-    jobs[jobId] = { id: jobId, status: 'pending', progress: 0, files: req.files, params: req.body };
+    jobs[jobId] = { id: jobId, status: 'pending', progress: 0, files: req.files, params: req.body, downloadUrl: null };
     
     try {
         let params = req.body;
         if (req.body.config) {
             try { params = JSON.parse(req.body.config); } catch(e){}
         }
-        const args = getToolCommand(action, req.files, params, outputPath); 
+        const args = getToolCommand(action, req.files, params, outputPath);
         createFFmpegJob(jobId, args, 30, res);
     } catch (e) {
+        console.error(e);
         res.status(500).json({ error: e.message });
         jobs[jobId].status = 'failed';
     }
 });
 
-// Route Alias for "Edit Video" to use same process
+// Alias route for video editor
 app.post('/api/edit/start/:action', uploadAny, (req, res) => {
-    // Redirect logic handled inside process/start generic handler essentially
-    // But kept for compatibility if frontend calls it
     const action = req.params.action;
     const jobId = `edit_${action}_${Date.now()}`;
     const outputName = `edit_${jobId}.mp4`;
     const outputPath = path.join(OUTPUT_DIR, outputName);
-    jobs[jobId] = { id: jobId, status: 'pending', progress: 0, files: req.files, params: req.body };
+    
+    jobs[jobId] = { id: jobId, status: 'pending', progress: 0, files: req.files, params: req.body, downloadUrl: null };
+    
     try {
         let params = req.body;
-        if (req.body.config) { try { params = JSON.parse(req.body.config); } catch(e){} }
+        if (req.body.config) {
+            try { params = JSON.parse(req.body.config); } catch(e){}
+        }
+        
         const args = getToolCommand(action, req.files, params, outputPath);
-        createFFmpegJob(jobId, args, 30, res);
-    } catch (e) {
-        res.status(500).json({ error: e.message });
-    }
-});
-
-app.post('/api/image/start/:action', uploadAny, (req, res) => {
-    const action = req.params.action;
-    const jobId = `img_${action}_${Date.now()}`;
-    if(!req.files || req.files.length === 0) return res.status(400).json({error: "No file"});
-    const file = req.files[0];
-    const ext = path.extname(file.originalname);
-    const outputName = `img_${jobId}${ext}`;
-    const outputPath = path.join(OUTPUT_DIR, outputName);
-    fs.copyFileSync(file.path, outputPath);
-    jobs[jobId] = { id: jobId, status: 'completed', progress: 100, downloadUrl: `/outputs/${outputName}` };
-    res.json({ jobId });
-});
-
-app.post('/api/render/start', uploadAny, (req, res) => {
-    const jobId = `render_${Date.now()}`;
-    jobs[jobId] = { id: jobId, status: 'processing', progress: 0, files: req.files, params: req.body };
-    res.status(202).json({ jobId });
-    handleExport(jobs[jobId], UPLOAD_DIR, (id, args, dur) => createFFmpegJob(id, args, dur, null));
-});
-
-app.get('/api/process/status/:jobId', (req, res) => {
-    const job = jobs[req.params.jobId];
-    if (!job) return res.status(404).json({ status: 'not_found' });
-    res.json(job);
-});
-
-app.listen(PORT, '0.0.0.0', () => console.log(`Turbo Server V3 Complete running on port ${PORT}`));
+   
