@@ -461,21 +461,21 @@ async function handleExport(job, uploadDir, callback) {
             if (scene.audio) {
                 const audioDur = await getExactDuration(scene.audio.path);
                 
-                // CORREÇÃO CRÍTICA:
-                // 0.8s de silêncio/pausa DEPOIS do áudio terminar.
-                // 1.0s de transição (que será consumida pelo próximo clipe).
-                // Isso garante que o áudio não seja atropelado.
-                const POST_AUDIO_SILENCE = 0.8;
-                const TRANSITION_BUFFER = 1.0; 
+                // CORREÇÃO FINAL:
+                // Pausa de 0.3s (menos de meio segundo) APÓS o término do áudio.
+                // 1.0s de buffer para a transição.
+                // A cena seguinte sobrepõe 1.0s, então o "início" visual e auditivo da próxima
+                // ocorrerá exatos 0.3s depois que a voz atual terminar.
+                const PAUSE_AFTER_AUDIO = 0.3; 
+                const TRANSITION_OVERLAP = 1.0; 
                 
-                dur = (audioDur > 0 ? audioDur : 5) + POST_AUDIO_SILENCE + TRANSITION_BUFFER;
+                dur = (audioDur > 0 ? audioDur : 5) + PAUSE_AFTER_AUDIO + TRANSITION_OVERLAP;
             }
             
             const args = [];
             
             // 1. Input Visual
             if (scene.visual?.mimetype?.includes('image')) {
-                // Loop para cobrir a duração
                 args.push('-loop', '1', '-t', (dur + 2).toFixed(3), '-i', scene.visual.path);
             } else if (scene.visual) {
                 args.push('-stream_loop', '-1', '-t', (dur + 2).toFixed(3), '-i', scene.visual.path);
@@ -500,8 +500,7 @@ async function handleExport(job, uploadDir, callback) {
             let filterComplex = "";
             let audioMap = "[a_out]";
             
-            // IMPORTANTE: 'apad' sem argumentos preenche com silêncio indefinidamente até o fim do vídeo.
-            // Como fixamos o tempo do vídeo via '-t dur', isso gera o padding exato necessário no final.
+            // IMPORTANTE: 'apad' preenche com silêncio até atingir 'dur' (que calculamos acima)
             if (hasSfx) {
                 filterComplex += `[1:a]volume=1.5,apad[voice];[2:a]volume=${sfxVolume},apad[sfx];[voice][sfx]amix=inputs=2:duration=longest:dropout_transition=0,aresample=async=1[a_out];`;
             } else {
@@ -569,11 +568,7 @@ async function handleExport(job, uploadDir, callback) {
                 const aNext = `[${i+1}:a]`;
                 
                 // O offset é onde a transição começa.
-                // Deve começar antes do vídeo acabar (para sobrepor).
-                // accumOffset rastreia o tempo de "início" do clipe atual no vídeo final.
-                // Mas aqui, como cada clipe já tem o padding embutido, precisamos somar:
-                // (Duração Total do Clipe Atual) - (Duração da Transição)
-                
+                // Offset = (Onde termina o clipe anterior) - (Duração da Transição)
                 accumOffset += videoClipDurations[i] - transDur;
                 
                 const safeOffset = Math.max(0, accumOffset).toFixed(3);
