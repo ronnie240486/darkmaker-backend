@@ -33,11 +33,9 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
     const fps = 30; 
     const totalFrames = Math.ceil(d * fps);
     const zdur = `:d=${totalFrames}:s=${targetW}x${targetH}`;
-    // 'on' é o número do frame atual, 'time' é o tempo em segundos
-    // t normalizado (0 a 1) para facilitar animações lineares
     const t = `(on/${totalFrames})`; 
 
-    // --- DICIONÁRIO COMPLETO DE MOVIMENTOS ---
+    // --- DICIONÁRIO COMPLETO DE MOVIMENTOS (TODOS DO FRONTEND) ---
     const moves = {
         // === Estático & Suave ===
         'static': `zoompan=z=1.0:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
@@ -49,17 +47,17 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
         // === Zoom Dinâmico ===
         'zoom-in': `zoompan=z='1.0+(0.5*${t})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
         'zoom-out': `zoompan=z='1.5-(0.5*${t})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
-        'mov-zoom-crash-in': `zoompan=z='1.0+4*${t}*${t}*${t}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`, // Exponencial rápido
+        'mov-zoom-crash-in': `zoompan=z='1.0+4*${t}*${t}*${t}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
         'mov-zoom-crash-out': `zoompan=z='5-4*${t}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
         'mov-zoom-bounce-in': `zoompan=z='if(lt(${t},0.8), 1.0+0.5*${t}, 1.5-0.1*sin((${t}-0.8)*20))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
         'mov-zoom-pulse-slow': `zoompan=z='1.1+0.15*sin(on/20)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
-        'mov-dolly-vertigo': `zoompan=z='1.0+(0.8*${t})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`, // Zoom in simples no server (Dolly real exige 3D)
+        'mov-dolly-vertigo': `zoompan=z='1.0+(0.8*${t})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
         'mov-zoom-twist-in': `rotate=angle='(PI/10)*${t}':fillcolor=black,zoompan=z='1.0+(0.6*${t})'${zdur}`,
         'mov-zoom-wobble': `zoompan=z='1.1':x='iw/2-(iw/zoom/2)+20*sin(on/15)':y='ih/2-(ih/zoom/2)+20*cos(on/15)'${zdur}`,
         'mov-scale-pulse': `zoompan=z='1.0+0.2*sin(on/10)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
 
         // === Panorâmicas ===
-        'mov-pan-slow-l': `zoompan=z=1.3:x='(iw/2-(iw/zoom/2))+(iw/4*${t})':y='ih/2-(ih/zoom/2)'${zdur}`, // Vai para direita visualmente (Pan L)
+        'mov-pan-slow-l': `zoompan=z=1.3:x='(iw/2-(iw/zoom/2))+(iw/4*${t})':y='ih/2-(ih/zoom/2)'${zdur}`,
         'mov-pan-slow-r': `zoompan=z=1.3:x='(iw/2-(iw/zoom/2))-(iw/4*${t})':y='ih/2-(ih/zoom/2)'${zdur}`,
         'mov-pan-slow-u': `zoompan=z=1.3:x='iw/2-(iw/zoom/2)':y='(ih/2-(ih/zoom/2))+(ih/4*${t})'${zdur}`,
         'mov-pan-slow-d': `zoompan=z=1.3:x='iw/2-(iw/zoom/2)':y='(ih/2-(ih/zoom/2))-(ih/4*${t})'${zdur}`,
@@ -77,7 +75,7 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
 
         // === 3D & Rotação ===
         'mov-3d-spin-axis': `rotate=angle='2*PI*${t}':fillcolor=black,zoompan=z=1.3${zdur}`,
-        'mov-3d-flip-x': `zoompan=z='1+0.2*sin(on/10)'${zdur}`, // Simulação, flip real 3D é complexo no ffmpeg básico
+        'mov-3d-flip-x': `zoompan=z='1+0.2*sin(on/10)'${zdur}`,
         'mov-3d-flip-y': `zoompan=z='1+0.2*cos(on/10)'${zdur}`,
         'mov-3d-swing-l': `rotate=angle='(PI/12)*sin(on/30)':fillcolor=black,zoompan=z=1.2${zdur}`,
         'mov-3d-roll': `rotate=angle='2*PI*${t}':fillcolor=black,zoompan=z=1.6${zdur}`,
@@ -98,19 +96,16 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
         // === Elástico & Divertido ===
         'mov-rubber-band': `zoompan=z='1.0+0.3*abs(sin(on/15))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
         'mov-jelly-wobble': `zoompan=z='1.05+0.05*sin(on/8)':x='iw/2-(iw/zoom/2)+15*sin(on/6)':y='ih/2-(ih/zoom/2)+15*cos(on/6)'${zdur}`,
-        'mov-pop-up': `zoompan=z='min(1.0 + ${t}*10, 1.0)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`, // Zoom super rápido no início
+        'mov-pop-up': `zoompan=z='min(1.0 + ${t}*10, 1.0)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
         'mov-bounce-drop': `zoompan=z='1.0':y='(ih/2-(ih/zoom/2)) + (ih/3 * abs(cos(${t}*4*PI)) * (1-${t}))'${zdur}`
     };
 
     const selectedFilter = moves[moveId] || moves['kenburns'];
     
-    // CRÍTICO: pad=ceil(iw/2)*2:ceil(ih/2)*2 força dimensões pares (obrigatório para libx264)
-    // Scale antes do zoompan garante que temos pixels suficientes para o zoom (super-sampling)
+    // CRÍTICO: pad=ceil(iw/2)*2:ceil(ih/2)*2 força dimensões pares
     const pre = `scale=${targetW*2}:${targetH*2}:force_original_aspect_ratio=increase,crop=${targetW*2}:${targetH*2},setsar=1`;
     const post = `scale=${targetW}:${targetH}:flags=lanczos,pad=ceil(iw/2)*2:ceil(ih/2)*2,fps=${fps},format=yuv420p`;
     
-    // Se o filtro envolver rotação ou efeitos complexos, a ordem importa (efeito -> zoompan -> post)
-    // No nosso map, 'rotate' já está embutido na string quando necessário
     return `${pre},${selectedFilter},${post}`;
 }
 
@@ -389,7 +384,6 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
         if (!jobs[jobId]) return;
         const finalPath = args[args.length - 1];
         
-        // Verifica se o arquivo existe e tem tamanho > 0
         if (code === 0 && fs.existsSync(finalPath) && fs.statSync(finalPath).size > 1000) {
             jobs[jobId].status = 'completed';
             jobs[jobId].progress = 100;
@@ -398,7 +392,7 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
             console.error(`[JOB ${jobId}] Failed. Code: ${code}`);
             console.error(`[JOB ${jobId}] Log Tail:`, stderrLog.slice(-500));
             jobs[jobId].status = 'failed';
-            jobs[jobId].error = `Render Error (Code ${code}). Verifique logs do servidor.`;
+            jobs[jobId].error = `Render Error (Code ${code}). Verifique logs.`;
         }
     });
 }
@@ -466,12 +460,16 @@ async function handleExport(job, uploadDir, callback) {
             // Calcular duração baseada no áudio se existir
             if (scene.audio) {
                 const audioDur = await getExactDuration(scene.audio.path);
-                // ADICIONADO: 0.5s DE BUFFER EXTRA APÓS ÁUDIO
-                dur = audioDur > 0 ? audioDur + 0.5 : 5;
+                
+                // CORREÇÃO CRÍTICA:
+                // 0.8s de silêncio/pausa DEPOIS do áudio terminar.
+                // 1.0s de transição (que será consumida pelo próximo clipe).
+                // Isso garante que o áudio não seja atropelado.
+                const POST_AUDIO_SILENCE = 0.8;
+                const TRANSITION_BUFFER = 1.0; 
+                
+                dur = (audioDur > 0 ? audioDur : 5) + POST_AUDIO_SILENCE + TRANSITION_BUFFER;
             }
-            
-            // Garantir duração mínima para transições
-            if (dur < 1.5) dur = 1.5; 
             
             const args = [];
             
@@ -502,16 +500,15 @@ async function handleExport(job, uploadDir, callback) {
             let filterComplex = "";
             let audioMap = "[a_out]";
             
-            // IMPORTANTE: Adicionado 'apad' para garantir que o áudio não termine antes do vídeo
-            // durante o delay de 0.5s, evitando silêncio abrupto ou falha na transição.
+            // IMPORTANTE: 'apad' sem argumentos preenche com silêncio indefinidamente até o fim do vídeo.
+            // Como fixamos o tempo do vídeo via '-t dur', isso gera o padding exato necessário no final.
             if (hasSfx) {
-                filterComplex += `[1:a]volume=1.5,apad=pad_dur=2[voice];[2:a]volume=${sfxVolume},apad=pad_dur=2[sfx];[voice][sfx]amix=inputs=2:duration=longest:dropout_transition=0,aresample=async=1[a_out];`;
+                filterComplex += `[1:a]volume=1.5,apad[voice];[2:a]volume=${sfxVolume},apad[sfx];[voice][sfx]amix=inputs=2:duration=longest:dropout_transition=0,aresample=async=1[a_out];`;
             } else {
-                filterComplex += `[1:a]volume=1.5,apad=pad_dur=2,aresample=async=1[a_out];`;
+                filterComplex += `[1:a]volume=1.5,apad,aresample=async=1[a_out];`;
             }
 
-            // Visual Movement (Self-contained function includes scaling and padding)
-            // Se o frontend mandar algo como "mov-pan-slow-u", agora ele vai achar na lista!
+            // Visual Movement
             const moveFilter = getMovementFilter(movement, dur, targetW, targetH);
             filterComplex += `[0:v]${moveFilter}[v_out]`;
 
@@ -571,7 +568,14 @@ async function handleExport(job, uploadDir, callback) {
                 const vNext = `[${i+1}:v]`;
                 const aNext = `[${i+1}:a]`;
                 
+                // O offset é onde a transição começa.
+                // Deve começar antes do vídeo acabar (para sobrepor).
+                // accumOffset rastreia o tempo de "início" do clipe atual no vídeo final.
+                // Mas aqui, como cada clipe já tem o padding embutido, precisamos somar:
+                // (Duração Total do Clipe Atual) - (Duração da Transição)
+                
                 accumOffset += videoClipDurations[i] - transDur;
+                
                 const safeOffset = Math.max(0, accumOffset).toFixed(3);
                 
                 filter += `${vSrc}${vNext}xfade=transition=${transName}:duration=${transDur}:offset=${safeOffset}[v_tmp${i+1}];`;
