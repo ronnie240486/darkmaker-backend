@@ -235,7 +235,11 @@ async function handleExport(job, uploadDir, callback) {
             const clipPath = path.join(uploadDir, `temp_${job.id}_${i}.mp4`);
             
             let dur = 5;
-            if (scene.audio) dur = (await getExactDuration(scene.audio.path)) || 5;
+            if (scene.audio) {
+                const audioDur = await getExactDuration(scene.audio.path);
+                // ADICIONADO: 0.5s de buffer para o vídeo ficar mais longo que o áudio
+                dur = audioDur > 0 ? audioDur + 0.5 : 5;
+            }
             if (dur < transDur + 0.1) dur = transDur + 0.1; 
             
             const args = [];
@@ -265,10 +269,13 @@ async function handleExport(job, uploadDir, callback) {
             let filterComplex = "";
             let audioMap = "[a_out]";
             
+            // IMPORTANTE: Adicionado 'apad' para preencher o silêncio final (0.5s)
+            // Isso garante que o stream de áudio tenha a mesma duração que o vídeo (dur)
+            // Caso contrário, transições como 'acrossfade' falham ou cortam cedo
             if (hasSfx) {
-                filterComplex += `[1:a]volume=1.5[voice];[2:a]volume=${sfxVolume}[sfx];[voice][sfx]amix=inputs=2:duration=first:dropout_transition=0[a_out];`;
+                filterComplex += `[1:a]volume=1.5,apad[voice];[2:a]volume=${sfxVolume},apad[sfx];[voice][sfx]amix=inputs=2:duration=longest:dropout_transition=0[a_out];`;
             } else {
-                filterComplex += `[1:a]volume=1.5[a_out];`;
+                filterComplex += `[1:a]volume=1.5,apad[a_out];`;
             }
 
             const moveFilter = getMovementFilter(movement, dur, targetW, targetH);
