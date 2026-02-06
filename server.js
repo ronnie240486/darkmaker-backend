@@ -539,64 +539,47 @@ app.post('/api/proxy', async (req, res) => {
         res.status(500).json({ error: e.message });
     }
 });
-// Endpoint de Proxy Robusto
-app.post('/api/proxy', (req, res) => {
+// Endpoint de Proxy Robusto usando Fetch nativo (Node 18+)
+app.post('/api/proxy', async (req, res) => {
     const { url, method, headers, body } = req.body;
     if (!url) return res.status(400).json({ error: "URL ausente" });
 
-    console.log(`[PROXY] Chamando: ${url} [${method || 'GET'}]`);
+    console.log(`[PROXY] ${method || 'GET'} -> ${url}`);
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 180000); // 3 minutos de timeout global
 
     try {
-        const urlObj = new URL(url);
-        const requestData = body ? (typeof body === 'string' ? body : JSON.stringify(body)) : null;
-        
-        const options = {
-            hostname: urlObj.hostname,
-            path: urlObj.pathname + urlObj.search,
+        const response = await fetch(url, {
             method: method || 'GET',
             headers: {
-                ...headers,
-                'Host': urlObj.hostname,
                 'Accept': 'application/json',
-                'User-Agent': 'Mozilla/5.0 (AI Media Suite)'
-            }
-        };
+                'User-Agent': 'Mozilla/5.0 (AI Media Suite)',
+                ...headers
+            },
+            body: body ? (typeof body === 'string' ? body : JSON.stringify(body)) : undefined,
+            signal: controller.signal
+        });
 
-        if (requestData) {
-            options.headers['Content-Type'] = 'application/json';
-            options.headers['Content-Length'] = Buffer.byteLength(requestData);
+        clearTimeout(timeoutId);
+
+        const contentType = response.headers.get('content-type');
+        let data;
+        
+        if (contentType && contentType.includes('application/json')) {
+            data = await response.json();
+            res.status(response.status).json(data);
+        } else {
+            const text = await response.text();
+            res.status(response.status).send(text);
         }
-
-        const proxyReq = https.request(options, (proxyRes) => {
-            console.log(`[PROXY] Resposta de ${urlObj.hostname}: ${proxyRes.statusCode}`);
-            res.status(proxyRes.statusCode);
-            proxyRes.pipe(res);
-        });
-
-        proxyReq.on('error', (e) => {
-            console.error("[PROXY ERROR]", e.message);
-            if (!res.headersSent) {
-                res.status(500).json({ error: "Falha na conexão externa: " + e.message });
-            }
-        });
-
-        proxyReq.setTimeout(60000, () => {
-            console.error("[PROXY TIMEOUT]");
-            proxyReq.destroy();
-            if (!res.headersSent) {
-                res.status(504).json({ error: "O servidor externo demorou muito para responder." });
-            }
-        });
-
-        if (requestData) {
-            proxyReq.write(requestData);
-        }
-        proxyReq.end();
     } catch (e) {
-        console.error("[PROXY CRITICAL]", e);
-        if (!res.headersSent) {
-            res.status(500).json({ error: e.message });
+        clearTimeout(timeoutId);
+        console.error("[PROXY ERROR]", e.message);
+        if (e.name === 'AbortError') {
+            return res.status(504).json({ error: "Timeout: O servidor externo demorou muito para responder." });
         }
+        res.status(500).json({ error: "Falha na conexão externa", details: e.message });
     }
 });
 
