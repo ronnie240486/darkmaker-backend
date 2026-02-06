@@ -539,5 +539,65 @@ app.post('/api/proxy', async (req, res) => {
         res.status(500).json({ error: e.message });
     }
 });
+// Endpoint de Proxy Robusto
+app.post('/api/proxy', (req, res) => {
+    const { url, method, headers, body } = req.body;
+    if (!url) return res.status(400).json({ error: "URL ausente" });
+
+    console.log(`[PROXY] Chamando: ${url} [${method || 'GET'}]`);
+
+    try {
+        const urlObj = new URL(url);
+        const requestData = body ? (typeof body === 'string' ? body : JSON.stringify(body)) : null;
+        
+        const options = {
+            hostname: urlObj.hostname,
+            path: urlObj.pathname + urlObj.search,
+            method: method || 'GET',
+            headers: {
+                ...headers,
+                'Host': urlObj.hostname,
+                'Accept': 'application/json',
+                'User-Agent': 'Mozilla/5.0 (AI Media Suite)'
+            }
+        };
+
+        if (requestData) {
+            options.headers['Content-Type'] = 'application/json';
+            options.headers['Content-Length'] = Buffer.byteLength(requestData);
+        }
+
+        const proxyReq = https.request(options, (proxyRes) => {
+            console.log(`[PROXY] Resposta de ${urlObj.hostname}: ${proxyRes.statusCode}`);
+            res.status(proxyRes.statusCode);
+            proxyRes.pipe(res);
+        });
+
+        proxyReq.on('error', (e) => {
+            console.error("[PROXY ERROR]", e.message);
+            if (!res.headersSent) {
+                res.status(500).json({ error: "Falha na conexão externa: " + e.message });
+            }
+        });
+
+        proxyReq.setTimeout(60000, () => {
+            console.error("[PROXY TIMEOUT]");
+            proxyReq.destroy();
+            if (!res.headersSent) {
+                res.status(504).json({ error: "O servidor externo demorou muito para responder." });
+            }
+        });
+
+        if (requestData) {
+            proxyReq.write(requestData);
+        }
+        proxyReq.end();
+    } catch (e) {
+        console.error("[PROXY CRITICAL]", e);
+        if (!res.headersSent) {
+            res.status(500).json({ error: e.message });
+        }
+    }
+});
 
 app.listen(PORT, '0.0.0.0', () => console.log(`Turbo Server Complete na porta ${PORT}`));
