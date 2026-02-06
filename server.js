@@ -497,5 +497,47 @@ app.get('/api/process/status/:jobId', (req, res) => {
     if (!job) return res.status(404).json({ status: 'not_found' });
     res.json(job);
 });
+// Endpoint de Proxy para APIs Externas (Freepik, Runway, etc)
+app.post('/api/proxy', async (req, res) => {
+    const { url, method, headers, body } = req.body;
+    if (!url) return res.status(400).json({ error: "URL não fornecida" });
+
+    console.log(`[PROXY] Chamando: ${url} [${method || 'GET'}]`);
+
+    try {
+        const urlObj = new URL(url);
+        const requestBody = body ? (typeof body === 'string' ? body : JSON.stringify(body)) : null;
+        
+        const options = {
+            hostname: urlObj.hostname,
+            path: urlObj.pathname + urlObj.search,
+            method: method || 'GET',
+            headers: {
+                ...headers,
+                'Host': urlObj.hostname,
+                'Content-Length': requestBody ? Buffer.byteLength(requestBody) : 0
+            }
+        };
+
+        const proxyReq = https.request(options, (proxyRes) => {
+            console.log(`[PROXY] Resposta de ${urlObj.hostname}: ${proxyRes.statusCode}`);
+            res.status(proxyRes.statusCode);
+            proxyRes.pipe(res);
+        });
+
+        proxyReq.on('error', (e) => {
+            console.error("[PROXY ERROR]", e.message);
+            res.status(500).json({ error: "Falha na conexão com o servidor externo: " + e.message });
+        });
+
+        if (requestBody) {
+            proxyReq.write(requestBody);
+        }
+        proxyReq.end();
+    } catch (e) {
+        console.error("[PROXY CRITICAL]", e);
+        res.status(500).json({ error: e.message });
+    }
+});
 
 app.listen(PORT, '0.0.0.0', () => console.log(`Turbo Server Complete na porta ${PORT}`));
