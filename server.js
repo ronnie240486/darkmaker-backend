@@ -1,3 +1,4 @@
+
 import express from 'express';
 import cors from 'cors';
 import multer from 'multer';
@@ -26,7 +27,7 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
 
-// --- INTERNAL PRESETS: ALL MOVEMENTS (MATCHING FRONTEND) ---
+// --- INTERNAL PRESETS: ALL MOVEMENTS ---
 
 function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 720) {
     const d = parseFloat(durationSec) || 5;
@@ -100,6 +101,7 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
     };
 
     const selectedFilter = moves[moveId] || moves['kenburns'];
+    // IMPORTANTE: pad=ceil(iw/2)*2:ceil(ih/2)*2 Garante dimensões pares para libx264
     const pre = `scale=${targetW*2}:${targetH*2}:force_original_aspect_ratio=increase,crop=${targetW*2}:${targetH*2},setsar=1`;
     const post = `scale=${targetW}:${targetH}:flags=lanczos,pad=ceil(iw/2)*2:ceil(ih/2)*2,fps=${fps},format=yuv420p`;
     
@@ -246,7 +248,6 @@ function getToolCommand(action, inputFiles, params, outputPath) {
     const isAudioFile = inputFiles[0]?.mimetype?.includes('audio');
     
     if (isAudioAction || (isAudioFile && action !== 'convert' && action !== 'join')) {
-        // Lógica simplificada de audio omitida para foco no motor Turbo
         return ['-i', inputFiles[0].path, '-c:a', 'libmp3lame', outputPath];
     }
 
@@ -322,14 +323,22 @@ async function handleExport(job, uploadDir, callback) {
             }
             
             const args = [];
+            let isVideoInput = false;
+
+            // Visual Input handling
             if (scene.visual?.mimetype?.includes('image')) {
-                args.push('-loop', '1', '-t', (dur + 2).toFixed(3), '-i', scene.visual.path);
+                // Image: Loop it
+                args.push('-framerate', '30', '-loop', '1', '-i', scene.visual.path);
             } else if (scene.visual) {
-                args.push('-stream_loop', '-1', '-t', (dur + 2).toFixed(3), '-i', scene.visual.path);
+                // Video: No loop needed, it's a file
+                args.push('-i', scene.visual.path);
+                isVideoInput = true;
             } else {
+                // Fallback
                 args.push('-f', 'lavfi', '-i', `color=c=black:s=${targetW}x${targetH}:d=${(dur + 2).toFixed(3)}`);
             }
 
+            // Audio Inputs
             if (scene.audio) {
                 args.push('-i', scene.audio.path);
             } else {
@@ -345,14 +354,22 @@ async function handleExport(job, uploadDir, callback) {
             let filterComplex = "";
             let audioMap = "[a_out]";
             
+            // Audio Mixing
             if (hasSfx) {
                 filterComplex += `[1:a]volume=1.5,apad[voice];[2:a]volume=${sfxVolume},apad[sfx];[voice][sfx]amix=inputs=2:duration=longest:dropout_transition=0,aresample=async=1[a_out];`;
             } else {
                 filterComplex += `[1:a]volume=1.5,apad,aresample=async=1[a_out];`;
             }
 
-            const moveFilter = getMovementFilter(movement, dur, targetW, targetH);
-            filterComplex += `[0:v]${moveFilter}[v_out]`;
+            // Video Processing
+            if (!isVideoInput) {
+                // Image: Apply movement filters (Zoom/Pan)
+                const moveFilter = getMovementFilter(movement, dur, targetW, targetH);
+                filterComplex += `[0:v]${moveFilter}[v_out]`;
+            } else {
+                // Video: Scale, Crop, Reset PTS (Crucial for uploaded videos)
+                filterComplex += `[0:v]scale=${targetW}:${targetH}:force_original_aspect_ratio=increase,crop=${targetW}:${targetH},pad=ceil(iw/2)*2:ceil(ih/2)*2,setsar=1,fps=30,setpts=PTS-STARTPTS,format=yuv420p[v_out]`;
+            }
 
             args.push(
                 '-filter_complex', filterComplex,
@@ -432,44 +449,6 @@ async function handleExport(job, uploadDir, callback) {
 
 // === ROUTES ===
 
-app.post('/api/proxy', async (req, res) => {
-    const { url, method, headers, body } = req.body;
-    if (!url) return res.status(400).json({ error: "URL não fornecida" });
-
-    try {
-        const urlObj = new URL(url);
-        const options = {
-            hostname: urlObj.hostname,
-            path: urlObj.pathname + urlObj.search,
-            method: method || 'GET',
-            headers: {
-                ...headers,
-                'Host': urlObj.hostname
-            }
-        };
-
-        const proxyReq = https.request(options, (proxyRes) => {
-            let responseData = '';
-            proxyRes.on('data', (chunk) => responseData += chunk);
-            proxyRes.on('end', () => {
-                res.status(proxyRes.statusCode).send(responseData);
-            });
-        });
-
-        proxyReq.on('error', (e) => {
-            console.error("Proxy Error:", e);
-            res.status(500).json({ error: e.message });
-        });
-
-        if (body) {
-            proxyReq.write(typeof body === 'string' ? body : JSON.stringify(body));
-        }
-        proxyReq.end();
-    } catch (e) {
-        res.status(500).json({ error: e.message || "Proxy request failed" });
-    }
-});
-
 app.post('/api/process/start/:action', uploadAny, (req, res) => {
     const action = req.params.action;
     const jobId = `${action}_${Date.now()}`;
@@ -497,48 +476,16 @@ app.get('/api/process/status/:jobId', (req, res) => {
     if (!job) return res.status(404).json({ status: 'not_found' });
     res.json(job);
 });
-// Endpoint de Proxy para APIs Externas (Freepik, Runway, etc)
-app.post('/api/proxy', async (req, res) => {
-    const { url, method, headers, body } = req.body;
-    if (!url) return res.status(400).json({ error: "URL não fornecida" });
 
-    console.log(`[PROXY] Chamando: ${url} [${method || 'GET'}]`);
-
-    try {
-        const urlObj = new URL(url);
-        const requestBody = body ? (typeof body === 'string' ? body : JSON.stringify(body)) : null;
-        
-        const options = {
-            hostname: urlObj.hostname,
-            path: urlObj.pathname + urlObj.search,
-            method: method || 'GET',
-            headers: {
-                ...headers,
-                'Host': urlObj.hostname,
-                'Content-Length': requestBody ? Buffer.byteLength(requestBody) : 0
-            }
-        };
-
-        const proxyReq = https.request(options, (proxyRes) => {
-            console.log(`[PROXY] Resposta de ${urlObj.hostname}: ${proxyRes.statusCode}`);
-            res.status(proxyRes.statusCode);
-            proxyRes.pipe(res);
-        });
-
-        proxyReq.on('error', (e) => {
-            console.error("[PROXY ERROR]", e.message);
-            res.status(500).json({ error: "Falha na conexão com o servidor externo: " + e.message });
-        });
-
-        if (requestBody) {
-            proxyReq.write(requestBody);
-        }
-        proxyReq.end();
-    } catch (e) {
-        console.error("[PROXY CRITICAL]", e);
-        res.status(500).json({ error: e.message });
-    }
+app.post('/api/image/start/:action', uploadAny, (req, res) => {
+    const jobId = `img_${Date.now()}`;
+    const file = req.files[0];
+    const outputPath = path.join(OUTPUT_DIR, `img_${jobId}${path.extname(file.originalname)}`);
+    fs.copyFileSync(file.path, outputPath);
+    jobs[jobId] = { id: jobId, status: 'completed', progress: 100, downloadUrl: `/outputs/${path.basename(outputPath)}` };
+    res.json({ jobId });
 });
+
 // Endpoint de Proxy Robusto usando Fetch nativo (Node 18+)
 app.post('/api/proxy', async (req, res) => {
     const { url, method, headers, body } = req.body;
@@ -583,4 +530,4 @@ app.post('/api/proxy', async (req, res) => {
     }
 });
 
-app.listen(PORT, '0.0.0.0', () => console.log(`Turbo Server Complete na porta ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => console.log(`Turbo Server Running on Port ${PORT}`));
