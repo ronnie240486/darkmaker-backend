@@ -139,6 +139,21 @@ const getAudioArgs = () => [
     '-ar', '44100'
 ];
 
+const hasAudioStream = (filePath) => {
+    return new Promise((resolve) => {
+        if (!fs.existsSync(filePath)) { resolve(false); return; }
+        execFile(ffprobePath.path, [
+            '-v', 'error', 
+            '-select_streams', 'a', 
+            '-show_entries', 'stream=codec_type', 
+            '-of', 'csv=p=0', 
+            filePath
+        ], (err, stdout) => {
+            resolve(!err && stdout.trim().length > 0);
+        });
+    });
+};
+
 const getExactDuration = (filePath) => {
     return new Promise((resolve) => {
         if (!fs.existsSync(filePath)) {
@@ -324,6 +339,7 @@ async function handleExport(job, uploadDir, callback) {
             
             const args = [];
             let isVideoInput = false;
+            let videoHasAudio = false;
 
             // Visual Input handling
             if (scene.visual?.mimetype?.includes('image')) {
@@ -333,6 +349,7 @@ async function handleExport(job, uploadDir, callback) {
                 // Video: No loop needed, it's a file
                 args.push('-i', scene.visual.path);
                 isVideoInput = true;
+                videoHasAudio = await hasAudioStream(scene.visual.path);
             } else {
                 // Fallback
                 args.push('-f', 'lavfi', '-i', `color=c=black:s=${targetW}x${targetH}:d=${(dur + 2).toFixed(3)}`);
@@ -354,20 +371,43 @@ async function handleExport(job, uploadDir, callback) {
             let filterComplex = "";
             let audioMap = "[a_out]";
             
-            // Audio Mixing
-            if (hasSfx) {
-                filterComplex += `[1:a]volume=1.5,apad[voice];[2:a]volume=${sfxVolume},apad[sfx];[voice][sfx]amix=inputs=2:duration=longest:dropout_transition=0,aresample=async=1[a_out];`;
-            } else {
-                filterComplex += `[1:a]volume=1.5,apad,aresample=async=1[a_out];`;
+            // --- Audio Mixing Logic (New) ---
+            let mixInputs = [];
+            
+            // 1. Video Audio (Input 0)
+            if (isVideoInput && videoHasAudio) {
+                // Dim video audio slightly to prioritize voice
+                filterComplex += `[0:a]volume=1.0[vid_a];`;
+                mixInputs.push("[vid_a]");
             }
 
-            // Video Processing
+            // 2. Narration (Input 1)
+            // Use apad so it plays along with longer videos if needed
+            filterComplex += `[1:a]volume=1.5,apad[voice];`;
+            mixInputs.push("[voice]");
+
+            // 3. SFX (Input 2)
+            if (hasSfx) {
+                filterComplex += `[2:a]volume=${sfxVolume},apad[sfx];`;
+                mixInputs.push("[sfx]");
+            }
+
+            // Combine
+            if (mixInputs.length > 1) {
+                // duration=longest ensures we keep video audio if video is longer than voice (cut by -t later)
+                filterComplex += `${mixInputs.join('')}amix=inputs=${mixInputs.length}:duration=longest:dropout_transition=0,aresample=async=1[a_out];`;
+            } else {
+                filterComplex += `[voice]aresample=async=1[a_out];`;
+            }
+
+            // --- Video Processing ---
             if (!isVideoInput) {
                 // Image: Apply movement filters (Zoom/Pan)
                 const moveFilter = getMovementFilter(movement, dur, targetW, targetH);
                 filterComplex += `[0:v]${moveFilter}[v_out]`;
             } else {
-                // Video: Scale, Crop, Reset PTS (Crucial for uploaded videos)
+                // Video: Scale, Crop, Reset PTS
+                // We ensure it scales to target resolution and resets timestamps for correct cuts
                 filterComplex += `[0:v]scale=${targetW}:${targetH}:force_original_aspect_ratio=increase,crop=${targetW}:${targetH},pad=ceil(iw/2)*2:ceil(ih/2)*2,setsar=1,fps=30,setpts=PTS-STARTPTS,format=yuv420p[v_out]`;
             }
 
