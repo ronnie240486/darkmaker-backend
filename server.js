@@ -1,4 +1,5 @@
 
+// ... (imports remain the same)
 import express from 'express';
 import cors from 'cors';
 import multer from 'multer';
@@ -329,17 +330,44 @@ async function handleExport(job, uploadDir, callback) {
             const scene = sortedScenes[i];
             const clipPath = path.join(uploadDir, `temp_${job.id}_${i}.mp4`);
             
-            let dur = 5;
+            // 1. Detect Visual Input Type & Duration
+            let isVideoInput = false;
+            let visualDur = 0;
+            let videoHasAudio = false;
+
+            if (scene.visual && !scene.visual.mimetype.includes('image')) {
+                isVideoInput = true;
+                visualDur = await getExactDuration(scene.visual.path);
+                videoHasAudio = await hasAudioStream(scene.visual.path);
+            }
+
+            // 2. Calculate Scene Duration
+            let dur = 5; // Absolute default
+            
             if (scene.audio) {
                 const audioDur = await getExactDuration(scene.audio.path);
                 const PAUSE_AFTER_AUDIO = 0.3; 
                 const TRANSITION_OVERLAP = 1.0; 
-                dur = (audioDur > 0 ? audioDur : 5) + PAUSE_AFTER_AUDIO + TRANSITION_OVERLAP;
+                // Fallback to 5 if audio is empty but present
+                const baseAudio = audioDur > 0 ? audioDur : 5;
+                const calcDur = baseAudio + PAUSE_AFTER_AUDIO + TRANSITION_OVERLAP;
+                
+                if (isVideoInput && visualDur > calcDur) {
+                    // Force duration to match video if video is longer than audio
+                    dur = visualDur;
+                } else {
+                    dur = calcDur;
+                }
+            } else {
+                // No narration
+                if (isVideoInput && visualDur > 0) {
+                    dur = visualDur;
+                } else {
+                    dur = 5;
+                }
             }
             
             const args = [];
-            let isVideoInput = false;
-            let videoHasAudio = false;
 
             // Visual Input handling
             if (scene.visual?.mimetype?.includes('image')) {
@@ -348,8 +376,6 @@ async function handleExport(job, uploadDir, callback) {
             } else if (scene.visual) {
                 // Video: No loop needed, it's a file
                 args.push('-i', scene.visual.path);
-                isVideoInput = true;
-                videoHasAudio = await hasAudioStream(scene.visual.path);
             } else {
                 // Fallback
                 args.push('-f', 'lavfi', '-i', `color=c=black:s=${targetW}x${targetH}:d=${(dur + 2).toFixed(3)}`);
