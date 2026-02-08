@@ -29,7 +29,7 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 });
 
 // ==============================
-//      AUDIO CHECK
+//      FILE CHECKS
 // ==============================
 async function fileHasAudio(file) {
     return new Promise(resolve => {
@@ -41,6 +41,21 @@ async function fileHasAudio(file) {
             file
         ], (err, stdout) => {
             resolve(stdout && stdout.toString().trim().length > 0);
+        });
+    });
+}
+
+async function isVideoFile(file) {
+    return new Promise(resolve => {
+        execFile(ffprobePath.path, [
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=codec_type",
+            "-of", "csv=p=0",
+            file
+        ], (err, stdout) => {
+            // Se o ffprobe retornar 'video', confirmamos que é um arquivo de vídeo
+            resolve(stdout && stdout.toString().trim().includes('video'));
         });
     });
 }
@@ -84,7 +99,6 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
 
     const selected = moves[moveId] || moves['kenburns'];
 
-    // Ensure even dimensions for libx264
     const pre = `scale=${targetW*2}:${targetH*2}:force_original_aspect_ratio=increase,crop=${targetW*2}:${targetH*2},setsar=1`;
     const post = `scale=${targetW}:${targetH},pad=ceil(iw/2)*2:ceil(ih/2)*2,fps=24,format=yuv420p`;
 
@@ -168,7 +182,6 @@ const storage = multer.diskStorage({
 
 const uploadAny = multer({storage}).any();
 
-// JOBS
 const jobs = {};
 
 // ============================================================================
@@ -191,7 +204,7 @@ async function renderVideoProject(project, jobId) {
     }
 
     // -----------------------------------------------
-    // 1. PROCESSA CADA CLIP (VIDEO + AUDIO)
+    // 1. PROCESSA CADA CLIP
     // -----------------------------------------------
     for (let i = 0; i < project.clips.length; i++) {
         const clip = project.clips[i];
@@ -206,15 +219,14 @@ async function renderVideoProject(project, jobId) {
 
         const args = ["-y"];
         
-        // Input Logic
-        const isVideo = clip.file.match(/\.(mp4|mov|webm|avi|mkv)$/i);
+        // Detecção robusta de vídeo
+        const isVideo = await isVideoFile(inputPath);
 
         if (isVideo) {
-             // For video clips, we might loop if shorter than target duration, 
-             // but usually we rely on user setting or detection.
+             // Se for vídeo, fazemos loop infinito no input para garantir que não acabe antes da duração (-t corta)
              args.push("-stream_loop", "-1", "-i", inputPath);
         } else {
-             // Image to Video
+             // Se for imagem, loop simples de 1 frame para virar stream
              args.push("-loop", "1", "-i", inputPath);
         }
 
@@ -238,25 +250,22 @@ async function renderVideoProject(project, jobId) {
         let filterComplex = "";
 
         if (isVideo) {
-            // FOR VIDEOS: Preserve motion, just Scale & Crop to fit Aspect Ratio
-            // We do NOT apply movementFilter (zoompan) to avoid freezing or weird motion artifacts on videos.
+            // VÍDEO: Preserva movimento!
+            // Apenas escala e recorta para preencher a tela, SEM usar zoompan (que congelaria o vídeo em 1 frame)
             const pre = `scale=${targetW*2}:${targetH*2}:force_original_aspect_ratio=increase,crop=${targetW*2}:${targetH*2},setsar=1`;
             const post = `scale=${targetW}:${targetH},pad=ceil(iw/2)*2:ceil(ih/2)*2,fps=24,format=yuv420p`;
             filterComplex = `[0:v]${pre},${post}[v_out];`;
         } else {
-            // FOR IMAGES: Apply Movement Filter (Ken Burns etc)
+            // IMAGEM: Aplica movimento (Ken Burns)
             const movementFilter = getMovementFilter(clip.movement || "kenburns", duration, targetW, targetH);
             filterComplex = `[0:v]${movementFilter}[v_out];`;
         }
         
         if (hasExternalAudio) {
-            // Use external audio (Input 1), pad to duration
             filterComplex += `[1:a]apad,atrim=0:${duration}[a_out]`;
         } else if (hasInternalAudio) {
-            // Use internal audio (Input 0), pad to duration
             filterComplex += `[0:a]apad,atrim=0:${duration}[a_out]`;
         } else {
-            // Generate silence
             filterComplex += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration}[a_out]`;
         }
 
@@ -323,6 +332,7 @@ async function renderVideoProject(project, jobId) {
             const outLabelV = `[v${outIndex + 1}]`;
             const outLabelA = `[a${outIndex + 1}]`;
 
+            // XFADE transition
             filterGraph += `${prevLabelV}[${i}:v]xfade=transition=${trType}:duration=${trDur}:offset=${offset}${outLabelV};`;
             filterGraph += `${prevLabelA}[${i}:a]acrossfade=d=${trDur}:c1=tri:c2=tri${outLabelA};`;
 
@@ -366,9 +376,6 @@ async function renderVideoProject(project, jobId) {
     return finalOutput;
 }
 
-// ============================================================================
-//   FFmpeg CALL
-// ============================================================================
 function runFFmpeg(args) {
     return new Promise((resolve, reject) => {
         const ff = spawn(ffmpegPath, args);
@@ -380,10 +387,6 @@ function runFFmpeg(args) {
         });
     });
 }
-
-// ============================================================================
-//                               ROUTES
-// ============================================================================
 
 app.post("/api/upload", (req, res) => {
     uploadAny(req, res, (err) => {
