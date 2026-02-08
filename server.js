@@ -54,7 +54,6 @@ async function isVideoFile(file) {
             "-of", "csv=p=0",
             file
         ], (err, stdout) => {
-            // Se o ffprobe retornar 'video', confirmamos que é um arquivo de vídeo
             resolve(stdout && stdout.toString().trim().includes('video'));
         });
     });
@@ -144,7 +143,6 @@ const getAudioArgs = () => [
 // ==============================
 async function buildFrontend() {
     try {
-        // Safe copy ensuring destination directory exists
         const copySafe = (src, dest) => {
             if (fs.existsSync(src)) {
                 fs.copyFileSync(src, dest);
@@ -181,7 +179,6 @@ app.use(express.urlencoded({extended:true, limit:'900mb'}));
 app.use(express.static(PUBLIC_DIR));
 app.use('/outputs', express.static(OUTPUT_DIR));
 
-// multer
 const storage = multer.diskStorage({
     destination:(req,file,cb)=>cb(null,UPLOAD_DIR),
     filename:(req,file,cb)=>cb(null, Date.now()+"-"+file.originalname.replace(/[^a-zA-Z0-9_.-]/g,"_"))
@@ -202,7 +199,6 @@ async function renderVideoProject(project, jobId) {
     const tempClips = [];
     const durations = [];
 
-    // Determine output resolution
     let targetW = 1280;
     let targetH = 720;
     if (project.aspectRatio === '9:16') {
@@ -210,9 +206,6 @@ async function renderVideoProject(project, jobId) {
         targetH = 1280;
     }
 
-    // -----------------------------------------------
-    // 1. PROCESSA CADA CLIP
-    // -----------------------------------------------
     for (let i = 0; i < project.clips.length; i++) {
         const clip = project.clips[i];
         const inputPath = path.join(UPLOAD_DIR, clip.file);
@@ -225,7 +218,6 @@ async function renderVideoProject(project, jobId) {
         tempClips.push(outFile);
 
         const args = ["-y"];
-        
         const isVideo = await isVideoFile(inputPath);
 
         if (isVideo) {
@@ -252,20 +244,19 @@ async function renderVideoProject(project, jobId) {
         let filterComplex = "";
 
         if (isVideo) {
-            // VÍDEO: Preserva movimento!
             const pre = `scale=${targetW*2}:${targetH*2}:force_original_aspect_ratio=increase,crop=${targetW*2}:${targetH*2},setsar=1`;
             const post = `scale=${targetW}:${targetH},pad=ceil(iw/2)*2:ceil(ih/2)*2,fps=24,format=yuv420p`;
             filterComplex = `[0:v]${pre},${post}[v_out];`;
         } else {
-            // IMAGEM: Aplica movimento (Ken Burns)
             const movementFilter = getMovementFilter(clip.movement || "kenburns", duration, targetW, targetH);
             filterComplex = `[0:v]${movementFilter}[v_out];`;
         }
         
+        // Audio processing logic ensures consistency for concat
         if (hasExternalAudio) {
-            filterComplex += `[1:a]apad,atrim=0:${duration}[a_out]`;
+            filterComplex += `[1:a]apad,atrim=0:${duration},aformat=sample_rates=44100:channel_layouts=stereo[a_out]`;
         } else if (hasInternalAudio) {
-            filterComplex += `[0:a]apad,atrim=0:${duration}[a_out]`;
+            filterComplex += `[0:a]apad,atrim=0:${duration},aformat=sample_rates=44100:channel_layouts=stereo[a_out]`;
         } else {
             filterComplex += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration}[a_out]`;
         }
@@ -288,9 +279,6 @@ async function renderVideoProject(project, jobId) {
         jobs[jobId].progress = Math.floor((i / project.clips.length) * 45);
     }
 
-    // -----------------------------------------------
-    // 2. CONCATENAÇÃO
-    // -----------------------------------------------
     const concatOut = path.join(sessionDir, "video_final.mp4");
     const trType = getTransitionXfade(project.transition || "fade");
 
@@ -309,6 +297,7 @@ async function renderVideoProject(project, jobId) {
                 concatOut
             ]);
         } catch (e) {
+            // Re-encode if copy fails
             await runFFmpeg([
                 "-y", "-f", "concat", "-safe", "0", "-i", listPath,
                 ...getVideoArgs(), ...getAudioArgs(),
@@ -351,19 +340,20 @@ async function renderVideoProject(project, jobId) {
         jobs[jobId].progress = 70;
     }
 
-    // -----------------------------------------------
-    // 3. MIXAGEM GLOBAL
-    // -----------------------------------------------
     const bgm = project.audio?.bgm ? path.join(UPLOAD_DIR, project.audio.bgm) : null;
     let finalOutput = path.join(OUTPUT_DIR, `video_${jobId}.mp4`);
 
     if (bgm && fs.existsSync(bgm)) {
-        const mixGraph = `[1:a]aloop=loop=-1:size=2e+09,volume=${project.audio.bgmVolume ?? 0.2}[bgm];[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=0[a_final]`;
+        // Ensure inputs match duration roughly
+        const duration = durations.reduce((a,b)=>a+b, 0);
+        // Use apad to extend concatOut just in case, and amix
+        const mixGraph = `[1:a]aloop=loop=-1:size=2e+09,volume=${project.audio.bgmVolume ?? 0.2},apad[bgm];[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=0[a_final]`;
         
         await runFFmpeg([
             "-y", "-i", concatOut, "-i", bgm,
             "-filter_complex", mixGraph,
             "-map", "0:v", "-map", "[a_final]",
+            "-t", duration.toString(),
             ...getVideoArgs(), ...getAudioArgs(),
             finalOutput
         ]);
@@ -398,7 +388,6 @@ app.post("/api/upload", (req, res) => {
     });
 });
 
-// Fixed: Route matches frontend expectation /api/render/start
 app.post("/api/render/start", async (req, res) => {
     uploadAny(req, res, async (err) => {
         if (err) return res.status(500).json({ error: "Upload failed" });
@@ -464,17 +453,73 @@ app.post("/api/render/start", async (req, res) => {
     });
 });
 
-// Alias for old endpoint (compatibility)
-app.post("/api/render", (req, res) => {
-    res.redirect(307, "/api/render/start");
+// NEW: Endpoint dedicated to simple merging (Video + Audio)
+app.post("/api/process/start/merge", async (req, res) => {
+    uploadAny(req, res, async (err) => {
+        if (err) return res.status(500).json({ error: "Upload failed" });
+        
+        try {
+            const jobId = Date.now().toString();
+            jobs[jobId] = { progress: 1, status: "processing" };
+            
+            const files = req.files;
+            if (!files || files.length < 2) throw new Error("Requires at least 2 files (video + audio)");
+            
+            const videoFile = files.find(f => f.mimetype.startsWith('video')) || files[0];
+            const audioFile = files.find(f => f.mimetype.startsWith('audio')) || files[1];
+            
+            const vPath = path.join(UPLOAD_DIR, videoFile.filename);
+            const aPath = path.join(UPLOAD_DIR, audioFile.filename);
+            const outPath = path.join(OUTPUT_DIR, `merged_${jobId}.mp4`);
+            
+            // FFMPEG Merge: video stream copy (if possible) or re-encode, replace audio
+            // Use shortest to cut audio to video length or stream_loop for video
+            const args = [
+                "-y",
+                "-i", vPath,
+                "-i", aPath,
+                "-c:v", "copy", // Try copy first for speed
+                "-c:a", "aac",
+                "-map", "0:v:0",
+                "-map", "1:a:0",
+                "-shortest", // Stop when shortest input ends (usually video)
+                outPath
+            ];
+            
+            // If copy fails or format mismatch, might need re-encode, but copy is safe for mp4/aac usually.
+            // If video is image (which shouldn't happen here usually but safety check):
+            if (videoFile.mimetype.startsWith('image')) {
+                 // Image + Audio merge
+                 // We need to know duration or loop image
+                 const dur = await getExactDuration(aPath) || 10;
+                 args.splice(3, 2); // remove -c:v copy
+                 args.splice(1, 0, "-loop", "1"); // add loop 1 before input 0
+                 args.push("-t", dur.toString(), ...getVideoArgs());
+            }
+
+            runFFmpeg(args)
+                .then(() => {
+                    jobs[jobId].status = "completed";
+                    jobs[jobId].downloadUrl = `/outputs/${path.basename(outPath)}`;
+                    jobs[jobId].progress = 100;
+                })
+                .catch(e => {
+                    jobs[jobId].status = "failed";
+                    jobs[jobId].error = e.toString();
+                });
+
+            res.json({ jobId });
+        } catch (e) {
+            res.status(500).json({ error: e.message });
+        }
+    });
 });
 
-// Audio/Video Processing Endpoints (Stub/Basic Implementation)
 app.post("/api/process/start/:action", async (req, res) => {
     uploadAny(req, res, async (err) => {
         if (err) return res.status(500).json({ error: "Upload failed" });
         const jobId = Date.now().toString();
-        // Return original file as fallback for actions not yet fully implemented on server
+        // Placeholder for other audio processing
         const files = req.files || [];
         if (files.length > 0) {
             jobs[jobId] = { 
@@ -493,7 +538,6 @@ app.post("/api/image/start/:action", async (req, res) => {
     uploadAny(req, res, async (err) => {
         if (err) return res.status(500).json({ error: "Upload failed" });
         const jobId = Date.now().toString();
-        // Return original file as fallback
         const files = req.files || [];
         if (files.length > 0) {
             jobs[jobId] = { 
