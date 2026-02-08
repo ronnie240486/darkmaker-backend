@@ -54,28 +54,30 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
     return `${pre},${selectedFilter},${post}`;
 }
 
-// Simula efeitos de cor ANTES da transição (ex: amarelo queimado)
+// Simula efeitos de cor ANTES da transição (ex: amarelo queimado) - SIMPLIFICADO para estabilidade
 function getPreTransitionEffect(transId, duration) {
     if (!transId) return "";
     const id = transId.toLowerCase();
+    const transDur = 1.0; // Duração da transição/efeito
     
-    // Efeito Burn: Aumenta brilho e empurra para amarelo/vermelho nos últimos 0.8s
+    // Inicia o efeito apenas durante o período da transição final
+    const startT = Math.max(0, duration - transDur).toFixed(2);
+    
+    // Efeito Burn: Flash Amarelo/Laranja Brilhante
     if (id === 'burn' || id === 'queimadura de filme') {
-        const startT = Math.max(0, duration - 0.8).toFixed(2);
-        // eq: Brightness/Saturation up | colorbalance: Red/Green up, Blue down (Yellow/Orange)
-        return `,eq=enable='gt(t,${startT})':brightness='0.5*(t-${startT})':saturation=2,colorbalance=enable='gt(t,${startT})':rs=0.4:gs=0.2:bs=-0.4`;
+        // eq: Aumenta brilho e saturação
+        // colorbalance: Aumenta vermelho (rs) e verde (gs) para criar amarelo, reduz azul (bs)
+        return `,eq=enable='gt(t,${startT})':brightness=0.3:saturation=2,colorbalance=enable='gt(t,${startT})':rs=0.3:gs=0.1:bs=-0.3`;
     }
     
     // Flash Bang: Estouro branco rápido
     if (id === 'flash-bang') {
-        const startT = Math.max(0, duration - 0.4).toFixed(2);
-        return `,eq=enable='gt(t,${startT})':brightness='2*(t-${startT})':contrast=2`;
+        return `,eq=enable='gt(t,${startT})':brightness=0.7:contrast=1.5`;
     }
 
-    // Glitch: Aberração cromática antes do corte
+    // Glitch: Ruído visual
     if (id === 'glitch' || id === 'rgb-split') {
-        const startT = Math.max(0, duration - 0.5).toFixed(2);
-        return `,rgbashift=enable='gt(t,${startT})':rh=20:bv=20`;
+        return `,noise=enable='gt(t,${startT})':alls=20:allf=t`;
     }
 
     return "";
@@ -280,7 +282,7 @@ async function handleExport(job, uploadDir, callback) {
         const sortedScenes = Object.keys(sceneMap).sort((a,b) => a - b).map(k => sceneMap[k]);
         const clipPaths = [];
         const videoClipDurations = [];
-        const transDur = 0.5;
+        const transDur = 1.0; // FIX: Duração da transição aumentada para 1.0s conforme solicitado
 
         // Renderizar Cenas
         for (let i = 0; i < sortedScenes.length; i++) {
@@ -326,7 +328,7 @@ async function handleExport(job, uploadDir, callback) {
 
             const moveFilter = getMovementFilter(movement, dur, targetW, targetH);
             
-            // Aplica efeito de cor/brilho no final do clipe se necessário (ex: Film Burn Amarelo)
+            // Aplica efeito de cor/brilho no final do clipe se necessário
             const preTransEffect = getPreTransitionEffect(transitionType, dur);
 
             if (scene.visual?.mimetype?.includes('image')) {
@@ -339,7 +341,7 @@ async function handleExport(job, uploadDir, callback) {
                 '-filter_complex', filterComplex,
                 '-map', '[v_out]',
                 '-map', audioMap,
-                '-t', dur.toFixed(3),
+                '-t', dur.toFixed(3), // Garante duração exata
                 ...getVideoArgs(), 
                 ...getAudioArgs(),
                 clipPath
@@ -386,6 +388,7 @@ async function handleExport(job, uploadDir, callback) {
                 const vNext = `[${i+1}:v]`;
                 const aNext = `[${i+1}:a]`;
                 
+                // Offset calculation logic
                 if (i === 0) accumOffset = videoClipDurations[0] - transDur;
                 else accumOffset += (videoClipDurations[i] - transDur);
                 
