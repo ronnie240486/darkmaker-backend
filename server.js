@@ -228,7 +228,7 @@ async function handleExport(job, uploadDir, callback) {
         const sortedScenes = Object.keys(sceneMap).sort((a,b) => a - b).map(k => sceneMap[k]);
         const clipPaths = [];
         const videoClipDurations = [];
-        const transDur = 0.5;
+        const transDur = 1.0; // Duração fixa de 1s para consistência
 
         // Renderizar Cenas
         for (let i = 0; i < sortedScenes.length; i++) {
@@ -274,11 +274,14 @@ async function handleExport(job, uploadDir, callback) {
 
             const moveFilter = getMovementFilter(movement, dur, targetW, targetH);
             
+            // FIX CRÍTICO: Adicionado setpts=PTS-STARTPTS
+            // Isso garante que o timestamp do vídeo gerado comece do zero
+            // Sem isso, concatenações de vídeos gerados por zoompan falham
             if (scene.visual?.mimetype?.includes('image')) {
-                filterComplex += `[0:v]${moveFilter}[v_out]`;
+                filterComplex += `[0:v]${moveFilter},setpts=PTS-STARTPTS[v_out]`;
             } else {
                 // Ensure even dimensions for video inputs too
-                filterComplex += `[0:v]scale=${targetW}:${targetH}:force_original_aspect_ratio=increase,crop=${targetW}:${targetH},pad=ceil(iw/2)*2:ceil(ih/2)*2,setsar=1,fps=24,format=yuv420p[v_out]`;
+                filterComplex += `[0:v]scale=${targetW}:${targetH}:force_original_aspect_ratio=increase,crop=${targetW}:${targetH},pad=ceil(iw/2)*2:ceil(ih/2)*2,setsar=1,fps=24,format=yuv420p,setpts=PTS-STARTPTS[v_out]`;
             }
 
             args.push(
@@ -332,6 +335,8 @@ async function handleExport(job, uploadDir, callback) {
                 const vNext = `[${i+1}:v]`;
                 const aNext = `[${i+1}:a]`;
                 
+                // Cálculo de Offset: Onde começa a próxima cena?
+                // Começa no fim da atual MENOS a duração da transição (sobreposição)
                 if (i === 0) accumOffset = videoClipDurations[0] - transDur;
                 else accumOffset += (videoClipDurations[i] - transDur);
                 
