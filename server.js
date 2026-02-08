@@ -280,44 +280,46 @@ async function renderVideoProject(project, jobId) {
         ]);
         jobs[jobId].progress = 70;
     } else {
-        // === MODO TRANSIÇÃO (XFADE) ===
-        let filterGraph = "";
-        let prevLabelV = "[0:v]";
-        let prevLabelA = "[0:a]";
-        let outIndex = 0;
-        const trDur = project.transitionDuration || 1.0;
-        let timeCursor = durations[0];
+    // === MODO TRANSIÇÃO (XFADE) ===
+    let filterGraph = "";
+    let prevV = "[0:v]";
+    let prevA = "[0:a]";
+    let outIndex = 0;
 
-        for (let i = 1; i < tempClips.length; i++) {
-            const offset = timeCursor - trDur;
-            const outLabelV = `[v${outIndex + 1}]`;
-            const outLabelA = `[a${outIndex + 1}]`;
+    const trDur = project.transitionDuration || 1;
+    let cursor = durations[0];
 
-            // Video Xfade
-            filterGraph += `${prevLabelV}[${i}:v]xfade=transition=${trType}:duration=${trDur}:offset=${offset}${outLabelV};`;
-            
-            // Audio Acrossfade
-            filterGraph += `${prevLabelA}[${i}:a]acrossfade=d=${trDur}:c1=tri:c2=tri${outLabelA};`;
+    for (let i = 1; i < tempClips.length; i++) {
+        const offset = cursor - trDur;
+        const vOut = `[v${outIndex+1}]`;
+        const aOut = `[a${outIndex+1}]`;
 
-            prevLabelV = outLabelV;
-            prevLabelA = outLabelA;
-            outIndex++;
+        // Video
+        filterGraph += `${prevV}[${i}:v]xfade=transition=${trType}:duration=${trDur}:offset=${offset}${vOut};`;
 
-            timeCursor += (durations[i] - trDur);
-        }
+        // Audio
+        filterGraph += `${prevA}[${i}:a]acrossfade=d=${trDur}:c1=tri:c2=tri${aOut};`;
 
-        await runFFmpeg([
-            "-y",
-            ...inputArgs,
-            "-filter_complex", filterGraph,
-            "-map", prevLabelV,
-            "-map", prevLabelA,
-            ...getVideoArgs(),
-            ...getAudioArgs(),
-            concatOut
-        ]);
-        jobs[jobId].progress = 70;
+        prevV = vOut;
+        prevA = aOut;
+        outIndex++;
+        cursor += (durations[i] - trDur);
     }
+
+    await runFFmpeg([
+        "-y",
+        ...inputArgs,
+        "-filter_complex", filterGraph,
+        "-map", prevV,
+        "-map", prevA,
+        ...getVideoArgs(),
+        ...getAudioArgs(),
+        concatOut
+    ]);
+
+    jobs[jobId].progress = 70;
+}
+
 
     // -----------------------------------------------
     //   GLOBAL AUDIO MIXING (BGM / SFX Overlays)
