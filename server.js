@@ -84,6 +84,7 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
 
     const selected = moves[moveId] || moves['kenburns'];
 
+    // Ensure even dimensions for libx264
     const pre = `scale=${targetW*2}:${targetH*2}:force_original_aspect_ratio=increase,crop=${targetW*2}:${targetH*2},setsar=1`;
     const post = `scale=${targetW}:${targetH},pad=ceil(iw/2)*2:ceil(ih/2)*2,fps=24,format=yuv420p`;
 
@@ -95,7 +96,7 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
 // ==============================
 function getTransitionXfade(t) {
     const map = {
-        'cut': 'cut', // Preserva 'cut' para tratamento especial
+        'cut': 'cut',
         'fade':'fade',
         'mix':'dissolve',
         'black':'fadeblack',
@@ -182,56 +183,58 @@ async function renderVideoProject(project, jobId) {
     const durations = [];
 
     // -----------------------------------------------
-    // PROCESSA CADA CLIP (VIDEO + AUDIO)
+    // 1. PROCESSA CADA CLIP (VIDEO + AUDIO)
     // -----------------------------------------------
     for (let i = 0; i < project.clips.length; i++) {
         const clip = project.clips[i];
         const inputPath = path.join(UPLOAD_DIR, clip.file);
         
-        // Determine Duration
         let duration = clip.duration || 5;
         if (duration <= 0) duration = 5;
-
         durations.push(duration);
 
-        // Movement
         const movementFilter = getMovementFilter(clip.movement || "kenburns", duration);
         const outFile = path.join(sessionDir, `clip_${i}.mp4`);
         tempClips.push(outFile);
 
         const args = ["-y"];
-        let filterComplex = "";
         
-        // Inputs
-        // 0: Video/Image
-        if (clip.file.match(/\.(mp4|mov|webm)$/i)) {
+        // Input Logic: Check extension for Video vs Image
+        // If it's a known video extension, treat as video stream
+        if (clip.file.match(/\.(mp4|mov|webm|avi|mkv)$/i)) {
              args.push("-stream_loop", "-1", "-i", inputPath);
         } else {
+             // Otherwise assume image (png, jpg, jpeg, etc)
              args.push("-loop", "1", "-i", inputPath);
         }
 
-        // 1: Audio (Optional)
-        let hasAudio = false;
+        // Audio Input Logic
+        let hasExternalAudio = false;
+        let hasInternalAudio = false;
+
         if (clip.audio) {
-            const audioPath = path.join(UPLOAD_DIR, clip.audio);
-            if (fs.existsSync(audioPath)) {
-                args.push("-i", audioPath);
-                hasAudio = true;
+            const aPath = path.join(UPLOAD_DIR, clip.audio);
+            if (fs.existsSync(aPath)) {
+                args.push("-i", aPath);
+                hasExternalAudio = true;
             }
         }
 
-        // Filters
-        // [0:v] -> Movement -> [v_out]
-        filterComplex += `[0:v]${movementFilter}[v_out];`;
+        if (!hasExternalAudio) {
+            hasInternalAudio = await fileHasAudio(inputPath);
+        }
+
+        // Build Filter Complex
+        let filterComplex = `[0:v]${movementFilter}[v_out];`;
         
-        // Audio Logic: 
-        // If hasAudio -> pad to duration -> [a_out]
-        // If no audio -> generate silence -> [a_out]
-        if (hasAudio) {
-            // [1:a] -> apad -> [a_out]
-            filterComplex += `[1:a]apad[a_out]`;
+        if (hasExternalAudio) {
+            // Use external audio (Input 1), pad to duration
+            filterComplex += `[1:a]apad,atrim=0:${duration}[a_out]`;
+        } else if (hasInternalAudio) {
+            // Use internal audio (Input 0), pad to duration
+            filterComplex += `[0:a]apad,atrim=0:${duration}[a_out]`;
         } else {
-            // Generate silence matching duration
+            // Generate silence
             filterComplex += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration}[a_out]`;
         }
 
@@ -241,96 +244,104 @@ async function renderVideoProject(project, jobId) {
             "-map", "[a_out]",
             "-t", duration.toString(),
             ...getVideoArgs(),
-            ...getAudioArgs(), // Ensure AAC Audio
+            ...getAudioArgs(),
             outFile
         );
 
-        await runFFmpeg(args);
+        await runFFmpeg(args).catch(e => {
+            console.error(`Failed to process clip ${i}:`, e);
+            throw e;
+        });
+        
         jobs[jobId].progress = Math.floor((i / project.clips.length) * 45);
     }
 
     // -----------------------------------------------
-    //   CONCATENAÇÃO (CUT ou XFADE)
+    // 2. CONCATENAÇÃO (CUT ou XFADE)
     // -----------------------------------------------
-    const inputArgs = [];
-    tempClips.forEach(path => inputArgs.push("-i", path));
-
     const concatOut = path.join(sessionDir, "video_final.mp4");
     const trType = getTransitionXfade(project.transition || "fade");
 
-    // Se só tiver 1 clipe, apenas copia
     if (tempClips.length === 1) {
         fs.copyFileSync(tempClips[0], concatOut);
         jobs[jobId].progress = 70;
     } else if (trType === 'cut') {
-        // === MODO CORTE SECO (CONCAT FILTER) ===
-        // Mais robusto que xfade para cortes simples
-        let concatFilter = "";
-        for(let i=0; i<tempClips.length; i++) {
-            concatFilter += `[${i}:v][${i}:a]`;
+        // === MODO CORTE SECO (CONCAT DEMUXER) ===
+        // IMPORTANT: Replace backslashes for FFmpeg compatibility on Windows
+        const listPath = path.join(sessionDir, "concat_list.txt");
+        const listContent = tempClips.map(p => `file '${p.replace(/\\/g, '/')}'`).join('\n');
+        fs.writeFileSync(listPath, listContent);
+
+        try {
+            await runFFmpeg([
+                "-y",
+                "-f", "concat",
+                "-safe", "0",
+                "-i", listPath,
+                "-c", "copy", // Try stream copy first
+                concatOut
+            ]);
+        } catch (e) {
+            console.log("Concat copy failed, trying re-encode...", e);
+            await runFFmpeg([
+                "-y", 
+                "-f", "concat", 
+                "-safe", "0", 
+                "-i", listPath,
+                ...getVideoArgs(), 
+                ...getAudioArgs(),
+                concatOut
+            ]);
         }
-        concatFilter += `concat=n=${tempClips.length}:v=1:a=1[v_final][a_final]`;
         
+        jobs[jobId].progress = 70;
+    } else {
+        // === MODO TRANSIÇÃO (XFADE) ===
+        const inputArgs = [];
+        tempClips.forEach(path => inputArgs.push("-i", path));
+        
+        let filterGraph = "";
+        let prevLabelV = "[0:v]";
+        let prevLabelA = "[0:a]";
+        let outIndex = 0;
+        const trDur = project.transitionDuration || 1.0;
+        let timeCursor = durations[0];
+
+        for (let i = 1; i < tempClips.length; i++) {
+            const offset = timeCursor - trDur;
+            const outLabelV = `[v${outIndex + 1}]`;
+            const outLabelA = `[a${outIndex + 1}]`;
+
+            // Video Xfade
+            filterGraph += `${prevLabelV}[${i}:v]xfade=transition=${trType}:duration=${trDur}:offset=${offset}${outLabelV};`;
+            // Audio Acrossfade
+            filterGraph += `${prevLabelA}[${i}:a]acrossfade=d=${trDur}:c1=tri:c2=tri${outLabelA};`;
+
+            prevLabelV = outLabelV;
+            prevLabelA = outLabelA;
+            outIndex++;
+            timeCursor += (durations[i] - trDur);
+        }
+
         await runFFmpeg([
             "-y", ...inputArgs,
-            "-filter_complex", concatFilter,
-            "-map", "[v_final]", "-map", "[a_final]",
+            "-filter_complex", filterGraph,
+            "-map", prevLabelV, "-map", prevLabelA,
             ...getVideoArgs(), ...getAudioArgs(),
             concatOut
         ]);
         jobs[jobId].progress = 70;
-    } else {
-    // === MODO TRANSIÇÃO (XFADE) ===
-    let filterGraph = "";
-    let prevV = "[0:v]";
-    let prevA = "[0:a]";
-    let outIndex = 0;
-
-    const trDur = project.transitionDuration || 1;
-    let cursor = durations[0];
-
-    for (let i = 1; i < tempClips.length; i++) {
-        const offset = cursor - trDur;
-        const vOut = `[v${outIndex+1}]`;
-        const aOut = `[a${outIndex+1}]`;
-
-        // Video
-        filterGraph += `${prevV}[${i}:v]xfade=transition=${trType}:duration=${trDur}:offset=${offset}${vOut};`;
-
-        // Audio
-        filterGraph += `${prevA}[${i}:a]acrossfade=d=${trDur}:c1=tri:c2=tri${aOut};`;
-
-        prevV = vOut;
-        prevA = aOut;
-        outIndex++;
-        cursor += (durations[i] - trDur);
     }
 
-    await runFFmpeg([
-        "-y",
-        ...inputArgs,
-        "-filter_complex", filterGraph,
-        "-map", prevV,
-        "-map", prevA,
-        ...getVideoArgs(),
-        ...getAudioArgs(),
-        concatOut
-    ]);
-
-    jobs[jobId].progress = 70;
-}
-
-
     // -----------------------------------------------
-    //   GLOBAL AUDIO MIXING (BGM / SFX Overlays)
+    // 3. MIXAGEM GLOBAL (BGM)
     // -----------------------------------------------
     const bgm = project.audio?.bgm ? path.join(UPLOAD_DIR, project.audio.bgm) : null;
-    
-    // We already have voice/scene audio in concatOut. We just need to ADD BGM if exists.
     let finalOutput = path.join(OUTPUT_DIR, `video_${jobId}.mp4`);
 
     if (bgm && fs.existsSync(bgm)) {
-        const mixGraph = `[1:a]aloop=loop=-1:size=2e+09,volume=${project.audio.bgmVolume ?? 0.2}[bgm];[0:a][bgm]amix=inputs=2:duration=first[a_final]`;
+        // Mixa música de fundo com o áudio do vídeo concatenado
+        const mixGraph = `[1:a]aloop=loop=-1:size=2e+09,volume=${project.audio.bgmVolume ?? 0.2}[bgm];[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=0[a_final]`;
         
         await runFFmpeg([
             "-y",
@@ -344,7 +355,6 @@ async function renderVideoProject(project, jobId) {
             finalOutput
         ]);
     } else {
-        // Just copy/move if no extra audio layers
         fs.copyFileSync(concatOut, finalOutput);
     }
 
@@ -358,9 +368,12 @@ async function renderVideoProject(project, jobId) {
 function runFFmpeg(args) {
     return new Promise((resolve, reject) => {
         const ff = spawn(ffmpegPath, args);
+        let errData = "";
+        ff.stderr.on('data', d => errData += d.toString());
+        
         ff.on("close", code => {
             if (code === 0) resolve();
-            else reject("FFmpeg error " + code);
+            else reject(`FFmpeg error ${code}: ${errData.slice(-200)}`);
         });
     });
 }
@@ -377,7 +390,7 @@ app.post("/api/upload", (req, res) => {
     });
 });
 
-// RENDER (Mappings for VideoTurbo)
+// RENDER
 app.post("/api/render", async (req, res) => {
     uploadAny(req, res, async (err) => {
         if (err) return res.status(500).json({ error: "Upload failed" });
@@ -386,13 +399,12 @@ app.post("/api/render", async (req, res) => {
             const jobId = Date.now().toString();
             jobs[jobId] = { progress: 1, status: "processing" };
 
-            // Parse Config sent by VideoTurbo
+            // Parse Config
             let config = {};
             if (req.body.config) {
                 try { config = JSON.parse(req.body.config); } catch(e) {}
             }
 
-            // Construct Project Object
             const project = {
                 clips: [],
                 audio: {
@@ -400,23 +412,20 @@ app.post("/api/render", async (req, res) => {
                     bgmVolume: config.musicVolume || 0.2,
                     sfxVolume: config.sfxVolume || 0.5
                 },
-                transition: config.transition || 'cut', // Default to cut for safety
+                transition: config.transition || 'cut', 
                 transitionDuration: 1.0
             };
 
-            // Files from Multer
             const visuals = req.files.filter(f => f.fieldname === 'visualFiles');
             const audios = req.files.filter(f => f.fieldname === 'audioFiles');
             const extras = req.files.filter(f => f.fieldname === 'additionalFiles');
 
-            // Find BGM
             const bgmFile = extras.find(f => f.originalname.includes('background_music'));
             if (bgmFile) project.audio.bgm = bgmFile.filename;
 
-            // Map Clips
             for (let i = 0; i < visuals.length; i++) {
                 const vFile = visuals[i];
-                const aFile = audios[i]; // Corresponding audio/silence for this scene
+                const aFile = audios[i]; 
                 const meta = config.sceneData ? config.sceneData[i] : {};
 
                 project.clips.push({
@@ -427,7 +436,6 @@ app.post("/api/render", async (req, res) => {
                 });
             }
 
-            // Start Render
             renderVideoProject(project, jobId)
                 .then(outputPath => {
                     jobs[jobId].status = "completed";
