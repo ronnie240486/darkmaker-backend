@@ -256,13 +256,15 @@ async function renderVideoProject(project, jobId) {
         // Force audio format to be consistent across all clips to prevent concat issues
         if (hasExternalAudio) {
             // External audio is input 1 (input 0 is video)
-            filterComplex += `[1:a]apad,atrim=0:${duration},aformat=sample_rates=44100:channel_layouts=stereo[a_out]`;
+            filterComplex += `[1:a]apad,atrim=0:${duration},aformat=sample_rates=44100:channel_layouts=stereo[a_out];`;
+
         } else if (hasInternalAudio) {
             // Internal audio is input 0
-            filterComplex += `[0:a]apad,atrim=0:${duration},aformat=sample_rates=44100:channel_layouts=stereo[a_out]`;
+            filterComplex += `[0:a]apad,atrim=0:${duration},aformat=sample_rates=44100:channel_layouts=stereo[a_out];`;
         } else {
             // Generate silence matching duration
-            filterComplex += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration},aformat=sample_rates=44100:channel_layouts=stereo[a_out]`;
+            filterComplex += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration},aformat=sample_rates=44100:channel_layouts=stereo[a_out];
+
         }
 
         args.push(
