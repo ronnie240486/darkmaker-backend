@@ -25,7 +25,6 @@ const OUTPUT_DIR = path.join(__dirname, 'outputs');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
 [UPLOAD_DIR, OUTPUT_DIR, PUBLIC_DIR].forEach(dir => {
-    // If it exists but is a file, remove it (prevents ENOTDIR)
     if (fs.existsSync(dir) && !fs.lstatSync(dir).isDirectory()) {
         fs.rmSync(dir, { force: true });
     }
@@ -33,7 +32,7 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 });
 
 // ==============================
-//      FILE CHECKS
+//      FILE CHECKS & HELPERS
 // ==============================
 async function fileHasAudio(file) {
     return new Promise(resolve => {
@@ -63,9 +62,6 @@ async function isVideoFile(file) {
     });
 }
 
-// ==============================
-//      DURATION
-// ==============================
 function getExactDuration(filePath) {
     return new Promise(resolve => {
         execFile(ffprobePath.path, [
@@ -80,8 +76,34 @@ function getExactDuration(filePath) {
     });
 }
 
+const saveBase64OrUrl = async (input, prefix, ext) => {
+    if (!input) return null;
+    const filename = `${prefix}_${Date.now()}_${Math.random().toString(36).substr(2, 5)}.${ext}`;
+    const filepath = path.join(UPLOAD_DIR, filename);
+    
+    try {
+        if (input.startsWith('data:')) {
+            const matches = input.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+            if (!matches || matches.length !== 3) return null;
+            const buffer = Buffer.from(matches[2], 'base64');
+            fs.writeFileSync(filepath, buffer);
+            return filename;
+        } else if (input.startsWith('http')) {
+            const res = await fetch(input);
+            if (!res.ok) return null;
+            const arrayBuffer = await res.arrayBuffer();
+            fs.writeFileSync(filepath, Buffer.from(arrayBuffer));
+            return filename;
+        }
+    } catch(e) {
+        console.error("Error saving asset:", e);
+        return null;
+    }
+    return null;
+};
+
 // ==============================
-//      MOVEMENT FILTERS
+//      MOVEMENT & FILTERS
 // ==============================
 function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 720) {
     const d = parseFloat(durationSec) || 5;
@@ -101,46 +123,21 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
     };
 
     const selected = moves[moveId] || moves['kenburns'];
-
     const pre = `scale=${targetW*2}:${targetH*2}:force_original_aspect_ratio=increase,crop=${targetW*2}:${targetH*2},setsar=1`;
     const post = `scale=${targetW}:${targetH},pad=ceil(iw/2)*2:ceil(ih/2)*2,fps=24,format=yuv420p`;
-
     return `${pre},${selected},${post}`;
 }
 
-// ==============================
-//      TRANSIÇÕES
-// ==============================
 function getTransitionXfade(t) {
     const map = {
-        'cut': 'cut',
-        'fade':'fade',
-        'mix':'dissolve',
-        'black':'fadeblack',
-        'white':'fadewhite',
-        'slide-left':'slideleft',
-        'slide-right':'slideright'
+        'cut': 'cut', 'fade':'fade', 'mix':'dissolve', 'black':'fadeblack', 'white':'fadewhite',
+        'slide-left':'slideleft', 'slide-right':'slideright'
     };
     return map[t] || 'fade';
 }
 
-// ==============================
-//      ARGS PADRÃO
-// ==============================
-const getVideoArgs = () => [
-    '-c:v','libx264',
-    '-preset','ultrafast',
-    '-pix_fmt','yuv420p',
-    '-movflags','+faststart',
-    '-r','24'
-];
-
-const getAudioArgs = () => [
-    '-c:a','aac',
-    '-b:a','192k',
-    '-ar','44100',
-    '-ac','2'
-];
+const getVideoArgs = () => ['-c:v','libx264','-preset','ultrafast','-pix_fmt','yuv420p','-movflags','+faststart','-r','24'];
+const getAudioArgs = () => ['-c:a','aac','-b:a','192k','-ar','44100','-ac','2'];
 
 // ==============================
 //  FRONTEND BUILD
@@ -149,21 +146,13 @@ async function buildFrontend() {
     try {
         const copySafe = (src, dest) => {
             if (fs.existsSync(src)) {
-                try {
-                    // Ensure dest directory exists
-                    const destDir = path.dirname(dest);
-                    if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
-                    
-                    fs.copyFileSync(src, dest);
-                } catch(e) {
-                    console.warn(`Failed to copy ${src} to ${dest}:`, e.message);
-                }
+                const destDir = path.dirname(dest);
+                if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
+                fs.copyFileSync(src, dest);
             }
         };
-
         copySafe('index.html', path.join(PUBLIC_DIR,'index.html'));
         copySafe('index.css', path.join(PUBLIC_DIR,'index.css'));
-
         await esbuild.build({
             entryPoints:['index.tsx'],
             outfile:path.join(PUBLIC_DIR,'bundle.js'),
@@ -174,16 +163,12 @@ async function buildFrontend() {
             define: { 'process.env.API_KEY': JSON.stringify(GEMINI_KEY), 'global': 'window' },
             loader: { '.tsx': 'tsx', '.ts': 'ts', '.css': 'css' },
         });
-
-    } catch(e) {
-        console.error("Frontend error:", e);
-    }
+    } catch(e) { console.error("Frontend error:", e); }
 }
-
 await buildFrontend();
 
 // ==============================
-//  SERVER PREFS
+//  SERVER CONFIG
 // ==============================
 app.use(cors());
 app.use(express.json({limit:'900mb'}));
@@ -195,57 +180,25 @@ const storage = multer.diskStorage({
     destination:(req,file,cb)=>cb(null,UPLOAD_DIR),
     filename:(req,file,cb)=>cb(null, Date.now()+"-"+file.originalname.replace(/[^a-zA-Z0-9_.-]/g,"_"))
 });
-
 const uploadAny = multer({storage}).any();
-
 const jobs = {};
 
-// Helper to save base64/url to file
-const saveBase64OrUrl = async (input, prefix, ext) => {
-    if (!input) return null;
-    const filename = `${prefix}_${Date.now()}_${Math.random().toString(36).substr(2, 5)}.${ext}`;
-    const filepath = path.join(UPLOAD_DIR, filename);
-    
-    try {
-        if (input.startsWith('data:')) {
-            // Data URI
-            const matches = input.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
-            if (!matches || matches.length !== 3) return null;
-            const buffer = Buffer.from(matches[2], 'base64');
-            fs.writeFileSync(filepath, buffer);
-            return filename;
-        } else if (input.startsWith('http')) {
-            // Remote URL
-            const res = await fetch(input);
-            if (!res.ok) return null;
-            const arrayBuffer = await res.arrayBuffer();
-            fs.writeFileSync(filepath, Buffer.from(arrayBuffer));
-            return filename;
-        }
-    } catch(e) {
-        console.error("Error saving asset:", e);
-        return null;
-    }
-    return null;
-};
-
-// ============================================================================
-//                           RENDER ENGINE
-// ============================================================================
-
+// ==============================
+//  RENDER ENGINE
+// ==============================
 async function renderVideoProject(project, jobId) {
     const sessionDir = path.join(OUTPUT_DIR, `job_${jobId}`);
     if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
 
+    if (!project.clips || project.clips.length === 0) {
+        throw new Error("Nenhum clipe para renderizar.");
+    }
+
     const tempClips = [];
     const durations = [];
-
     let targetW = 1280;
     let targetH = 720;
-    if (project.aspectRatio === '9:16') {
-        targetW = 720;
-        targetH = 1280;
-    }
+    if (project.aspectRatio === '9:16') { targetW = 720; targetH = 1280; }
 
     for (let i = 0; i < project.clips.length; i++) {
         const clip = project.clips[i];
@@ -261,11 +214,8 @@ async function renderVideoProject(project, jobId) {
         const args = ["-y"];
         const isVideo = await isVideoFile(inputPath);
 
-        if (isVideo) {
-             args.push("-stream_loop", "-1", "-i", inputPath);
-        } else {
-             args.push("-loop", "1", "-i", inputPath);
-        }
+        if (isVideo) args.push("-stream_loop", "-1", "-i", inputPath);
+        else args.push("-loop", "1", "-i", inputPath);
 
         let hasExternalAudio = false;
         let hasInternalAudio = false;
@@ -277,13 +227,9 @@ async function renderVideoProject(project, jobId) {
                 hasExternalAudio = true;
             }
         }
-
-        if (!hasExternalAudio) {
-            hasInternalAudio = await fileHasAudio(inputPath);
-        }
+        if (!hasExternalAudio) hasInternalAudio = await fileHasAudio(inputPath);
 
         let filterComplex = "";
-
         if (isVideo) {
             const pre = `scale=${targetW*2}:${targetH*2}:force_original_aspect_ratio=increase,crop=${targetW*2}:${targetH*2},setsar=1`;
             const post = `scale=${targetW}:${targetH},pad=ceil(iw/2)*2:ceil(ih/2)*2,fps=24,format=yuv420p`;
@@ -293,29 +239,13 @@ async function renderVideoProject(project, jobId) {
             filterComplex = `[0:v]${movementFilter}[v_out];`;
         }
         
-        if (hasExternalAudio) {
-            filterComplex += `[1:a]apad,atrim=0:${duration},aformat=sample_rates=44100:channel_layouts=stereo[a_out]`;
-        } else if (hasInternalAudio) {
-            filterComplex += `[0:a]apad,atrim=0:${duration},aformat=sample_rates=44100:channel_layouts=stereo[a_out]`;
-        } else {
-            filterComplex += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration},aformat=sample_rates=44100:channel_layouts=stereo[a_out]`;
-        }
+        if (hasExternalAudio) filterComplex += `[1:a]apad,atrim=0:${duration},aformat=sample_rates=44100:channel_layouts=stereo[a_out]`;
+        else if (hasInternalAudio) filterComplex += `[0:a]apad,atrim=0:${duration},aformat=sample_rates=44100:channel_layouts=stereo[a_out]`;
+        else filterComplex += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration},aformat=sample_rates=44100:channel_layouts=stereo[a_out]`;
 
-        args.push(
-            "-filter_complex", filterComplex,
-            "-map", "[v_out]",
-            "-map", "[a_out]",
-            "-t", duration.toString(),
-            ...getVideoArgs(),
-            ...getAudioArgs(),
-            outFile
-        );
+        args.push("-filter_complex", filterComplex, "-map", "[v_out]", "-map", "[a_out]", "-t", duration.toString(), ...getVideoArgs(), ...getAudioArgs(), outFile);
 
-        await runFFmpeg(args).catch(e => {
-            console.error(`Failed to process clip ${i}:`, e);
-            throw e;
-        });
-        
+        await runFFmpeg(args).catch(e => { console.error(`Failed clip ${i}:`, e); throw e; });
         jobs[jobId].progress = Math.floor((i / project.clips.length) * 45);
     }
 
@@ -329,25 +259,12 @@ async function renderVideoProject(project, jobId) {
         const listPath = path.join(sessionDir, "concat_list.txt");
         const listContent = tempClips.map(p => `file '${p.replace(/\\/g, '/')}'`).join('\n');
         fs.writeFileSync(listPath, listContent);
-
-        try {
-            await runFFmpeg([
-                "-y", "-f", "concat", "-safe", "0", "-i", listPath,
-                "-c", "copy",
-                concatOut
-            ]);
-        } catch (e) {
-            await runFFmpeg([
-                "-y", "-f", "concat", "-safe", "0", "-i", listPath,
-                ...getVideoArgs(), ...getAudioArgs(),
-                concatOut
-            ]);
-        }
+        try { await runFFmpeg(["-y", "-f", "concat", "-safe", "0", "-i", listPath, "-c", "copy", concatOut]); } 
+        catch (e) { await runFFmpeg(["-y", "-f", "concat", "-safe", "0", "-i", listPath, ...getVideoArgs(), ...getAudioArgs(), concatOut]); }
         jobs[jobId].progress = 70;
     } else {
         const inputArgs = [];
         tempClips.forEach(path => inputArgs.push("-i", path));
-        
         let filterGraph = "";
         let prevLabelV = "[0:v]";
         let prevLabelA = "[0:a]";
@@ -359,28 +276,15 @@ async function renderVideoProject(project, jobId) {
             const offset = timeCursor - trDur;
             const outLabelV = `[v${outIndex + 1}]`;
             const outLabelA = `[a${outIndex + 1}]`;
-
             filterGraph += `${prevLabelV}[${i}:v]xfade=transition=${trType}:duration=${trDur}:offset=${offset}${outLabelV};`;
             filterGraph += `${prevLabelA}[${i}:a]acrossfade=d=${trDur}:c1=tri:c2=tri[a_tmp${i}];`;
             filterGraph += `[a_tmp${i}]aformat=sample_rates=44100:channel_layouts=stereo${outLabelA};`;
-
             prevLabelV = outLabelV;
             prevLabelA = outLabelA;
             outIndex++;
             timeCursor += (durations[i] - trDur);
         }
-
-        await runFFmpeg([
-            "-y",
-            ...inputArgs,
-            "-filter_complex", filterGraph,
-            "-map", prevLabelV,
-            "-map", prevLabelA,
-            ...getVideoArgs(),
-            ...getAudioArgs(),
-            concatOut
-        ]);
-
+        await runFFmpeg(["-y", ...inputArgs, "-filter_complex", filterGraph, "-map", prevLabelV, "-map", prevLabelA, ...getVideoArgs(), ...getAudioArgs(), concatOut]);
         jobs[jobId].progress = 70;
     }
 
@@ -390,15 +294,7 @@ async function renderVideoProject(project, jobId) {
     if (bgm && fs.existsSync(bgm)) {
         const duration = durations.reduce((a,b)=>a+b, 0);
         const mixGraph = `[1:a]aloop=loop=-1:size=2e+09,volume=${project.audio.bgmVolume ?? 0.2}[bgm];[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=0[a_final]`;
-        
-        await runFFmpeg([
-            "-y", "-i", concatOut, "-i", bgm,
-            "-filter_complex", mixGraph,
-            "-map", "0:v", "-map", "[a_final]",
-            "-t", duration.toString(),
-            ...getVideoArgs(), ...getAudioArgs(),
-            finalOutput
-        ]);
+        await runFFmpeg(["-y", "-i", concatOut, "-i", bgm, "-filter_complex", mixGraph, "-map", "0:v", "-map", "[a_final]", "-t", duration.toString(), ...getVideoArgs(), ...getAudioArgs(), finalOutput]);
     } else {
         fs.copyFileSync(concatOut, finalOutput);
     }
@@ -423,124 +319,50 @@ function runFFmpeg(args) {
 //      ROUTES
 // ==============================
 
-app.post("/api/upload", (req, res) => {
-    uploadAny(req, res, (err) => {
-        if (err) return res.status(500).json({ error: "Falha no upload", details: err });
-        res.json({ files: req.files });
-    });
-});
-
+// Main Render Endpoint with JSON/Multipart separation
 app.post("/api/render/start", async (req, res) => {
-    uploadAny(req, res, async (err) => {
-        if (err) return res.status(500).json({ error: "Upload failed" });
+    const contentType = req.headers['content-type'] || '';
+    const jobId = Date.now().toString();
+    jobs[jobId] = { progress: 1, status: "processing" };
 
+    // 1. JSON Mode (Magic Workflow, no file upload)
+    if (contentType.includes('application/json')) {
         try {
-            const jobId = Date.now().toString();
-            jobs[jobId] = { progress: 1, status: "processing" };
+            const scenes = req.body.scenes;
+            const config = req.body.config || {};
+            const bgmUrl = req.body.bgmUrl;
 
-            // === JSON MODE (Magic Workflow) ===
-            if (req.body.scenes && (typeof req.body.scenes === 'object' || Array.isArray(req.body.scenes))) {
-                const scenes = req.body.scenes;
-                const config = req.body.config || {};
-                const bgmUrl = req.body.bgmUrl;
-
-                const project = {
-                    clips: [],
-                    audio: {
-                        bgm: null,
-                        bgmVolume: config.musicVolume || 0.2,
-                        sfxVolume: config.sfxVolume || 0.5
-                    },
-                    transition: config.transition || 'cut', 
-                    transitionDuration: 1.0,
-                    aspectRatio: config.aspectRatio || '16:9'
-                };
-
-                // Save BGM if provided
-                if (bgmUrl) {
-                    project.audio.bgm = await saveBase64OrUrl(bgmUrl, 'bgm', 'mp3');
-                }
-
-                // Process Scenes
-                for (let i = 0; i < scenes.length; i++) {
-                    const s = scenes[i];
-                    
-                    // Visual (Video priority over Image)
-                    let visualFile = null;
-                    if (s.videoUrl) {
-                        visualFile = await saveBase64OrUrl(s.videoUrl, `scene_${i}_vid`, 'mp4');
-                    } else if (s.imageUrl) {
-                        visualFile = await saveBase64OrUrl(s.imageUrl, `scene_${i}_img`, 'png');
-                    }
-
-                    // Audio (Narration)
-                    let audioFile = null;
-                    if (s.audioUrl) {
-                        audioFile = await saveBase64OrUrl(s.audioUrl, `scene_${i}_audio`, 'wav');
-                    }
-
-                    if (visualFile) {
-                        project.clips.push({
-                            file: visualFile,
-                            audio: audioFile,
-                            duration: parseFloat(s.duration || 5),
-                            movement: s.effect || config.movement || 'kenburns'
-                        });
-                    }
-                }
-
-                // Trigger Render
-                renderVideoProject(project, jobId)
-                    .then(outputPath => {
-                        jobs[jobId].status = "completed";
-                        jobs[jobId].downloadUrl = `/outputs/${path.basename(outputPath)}`;
-                    })
-                    .catch(err => {
-                        console.error("Render error (JSON):", err);
-                        jobs[jobId].status = "failed";
-                        jobs[jobId].error = err.toString();
-                    });
-
-                return res.json({ jobId });
-            }
-
-            // === FILE UPLOAD MODE (Manual/Turbo) ===
-            let config = {};
-            if (req.body.config) {
-                try { config = typeof req.body.config === 'string' ? JSON.parse(req.body.config) : req.body.config; } catch(e) {}
+            if (!scenes || !Array.isArray(scenes) || scenes.length === 0) {
+                return res.status(400).json({ error: "Invalid scenes data" });
             }
 
             const project = {
                 clips: [],
-                audio: {
-                    bgm: null,
-                    bgmVolume: config.musicVolume || 0.2,
-                    sfxVolume: config.sfxVolume || 0.5
-                },
+                audio: { bgm: null, bgmVolume: config.musicVolume || 0.2, sfxVolume: config.sfxVolume || 0.5 },
                 transition: config.transition || 'cut', 
                 transitionDuration: 1.0,
                 aspectRatio: config.aspectRatio || '16:9'
             };
 
-            const files = req.files || [];
-            const visuals = files.filter(f => f.fieldname === 'visualFiles');
-            const audios = files.filter(f => f.fieldname === 'audioFiles');
-            const extras = files.filter(f => f.fieldname === 'additionalFiles');
+            if (bgmUrl) project.audio.bgm = await saveBase64OrUrl(bgmUrl, 'bgm', 'mp3');
 
-            const bgmFile = extras.find(f => f.originalname.includes('background_music'));
-            if (bgmFile) project.audio.bgm = bgmFile.filename;
+            for (let i = 0; i < scenes.length; i++) {
+                const s = scenes[i];
+                let visualFile = null;
+                if (s.videoUrl) visualFile = await saveBase64OrUrl(s.videoUrl, `scene_${i}_vid`, 'mp4');
+                else if (s.imageUrl) visualFile = await saveBase64OrUrl(s.imageUrl, `scene_${i}_img`, 'png');
 
-            for (let i = 0; i < visuals.length; i++) {
-                const vFile = visuals[i];
-                const aFile = audios[i]; 
-                const meta = config.sceneData ? config.sceneData[i] : {};
+                let audioFile = null;
+                if (s.audioUrl) audioFile = await saveBase64OrUrl(s.audioUrl, `scene_${i}_audio`, 'wav');
 
-                project.clips.push({
-                    file: vFile.filename,
-                    audio: aFile ? aFile.filename : null,
-                    duration: parseFloat(meta?.duration || 5),
-                    movement: config.movement || 'kenburns'
-                });
+                if (visualFile) {
+                    project.clips.push({
+                        file: visualFile,
+                        audio: audioFile,
+                        duration: parseFloat(s.duration || 5),
+                        movement: s.effect || config.movement || 'kenburns'
+                    });
+                }
             }
 
             renderVideoProject(project, jobId)
@@ -549,30 +371,97 @@ app.post("/api/render/start", async (req, res) => {
                     jobs[jobId].downloadUrl = `/outputs/${path.basename(outputPath)}`;
                 })
                 .catch(err => {
-                    console.error("Render error:", err);
+                    console.error("Render error (JSON):", err);
                     jobs[jobId].status = "failed";
                     jobs[jobId].error = err.toString();
                 });
 
-            res.json({ jobId });
-
-        } catch (err) {
-            console.error("API render error:", err);
-            res.status(500).json({ error: "Erro ao iniciar renderização" });
+            return res.json({ jobId });
+        } catch (e) {
+            return res.status(500).json({ error: e.message });
         }
+    } 
+    // 2. Multipart Mode (Manual/Turbo Uploads)
+    else {
+        uploadAny(req, res, async (err) => {
+            if (err) return res.status(500).json({ error: "Upload failed: " + err.message });
+
+            try {
+                let config = {};
+                if (req.body.config) {
+                    try { config = typeof req.body.config === 'string' ? JSON.parse(req.body.config) : req.body.config; } catch(e) {}
+                }
+
+                const project = {
+                    clips: [],
+                    audio: { bgm: null, bgmVolume: config.musicVolume || 0.2, sfxVolume: config.sfxVolume || 0.5 },
+                    transition: config.transition || 'cut', 
+                    transitionDuration: 1.0,
+                    aspectRatio: config.aspectRatio || '16:9'
+                };
+
+                const files = req.files || [];
+                const visuals = files.filter(f => f.fieldname === 'visualFiles');
+                const audios = files.filter(f => f.fieldname === 'audioFiles');
+                const extras = files.filter(f => f.fieldname === 'additionalFiles');
+
+                const bgmFile = extras.find(f => f.originalname.includes('background_music'));
+                if (bgmFile) project.audio.bgm = bgmFile.filename;
+
+                for (let i = 0; i < visuals.length; i++) {
+                    const vFile = visuals[i];
+                    const aFile = audios[i]; 
+                    const meta = config.sceneData ? config.sceneData[i] : {};
+
+                    project.clips.push({
+                        file: vFile.filename,
+                        audio: aFile ? aFile.filename : null,
+                        duration: parseFloat(meta?.duration || 5),
+                        movement: config.movement || 'kenburns'
+                    });
+                }
+
+                if (project.clips.length === 0) {
+                    return res.status(400).json({ error: "No clips provided" });
+                }
+
+                renderVideoProject(project, jobId)
+                    .then(outputPath => {
+                        jobs[jobId].status = "completed";
+                        jobs[jobId].downloadUrl = `/outputs/${path.basename(outputPath)}`;
+                    })
+                    .catch(err => {
+                        console.error("Render error:", err);
+                        jobs[jobId].status = "failed";
+                        jobs[jobId].error = err.toString();
+                    });
+
+                res.json({ jobId });
+
+            } catch (err) {
+                console.error("API render error:", err);
+                res.status(500).json({ error: "Erro ao iniciar renderização" });
+            }
+        });
+    }
+});
+
+app.post("/api/upload", (req, res) => {
+    uploadAny(req, res, (err) => {
+        if (err) return res.status(500).json({ error: "Falha no upload", details: err });
+        res.json({ files: req.files || [] });
     });
 });
 
 app.post("/api/process/start/merge", async (req, res) => {
     uploadAny(req, res, async (err) => {
         if (err) return res.status(500).json({ error: "Upload failed" });
-        
         try {
             const jobId = Date.now().toString();
             jobs[jobId] = { progress: 1, status: "processing" };
             
             const files = req.files || [];
-            if (files.length < 2) throw new Error("Requires at least 2 files (video + audio)");
+            if (files.length < 2) throw new Error("Requires video + audio");
             
             const videoFile = files.find(f => f.mimetype.startsWith('video')) || files[0];
             const audioFile = files.find(f => f.mimetype.startsWith('audio')) || files[1];
@@ -581,40 +470,18 @@ app.post("/api/process/start/merge", async (req, res) => {
             const aPath = path.join(UPLOAD_DIR, audioFile.filename);
             const outPath = path.join(OUTPUT_DIR, `merged_${jobId}.mp4`);
             
-            const args = [
-                "-y",
-                "-i", vPath,
-                "-i", aPath,
-                "-c:v", "copy",
-                "-c:a", "aac",
-                "-map", "0:v:0",
-                "-map", "1:a:0",
-                "-shortest",
-                outPath
-            ];
-            
+            const args = ["-y", "-i", vPath, "-i", aPath, "-c:v", "copy", "-c:a", "aac", "-map", "0:v:0", "-map", "1:a:0", "-shortest", outPath];
             if (videoFile.mimetype.startsWith('image')) {
                  const dur = await getExactDuration(aPath) || 10;
-                 args.splice(3, 2);
-                 args.splice(1, 0, "-loop", "1");
-                 args.push("-t", dur.toString(), ...getVideoArgs());
+                 args.splice(3, 2); args.splice(1, 0, "-loop", "1"); args.push("-t", dur.toString(), ...getVideoArgs());
             }
 
-            runFFmpeg(args)
-                .then(() => {
-                    jobs[jobId].status = "completed";
-                    jobs[jobId].downloadUrl = `/outputs/${path.basename(outPath)}`;
-                    jobs[jobId].progress = 100;
-                })
-                .catch(e => {
-                    jobs[jobId].status = "failed";
-                    jobs[jobId].error = e.toString();
-                });
+            runFFmpeg(args).then(() => {
+                jobs[jobId].status = "completed"; jobs[jobId].downloadUrl = `/outputs/${path.basename(outPath)}`; jobs[jobId].progress = 100;
+            }).catch(e => { jobs[jobId].status = "failed"; jobs[jobId].error = e.toString(); });
 
             res.json({ jobId });
-        } catch (e) {
-            res.status(500).json({ error: e.message });
-        }
+        } catch (e) { res.status(500).json({ error: e.message }); }
     });
 });
 
@@ -624,11 +491,7 @@ app.post("/api/process/start/:action", async (req, res) => {
         const jobId = Date.now().toString();
         const files = req.files || [];
         if (files.length > 0) {
-            jobs[jobId] = { 
-                status: "completed", 
-                progress: 100, 
-                downloadUrl: `/uploads/${files[0].filename}` 
-            };
+            jobs[jobId] = { status: "completed", progress: 100, downloadUrl: `/uploads/${files[0].filename}` };
         } else {
             jobs[jobId] = { status: "failed", error: "No files provided" };
         }
@@ -642,11 +505,7 @@ app.post("/api/image/start/:action", async (req, res) => {
         const jobId = Date.now().toString();
         const files = req.files || [];
         if (files.length > 0) {
-            jobs[jobId] = { 
-                status: "completed", 
-                progress: 100, 
-                downloadUrl: `/uploads/${files[0].filename}` 
-            };
+            jobs[jobId] = { status: "completed", progress: 100, downloadUrl: `/uploads/${files[0].filename}` };
         } else {
             jobs[jobId] = { status: "failed", error: "No files provided" };
         }
