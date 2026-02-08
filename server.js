@@ -54,25 +54,24 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
     return `${pre},${selectedFilter},${post}`;
 }
 
-// Simula efeitos de cor ANTES da transição (ex: amarelo queimado) - SIMPLIFICADO para estabilidade
+// Simula efeitos de cor ANTES da transição
 function getPreTransitionEffect(transId, duration) {
     if (!transId) return "";
     const id = transId.toLowerCase();
-    const transDur = 1.0; // Duração da transição/efeito
+    const transDur = 1.0; 
     
-    // Inicia o efeito apenas durante o período da transição final
+    // Inicia o efeito apenas durante o período da transição final (1s)
     const startT = Math.max(0, duration - transDur).toFixed(2);
     
     // Efeito Burn: Flash Amarelo/Laranja Brilhante
+    // Simplificado para EQ e Hue para maior estabilidade no FFmpeg
     if (id === 'burn' || id === 'queimadura de filme') {
-        // eq: Aumenta brilho e saturação
-        // colorbalance: Aumenta vermelho (rs) e verde (gs) para criar amarelo, reduz azul (bs)
         return `,eq=enable='gt(t,${startT})':brightness=0.3:saturation=2,colorbalance=enable='gt(t,${startT})':rs=0.3:gs=0.1:bs=-0.3`;
     }
     
     // Flash Bang: Estouro branco rápido
     if (id === 'flash-bang') {
-        return `,eq=enable='gt(t,${startT})':brightness=0.7:contrast=1.5`;
+        return `,eq=enable='gt(t,${startT})':brightness=0.8:contrast=1.5`;
     }
 
     // Glitch: Ruído visual
@@ -86,18 +85,18 @@ function getPreTransitionEffect(transId, duration) {
 function getTransitionXfade(transId) {
     const id = transId?.toLowerCase() || 'fade';
     const map = {
-        'cut': 'fade', // Xfade não tem 'cut' real, usa fade rápido ou concat sem xfade
+        'cut': 'fade',
         'fade': 'fade', 
         'mix': 'dissolve', 
         'black': 'fadeblack', 
         'white': 'fadewhite',
         
         // Efeitos Especiais
-        'burn': 'fadewhite',           // Combinado com o pre-filter amarelo, fica ótimo
+        'burn': 'fadewhite',           
         'queimadura de filme': 'fadewhite',
         'flash-bang': 'fadewhite',
         'flash-black': 'fadeblack',
-        'lens-flare': 'circleopen',    // Abre como uma lente/íris
+        'lens-flare': 'circleopen',    
         'lens flare': 'circleopen',
         'light-leak-tr': 'diagtr',     
         'god-rays': 'radial',          
@@ -282,7 +281,7 @@ async function handleExport(job, uploadDir, callback) {
         const sortedScenes = Object.keys(sceneMap).sort((a,b) => a - b).map(k => sceneMap[k]);
         const clipPaths = [];
         const videoClipDurations = [];
-        const transDur = 1.0; // FIX: Duração da transição aumentada para 1.0s conforme solicitado
+        const transDur = 1.0; 
 
         // Renderizar Cenas
         for (let i = 0; i < sortedScenes.length; i++) {
@@ -327,21 +326,22 @@ async function handleExport(job, uploadDir, callback) {
             }
 
             const moveFilter = getMovementFilter(movement, dur, targetW, targetH);
-            
-            // Aplica efeito de cor/brilho no final do clipe se necessário
             const preTransEffect = getPreTransitionEffect(transitionType, dur);
+            
+            // FIX: Adicionado setpts=PTS-STARTPTS para reiniciar timestamps e evitar que efeitos baseados em 't' falhem ou cortem o vídeo
+            const finalVisualFilter = `${moveFilter},setpts=PTS-STARTPTS${preTransEffect}`;
 
             if (scene.visual?.mimetype?.includes('image')) {
-                filterComplex += `[0:v]${moveFilter}${preTransEffect}[v_out]`;
+                filterComplex += `[0:v]${finalVisualFilter}[v_out]`;
             } else {
-                filterComplex += `[0:v]scale=${targetW}:${targetH}:force_original_aspect_ratio=increase,crop=${targetW}:${targetH},pad=ceil(iw/2)*2:ceil(ih/2)*2,setsar=1,fps=24,format=yuv420p${preTransEffect}[v_out]`;
+                filterComplex += `[0:v]scale=${targetW}:${targetH}:force_original_aspect_ratio=increase,crop=${targetW}:${targetH},pad=ceil(iw/2)*2:ceil(ih/2)*2,setsar=1,fps=24,format=yuv420p,setpts=PTS-STARTPTS${preTransEffect}[v_out]`;
             }
 
             args.push(
                 '-filter_complex', filterComplex,
                 '-map', '[v_out]',
                 '-map', audioMap,
-                '-t', dur.toFixed(3), // Garante duração exata
+                '-t', dur.toFixed(3),
                 ...getVideoArgs(), 
                 ...getAudioArgs(),
                 clipPath
@@ -357,7 +357,8 @@ async function handleExport(job, uploadDir, callback) {
             }
 
             const actualDur = await getExactDuration(clipPath);
-            videoClipDurations.push(actualDur);
+            // Fallback para duração esperada se ffprobe falhar
+            videoClipDurations.push(actualDur > 0.1 ? actualDur : dur);
             clipPaths.push(clipPath);
             
             if(jobs[job.id]) jobs[job.id].progress = Math.round((i / sortedScenes.length) * 80);
@@ -388,7 +389,6 @@ async function handleExport(job, uploadDir, callback) {
                 const vNext = `[${i+1}:v]`;
                 const aNext = `[${i+1}:a]`;
                 
-                // Offset calculation logic
                 if (i === 0) accumOffset = videoClipDurations[0] - transDur;
                 else accumOffset += (videoClipDurations[i] - transDur);
                 
