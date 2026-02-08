@@ -264,7 +264,8 @@ async function renderVideoProject(project, jobId) {
             filterComplex += `[0:a]apad,aformat=sample_rates=44100:channel_layouts=stereo[a_out]`;
         } else {
             // Generate silence matching duration
-            filterComplex += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration}[a_out]`;
+            filterComplex += anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration},aformat=sample_rates=44100:channel_layouts=stereo[a_out]
+
         }
 
         args.push(
@@ -337,12 +338,17 @@ async function renderVideoProject(project, jobId) {
         }
 
         await runFFmpeg([
-            "-y", ...inputArgs,
-            "-filter_complex", filterGraph,
-            "-map", prevLabelV, "-map", prevLabelA,
-            ...getVideoArgs(), ...getAudioArgs(),
-            concatOut
-        ]);
+    "-y",
+    ...inputArgs,
+    "-filter_complex",
+    `${filterGraph}${prevLabelA}aformat=sample_rates=44100:channel_layouts=stereo[a_final]`,
+    "-map", prevLabelV,
+    "-map", "[a_final]",
+    ...getVideoArgs(),
+    ...getAudioArgs(),
+    concatOut
+]);
+
         jobs[jobId].progress = 70;
     }
 
@@ -353,7 +359,8 @@ async function renderVideoProject(project, jobId) {
         // Ensure inputs match duration roughly
         const duration = durations.reduce((a,b)=>a+b, 0);
         // Use apad to extend concatOut just in case, and amix
-        const mixGraph = `[1:a]aloop=loop=-1:size=2e+09,volume=${project.audio.bgmVolume ?? 0.2},apad[bgm];[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=0[a_final]`;
+        const mixGraph = `[1:a]aloop=loop=-1:size=2e+09,volume=${project.audio.bgmVolume ?? 0.2},apad,aformat=sample_rates=44100:channel_layouts=stereo[bgm];
+;[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=0[a_final]`;
         
         await runFFmpeg([
             "-y", "-i", concatOut, "-i", bgm,
