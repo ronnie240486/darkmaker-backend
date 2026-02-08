@@ -275,10 +275,11 @@ async function handleExport(job, uploadDir, callback) {
             let filterComplex = "";
             let audioMap = "[a_out]";
             
+            // IMPORTANT: Use apad to prevent audio from being shorter than video due to duration mismatch
             if (hasSfx) {
-                filterComplex += `[1:a]volume=1.5[voice];[2:a]volume=${sfxVolume}[sfx];[voice][sfx]amix=inputs=2:duration=first:dropout_transition=0[a_out];`;
+                filterComplex += `[1:a]volume=1.5,apad[voice];[2:a]volume=${sfxVolume}[sfx];[voice][sfx]amix=inputs=2:duration=first:dropout_transition=0[a_out];`;
             } else {
-                filterComplex += `[1:a]volume=1.5[a_out];`;
+                filterComplex += `[1:a]volume=1.5,apad[a_out];`;
             }
 
             const moveFilter = getMovementFilter(movement, dur, targetW, targetH);
