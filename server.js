@@ -166,7 +166,7 @@ const uploadAny = multer({storage}).any();
 // JOBS
 const jobs = {};
 // ============================================================================
-//                           RENDER ENGINE
+//                           RENDER ENGINE (CORRIGIDO)
 // ============================================================================
 
 async function renderVideoProject(project, jobId) {
@@ -174,17 +174,26 @@ async function renderVideoProject(project, jobId) {
     if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
 
     const tempClips = [];
-    const concatListPath = path.join(sessionDir, "concat.txt");
+    const durations = [];
 
     // -----------------------------------------------
-    // PROCESSA CADA CLIP INDIVIDUALMENTE
+    // PROCESSA CADA CLIP (MOVIMENTO + DURAÇÃO REAL)
     // -----------------------------------------------
     for (let i = 0; i < project.clips.length; i++) {
         const clip = project.clips[i];
+        const inputPath = path.join(UPLOAD_DIR, clip.file);
 
-        const inputPath = clip.file ? path.join(UPLOAD_DIR, clip.file) : null;
-        const duration = clip.duration || await getExactDuration(inputPath);
-        const movementFilter = getMovementFilter(clip.movement || 'kenburns', duration);
+        const duration =
+            clip.duration && clip.duration > 0
+                ? clip.duration
+                : await getExactDuration(inputPath);
+
+        durations.push(duration);
+
+        const movementFilter = getMovementFilter(
+            clip.movement || "kenburns",
+            duration
+        );
 
         const outFile = path.join(sessionDir, `clip_${i}.mp4`);
         tempClips.push(outFile);
@@ -197,39 +206,43 @@ async function renderVideoProject(project, jobId) {
             "-filter_complex", movementFilter,
             ...getVideoArgs(),
             "-an",
-            outFile
+            outFile,
         ];
 
         await runFFmpeg(args);
-        jobs[jobId].progress = Math.floor((i / project.clips.length) * 50);
+        jobs[jobId].progress = Math.floor((i / project.clips.length) * 45);
     }
 
     // -----------------------------------------------
-    //   CONCATENAÇÃO COM XFADES
+    //   XFADES CORRIGIDOS
     // -----------------------------------------------
+    const inputArgs = [];
+    tempClips.forEach(path => inputArgs.push("-i", path));
+
     let filterGraph = "";
-    let inputArgs = [];
-    let inputCount = 0;
+    let prevLabel = "[0:v]";
+    let outIndex = 0;
 
-    tempClips.forEach((clipPath, idx) => {
-        inputArgs.push("-i", clipPath);
-        inputCount++;
-    });
+    const trDur = project.transitionDuration || 1;
+    const trType = getTransitionXfade(project.transition || "fade");
 
-    let filterIndex = 0;
-    let prev = "[0:v]";
+    // timeCursor começa após o primeiro vídeo
+    let timeCursor = durations[0];
 
-    for (let i = 1; i < inputCount; i++) {
-        const tr = getTransitionXfade(project.transition || 'fade');
+    for (let i = 1; i < tempClips.length; i++) {
+        // OFFSET CORRETO: (soma anterior - transição)
+        const offset = timeCursor - trDur;
 
-        const outLabel = `[v${filterIndex + 1}]`;
+        const outLabel = `[v${outIndex + 1}]`;
 
         filterGraph += `
-            ${prev} [${i}:v] xfade=transition=${tr}:duration=${project.transitionDuration || 1}:offset=${i * (project.transitionDuration || 1)} ${outLabel};
+            ${prevLabel} [${i}:v] xfade=transition=${trType}:duration=${trDur}:offset=${offset} ${outLabel};
         `;
 
-        prev = outLabel;
-        filterIndex++;
+        prevLabel = outLabel;
+        outIndex++;
+
+        timeCursor += durations[i];
     }
 
     const concatOut = path.join(sessionDir, "video_final.mp4");
@@ -238,17 +251,17 @@ async function renderVideoProject(project, jobId) {
         "-y",
         ...inputArgs,
         "-filter_complex", filterGraph,
-        "-map", prev,
+        "-map", prevLabel,
         ...getVideoArgs(),
         "-an",
-        concatOut
+        concatOut,
     ];
 
     await runFFmpeg(concatArgs);
     jobs[jobId].progress = 70;
 
     // -----------------------------------------------
-    //   ÁUDIO FINAL (VOICE + SFX + BGM)
+    //   MIXAGEM DE ÁUDIO (MANTIDA)
     // -----------------------------------------------
     const voice = project.audio?.voiceover ? path.join(UPLOAD_DIR, project.audio.voiceover) : null;
     const sfx = project.audio?.sfx ? path.join(UPLOAD_DIR, project.audio.sfx) : null;
@@ -258,21 +271,18 @@ async function renderVideoProject(project, jobId) {
     const filters = [];
     let idx = 0;
 
-    // --- VOICE ---
     if (voice && fs.existsSync(voice) && await fileHasAudio(voice)) {
         streams.push("-i", voice);
         filters.push(`[0:a]volume=${project.audio.voiceVolume ?? 1}[voice]`);
         idx++;
     }
 
-    // --- SFX ---
     if (sfx && fs.existsSync(sfx) && await fileHasAudio(sfx)) {
         streams.push("-i", sfx);
         filters.push(`[1:a]volume=${project.audio.sfxVolume ?? 1}[sfx]`);
         idx++;
     }
 
-    // --- BGM ---
     if (bgm && fs.existsSync(bgm) && await fileHasAudio(bgm)) {
         streams.push("-i", bgm);
         filters.push(`[2:a]volume=${project.audio.bgmVolume ?? 0.7}[bgm]`);
@@ -282,52 +292,49 @@ async function renderVideoProject(project, jobId) {
     let mixOutput = path.join(sessionDir, "audio_mix.mp3");
 
     if (idx === 0) {
-        // Nenhum áudio → cria silêncio
         await runFFmpeg([
             "-f", "lavfi",
-            "-i", `anullsrc=channel_layout=stereo:sample_rate=44100`,
-            "-t", project.totalDuration || 5,
+            "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+            "-t", timeCursor.toString(),
             "-q:a", "3",
-            mixOutput
+            mixOutput,
         ]);
     } else {
-        let mixInputs = "";
-        let mixLabels = [];
+        let filterStr = filters.join(";") + "; ";
 
-        if (filters.length > 0) mixInputs = filters.join(";") + "; ";
+        let labels = filters.map(f =>
+            f.match(/\[(.*?)\]/g).pop().replace(/\[|\]/g, "")
+        );
 
-        if (filters.length === 1) {
-            mixInputs += filters[0].match(/\[(.*?)\]/g)[1];  
+        if (labels.length === 1) {
+            filterStr += `[${labels[0]}]`;
         } else {
-            for (let i = 0; i < filters.length; i++) {
-                const label = filters[i].match(/\[(.*?)\]/g).pop().replace(/\[|\]/g, "");
-                mixLabels.push(`[${label}]`);
-            }
-
-            mixInputs += mixLabels.join("") + `amix=inputs=${filters.length}:normalize=1[aout]`;
+            filterStr += labels.map(l => `[${l}]`).join("") +
+                `amix=inputs=${labels.length}:normalize=1[aout]`;
         }
 
         const mixArgs = [
             "-y",
             ...streams,
             "-filter_complex",
-            filters.length > 1 ? mixInputs : filters[0],
-            "-map", filters.length > 1 ? "[aout]" : filters[0].match(/\[(.*?)\]/g)[1],
+            filterStr,
+            "-map",
+            labels.length === 1 ? `[${labels[0]}]` : "[aout]",
             ...getAudioArgs(),
-            mixOutput
+            mixOutput,
         ];
 
         await runFFmpeg(mixArgs);
     }
 
-    jobs[jobId].progress = 85;
+    jobs[jobId].progress = 88;
 
     // -----------------------------------------------
-    //   JUNTAR VÍDEO + ÁUDIO
+    //   FINALIZA (VÍDEO + ÁUDIO)
     // -----------------------------------------------
     const finalOutput = path.join(OUTPUT_DIR, `video_${jobId}.mp4`);
 
-    const finalArgs = [
+    await runFFmpeg([
         "-y",
         "-i", concatOut,
         "-i", mixOutput,
@@ -335,12 +342,10 @@ async function renderVideoProject(project, jobId) {
         "-map", "1:a",
         ...getVideoArgs(),
         ...getAudioArgs(),
-        finalOutput
-    ];
+        finalOutput,
+    ]);
 
-    await runFFmpeg(finalArgs);
     jobs[jobId].progress = 100;
-
     return finalOutput;
 }
 
@@ -351,9 +356,8 @@ function runFFmpeg(args) {
     return new Promise((resolve, reject) => {
         const ff = spawn(ffmpegPath, args);
 
-        ff.stderr.on("data", data => {
-            const msg = data.toString();
-            // console.log(msg);
+        ff.stderr.on("data", d => {
+            // console.log(d.toString());
         });
 
         ff.on("close", code => {
@@ -362,6 +366,7 @@ function runFFmpeg(args) {
         });
     });
 }
+
 // ============================================================================
 //                               ROUTES
 // ============================================================================
