@@ -1,3 +1,4 @@
+
 import express from 'express';
 import cors from 'cors';
 import multer from 'multer';
@@ -39,7 +40,7 @@ async function fileHasAudio(file) {
             "-of","csv=p=0",
             file
         ], (err, stdout) => {
-            resolve(stdout.toString().trim().length > 0);
+            resolve(stdout && stdout.toString().trim().length > 0);
         });
     });
 }
@@ -73,7 +74,7 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
 
     const moves = {
         'static': `zoompan=z=1.0:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
-        'kenburns': `zoompan=z='1.0+(0.3*${t})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
+        'kenburns': `zoompan=z='1.0+(0.3*${t})':x='(iw/2-(iw/zoom/2))*(1-0.2*${t})':y='(ih/2-(ih/zoom/2))*(1-0.2*${t})'${zdur}`,
         'zoom-in': `zoompan=z='1.0+(0.5*${t})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
         'zoom-out': `zoompan=z='1.5-(0.5*${t})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
         'mov-pan-slow-l': `zoompan=z=1.4:x='(iw/2-(iw/zoom/2))*(1+0.5*${t})':y='ih/2-(ih/zoom/2)'${zdur}`,
@@ -110,7 +111,7 @@ function getTransitionXfade(t) {
 // ==============================
 const getVideoArgs = () => [
     '-c:v','libx264',
-    '-preset','medium',
+    '-preset','ultrafast',
     '-pix_fmt','yuv420p',
     '-movflags','+faststart',
     '-r','24'
@@ -136,7 +137,10 @@ async function buildFrontend() {
             outfile:path.join(PUBLIC_DIR,'bundle.js'),
             bundle:true,
             format:'esm',
-            minify:true
+            minify:true,
+            external: ['fs', 'path', 'child_process', 'url', 'https', 'ffmpeg-static', 'ffprobe-static'],
+            define: { 'process.env.API_KEY': JSON.stringify(GEMINI_KEY), 'global': 'window' },
+            loader: { '.tsx': 'tsx', '.ts': 'ts', '.css': 'css' },
         });
 
     } catch(e) {
@@ -165,8 +169,9 @@ const uploadAny = multer({storage}).any();
 
 // JOBS
 const jobs = {};
+
 // ============================================================================
-//                           RENDER ENGINE (CORRIGIDO)
+//                           RENDER ENGINE
 // ============================================================================
 
 async function renderVideoProject(project, jobId) {
@@ -177,173 +182,154 @@ async function renderVideoProject(project, jobId) {
     const durations = [];
 
     // -----------------------------------------------
-    // PROCESSA CADA CLIP (MOVIMENTO + DURAÇÃO REAL)
+    // PROCESSA CADA CLIP (VIDEO + AUDIO)
     // -----------------------------------------------
     for (let i = 0; i < project.clips.length; i++) {
         const clip = project.clips[i];
         const inputPath = path.join(UPLOAD_DIR, clip.file);
-
-        const duration =
-            clip.duration && clip.duration > 0
-                ? clip.duration
-                : await getExactDuration(inputPath);
+        
+        // Determine Duration
+        let duration = clip.duration || 5;
+        if (duration <= 0) duration = 5;
 
         durations.push(duration);
 
-        const movementFilter = getMovementFilter(
-            clip.movement || "kenburns",
-            duration
-        );
-
+        // Movement
+        const movementFilter = getMovementFilter(clip.movement || "kenburns", duration);
         const outFile = path.join(sessionDir, `clip_${i}.mp4`);
         tempClips.push(outFile);
 
-        const args = [
-            "-y",
-            "-loop", "1",
-            "-i", inputPath,
+        const args = ["-y"];
+        let filterComplex = "";
+        
+        // Inputs
+        // 0: Video/Image
+        if (clip.file.match(/\.(mp4|mov|webm)$/i)) {
+             args.push("-stream_loop", "-1", "-i", inputPath);
+        } else {
+             args.push("-loop", "1", "-i", inputPath);
+        }
+
+        // 1: Audio (Optional)
+        let hasAudio = false;
+        if (clip.audio) {
+            const audioPath = path.join(UPLOAD_DIR, clip.audio);
+            if (fs.existsSync(audioPath)) {
+                args.push("-i", audioPath);
+                hasAudio = true;
+            }
+        }
+
+        // Filters
+        // [0:v] -> Movement -> [v_out]
+        filterComplex += `[0:v]${movementFilter}[v_out];`;
+        
+        // Audio Logic: 
+        // If hasAudio -> pad to duration -> [a_out]
+        // If no audio -> generate silence -> [a_out]
+        if (hasAudio) {
+            // [1:a] -> apad -> [a_out]
+            filterComplex += `[1:a]apad[a_out]`;
+        } else {
+            // Generate silence matching duration
+            filterComplex += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration}[a_out]`;
+        }
+
+        args.push(
+            "-filter_complex", filterComplex,
+            "-map", "[v_out]",
+            "-map", "[a_out]",
             "-t", duration.toString(),
-            "-filter_complex", movementFilter,
             ...getVideoArgs(),
-            "-an",
-            outFile,
-        ];
+            ...getAudioArgs(), // Ensure AAC Audio
+            outFile
+        );
 
         await runFFmpeg(args);
         jobs[jobId].progress = Math.floor((i / project.clips.length) * 45);
     }
 
     // -----------------------------------------------
-    //   XFADES CORRIGIDOS
+    //   XFADES (CONCAT WITH TRANSITIONS)
     // -----------------------------------------------
     const inputArgs = [];
     tempClips.forEach(path => inputArgs.push("-i", path));
 
     let filterGraph = "";
-    let prevLabel = "[0:v]";
+    let prevLabelV = "[0:v]";
+    let prevLabelA = "[0:a]";
     let outIndex = 0;
 
-    const trDur = project.transitionDuration || 1;
+    const trDur = project.transitionDuration || 1.0;
     const trType = getTransitionXfade(project.transition || "fade");
 
-    // timeCursor começa após o primeiro vídeo
     let timeCursor = durations[0];
 
     for (let i = 1; i < tempClips.length; i++) {
-        // OFFSET CORRETO: (soma anterior - transição)
         const offset = timeCursor - trDur;
+        const outLabelV = `[v${outIndex + 1}]`;
+        const outLabelA = `[a${outIndex + 1}]`;
 
-        const outLabel = `[v${outIndex + 1}]`;
+        // Video Xfade
+        filterGraph += `${prevLabelV}[${i}:v]xfade=transition=${trType}:duration=${trDur}:offset=${offset}${outLabelV};`;
+        
+        // Audio Acrossfade
+        filterGraph += `${prevLabelA}[${i}:a]acrossfade=d=${trDur}:c1=tri:c2=tri${outLabelA};`;
 
-        filterGraph += `
-            ${prevLabel} [${i}:v] xfade=transition=${trType}:duration=${trDur}:offset=${offset} ${outLabel};
-        `;
-
-        prevLabel = outLabel;
+        prevLabelV = outLabelV;
+        prevLabelA = outLabelA;
         outIndex++;
 
-        timeCursor += durations[i];
+        timeCursor += (durations[i] - trDur);
     }
 
     const concatOut = path.join(sessionDir, "video_final.mp4");
 
-    const concatArgs = [
-        "-y",
-        ...inputArgs,
-        "-filter_complex", filterGraph,
-        "-map", prevLabel,
-        ...getVideoArgs(),
-        "-an",
-        concatOut,
-    ];
-
-    await runFFmpeg(concatArgs);
+    // Note: If only 1 clip, handle gracefully
+    if (tempClips.length === 1) {
+        fs.copyFileSync(tempClips[0], concatOut);
+    } else {
+        const concatArgs = [
+            "-y",
+            ...inputArgs,
+            "-filter_complex", filterGraph,
+            "-map", prevLabelV,
+            "-map", prevLabelA,
+            ...getVideoArgs(),
+            ...getAudioArgs(),
+            concatOut,
+        ];
+        await runFFmpeg(concatArgs);
+    }
+    
     jobs[jobId].progress = 70;
 
     // -----------------------------------------------
-    //   MIXAGEM DE ÁUDIO (MANTIDA)
+    //   GLOBAL AUDIO MIXING (BGM / SFX Overlays)
     // -----------------------------------------------
-    const voice = project.audio?.voiceover ? path.join(UPLOAD_DIR, project.audio.voiceover) : null;
-    const sfx = project.audio?.sfx ? path.join(UPLOAD_DIR, project.audio.sfx) : null;
     const bgm = project.audio?.bgm ? path.join(UPLOAD_DIR, project.audio.bgm) : null;
+    
+    // We already have voice/scene audio in concatOut. We just need to ADD BGM if exists.
+    let finalOutput = path.join(OUTPUT_DIR, `video_${jobId}.mp4`);
 
-    const streams = [];
-    const filters = [];
-    let idx = 0;
-
-    if (voice && fs.existsSync(voice) && await fileHasAudio(voice)) {
-        streams.push("-i", voice);
-        filters.push(`[0:a]volume=${project.audio.voiceVolume ?? 1}[voice]`);
-        idx++;
-    }
-
-    if (sfx && fs.existsSync(sfx) && await fileHasAudio(sfx)) {
-        streams.push("-i", sfx);
-        filters.push(`[1:a]volume=${project.audio.sfxVolume ?? 1}[sfx]`);
-        idx++;
-    }
-
-    if (bgm && fs.existsSync(bgm) && await fileHasAudio(bgm)) {
-        streams.push("-i", bgm);
-        filters.push(`[2:a]volume=${project.audio.bgmVolume ?? 0.7}[bgm]`);
-        idx++;
-    }
-
-    let mixOutput = path.join(sessionDir, "audio_mix.mp3");
-
-    if (idx === 0) {
+    if (bgm && fs.existsSync(bgm)) {
+        const mixGraph = `[1:a]aloop=loop=-1:size=2e+09,volume=${project.audio.bgmVolume ?? 0.2}[bgm];[0:a][bgm]amix=inputs=2:duration=first[a_final]`;
+        
         await runFFmpeg([
-            "-f", "lavfi",
-            "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
-            "-t", timeCursor.toString(),
-            "-q:a", "3",
-            mixOutput,
+            "-y",
+            "-i", concatOut,
+            "-i", bgm,
+            "-filter_complex", mixGraph,
+            "-map", "0:v",
+            "-map", "[a_final]",
+            ...getVideoArgs(),
+            ...getAudioArgs(),
+            finalOutput
         ]);
     } else {
-        let filterStr = filters.join(";") + "; ";
-
-        let labels = filters.map(f =>
-            f.match(/\[(.*?)\]/g).pop().replace(/\[|\]/g, "")
-        );
-
-        if (labels.length === 1) {
-            filterStr += `[${labels[0]}]`;
-        } else {
-            filterStr += labels.map(l => `[${l}]`).join("") +
-                `amix=inputs=${labels.length}:normalize=1[aout]`;
-        }
-
-        const mixArgs = [
-            "-y",
-            ...streams,
-            "-filter_complex",
-            filterStr,
-            "-map",
-            labels.length === 1 ? `[${labels[0]}]` : "[aout]",
-            ...getAudioArgs(),
-            mixOutput,
-        ];
-
-        await runFFmpeg(mixArgs);
+        // Just copy/move if no extra audio layers
+        fs.copyFileSync(concatOut, finalOutput);
     }
-
-    jobs[jobId].progress = 88;
-
-    // -----------------------------------------------
-    //   FINALIZA (VÍDEO + ÁUDIO)
-    // -----------------------------------------------
-    const finalOutput = path.join(OUTPUT_DIR, `video_${jobId}.mp4`);
-
-    await runFFmpeg([
-        "-y",
-        "-i", concatOut,
-        "-i", mixOutput,
-        "-map", "0:v",
-        "-map", "1:a",
-        ...getVideoArgs(),
-        ...getAudioArgs(),
-        finalOutput,
-    ]);
 
     jobs[jobId].progress = 100;
     return finalOutput;
@@ -355,11 +341,6 @@ async function renderVideoProject(project, jobId) {
 function runFFmpeg(args) {
     return new Promise((resolve, reject) => {
         const ff = spawn(ffmpegPath, args);
-
-        ff.stderr.on("data", d => {
-            // console.log(d.toString());
-        });
-
         ff.on("close", code => {
             if (code === 0) resolve();
             else reject("FFmpeg error " + code);
@@ -371,9 +352,7 @@ function runFFmpeg(args) {
 //                               ROUTES
 // ============================================================================
 
-// ---------------------------
 // UPLOAD
-// ---------------------------
 app.post("/api/upload", (req, res) => {
     uploadAny(req, res, (err) => {
         if (err) return res.status(500).json({ error: "Falha no upload", details: err });
@@ -381,63 +360,92 @@ app.post("/api/upload", (req, res) => {
     });
 });
 
-// ---------------------------
-// RENDER
-// ---------------------------
+// RENDER (Mappings for VideoTurbo)
 app.post("/api/render", async (req, res) => {
-    try {
-        const project = req.body;
+    uploadAny(req, res, async (err) => {
+        if (err) return res.status(500).json({ error: "Upload failed" });
 
-        const jobId = Date.now().toString();
-        jobs[jobId] = { progress: 1, status: "processing" };
+        try {
+            const jobId = Date.now().toString();
+            jobs[jobId] = { progress: 1, status: "processing" };
 
-        renderVideoProject(project, jobId)
-            .then(outputPath => {
-                jobs[jobId].status = "completed";
-                jobs[jobId].file = path.basename(outputPath);
-            })
-            .catch(err => {
-                console.error("Render error:", err);
-                jobs[jobId].status = "error";
-            });
+            // Parse Config sent by VideoTurbo
+            let config = {};
+            if (req.body.config) {
+                try { config = JSON.parse(req.body.config); } catch(e) {}
+            }
 
-        res.json({ jobId });
+            // Construct Project Object
+            const project = {
+                clips: [],
+                audio: {
+                    bgm: null,
+                    bgmVolume: config.musicVolume || 0.2,
+                    sfxVolume: config.sfxVolume || 0.5
+                },
+                transition: config.transition || 'fade',
+                transitionDuration: 1.0
+            };
 
-    } catch (err) {
-        console.error("API render error:", err);
-        res.status(500).json({ error: "Erro ao iniciar renderização" });
-    }
+            // Files from Multer
+            const visuals = req.files.filter(f => f.fieldname === 'visualFiles');
+            const audios = req.files.filter(f => f.fieldname === 'audioFiles');
+            const extras = req.files.filter(f => f.fieldname === 'additionalFiles');
+
+            // Find BGM
+            const bgmFile = extras.find(f => f.originalname.includes('background_music'));
+            if (bgmFile) project.audio.bgm = bgmFile.filename;
+
+            // Map Clips
+            for (let i = 0; i < visuals.length; i++) {
+                const vFile = visuals[i];
+                const aFile = audios[i]; // Corresponding audio/silence for this scene
+                const meta = config.sceneData ? config.sceneData[i] : {};
+
+                project.clips.push({
+                    file: vFile.filename,
+                    audio: aFile ? aFile.filename : null,
+                    duration: parseFloat(meta.duration) || 5,
+                    movement: config.movement || 'kenburns'
+                });
+            }
+
+            // Start Render
+            renderVideoProject(project, jobId)
+                .then(outputPath => {
+                    jobs[jobId].status = "completed";
+                    jobs[jobId].downloadUrl = `/outputs/${path.basename(outputPath)}`;
+                })
+                .catch(err => {
+                    console.error("Render error:", err);
+                    jobs[jobId].status = "failed";
+                    jobs[jobId].error = err.toString();
+                });
+
+            res.json({ jobId });
+
+        } catch (err) {
+            console.error("API render error:", err);
+            res.status(500).json({ error: "Erro ao iniciar renderização" });
+        }
+    });
 });
 
-// ---------------------------
-// PROGRESS
-// ---------------------------
-app.get("/api/progress/:id", (req, res) => {
+// STATUS
+app.get("/api/process/status/:id", (req, res) => {
     const job = jobs[req.params.id];
-    if (!job) return res.status(404).json({ error: "Job não encontrado" });
+    if (!job) return res.status(404).json({ status: "not_found" });
     res.json(job);
 });
 
-// ---------------------------
-// DOWNLOAD FINAL
-// ---------------------------
+// DOWNLOAD
 app.get("/api/download/:file", (req, res) => {
     const filePath = path.join(OUTPUT_DIR, req.params.file);
     if (!fs.existsSync(filePath)) return res.status(404).send("Arquivo não encontrado.");
     res.download(filePath);
 });
 
-// ---------------------------
-// TEST ROUTE
-// ---------------------------
-app.get("/api/ping", (req, res) => {
-    res.json({ ok: true, time: Date.now() });
-});
-
-
-// ============================================================================
-//                                SERVER START
-// ============================================================================
-app.listen(PORT, () => {
-    console.log(`Servidor rodando em http://localhost:${PORT}`);
+// SERVER START
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Turbo Server Running on Port ${PORT}`);
 });
