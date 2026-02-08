@@ -1,587 +1,320 @@
-
-import express from 'express';
-import cors from 'cors';
-import multer from 'multer';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import { spawn, execFile } from 'child_process';
-import ffmpegPath from 'ffmpeg-static';
-import ffprobePath from 'ffprobe-static';
-import * as esbuild from 'esbuild';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import express from "express";
+import cors from "cors";
+import fs from "fs";
+import path from "path";
+import { v4 as uuidv4 } from "uuid";
+import ffmpeg from "fluent-ffmpeg";
+import axios from "axios";
+import util from "util";
 
 const app = express();
-const PORT = process.env.PORT || 8080;
-const GEMINI_KEY = process.env.GEMINI_API_KEY || process.env.API_KEY || "";
-
-// ==============================
-//      DIR SETUP
-// ==============================
-const UPLOAD_DIR = path.join(__dirname, 'uploads');
-const OUTPUT_DIR = path.join(__dirname, 'outputs');
-const PUBLIC_DIR = path.join(__dirname, 'public');
-
-[UPLOAD_DIR, OUTPUT_DIR, PUBLIC_DIR].forEach(dir => {
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-});
-
-// ==============================
-//      FILE CHECKS
-// ==============================
-async function fileHasAudio(file) {
-    return new Promise(resolve => {
-        execFile(ffprobePath.path, [
-            "-v","error",
-            "-select_streams","a",
-            "-show_entries","stream=codec_type",
-            "-of","csv=p=0",
-            file
-        ], (err, stdout) => {
-            resolve(stdout && stdout.toString().trim().length > 0);
-        });
-    });
-}
-
-async function isVideoFile(file) {
-    return new Promise(resolve => {
-        execFile(ffprobePath.path, [
-            "-v", "error",
-            "-select_streams", "v:0",
-            "-show_entries", "stream=codec_type",
-            "-of", "csv=p=0",
-            file
-        ], (err, stdout) => {
-            resolve(stdout && stdout.toString().trim().includes('video'));
-        });
-    });
-}
-
-// ==============================
-//      DURATION
-// ==============================
-function getExactDuration(filePath) {
-    return new Promise(resolve => {
-        execFile(ffprobePath.path, [
-            '-v','error',
-            '-show_entries','format=duration',
-            '-of','default=noprint_wrappers=1:nokey=1',
-            filePath
-        ], (err, stdout) => {
-            const d = parseFloat(stdout);
-            resolve(isNaN(d) ? 0 : d);
-        });
-    });
-}
-
-// ==============================
-//      MOVEMENT FILTERS
-// ==============================
-function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 720) {
-    const d = parseFloat(durationSec) || 5;
-    const fps = 24;
-    const totalFrames = Math.ceil(d * fps);
-    const zdur = `:d=${totalFrames}:s=${targetW}x${targetH}`;
-    const t = `(on/${totalFrames})`;
-
-    const moves = {
-        'static': `zoompan=z=1.0:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
-        'kenburns': `zoompan=z='1.0+(0.3*${t})':x='(iw/2-(iw/zoom/2))*(1-0.2*${t})':y='(ih/2-(ih/zoom/2))*(1-0.2*${t})'${zdur}`,
-        'zoom-in': `zoompan=z='1.0+(0.5*${t})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
-        'zoom-out': `zoompan=z='1.5-(0.5*${t})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
-        'mov-pan-slow-l': `zoompan=z=1.4:x='(iw/2-(iw/zoom/2))*(1+0.5*${t})':y='ih/2-(ih/zoom/2)'${zdur}`,
-        'mov-pan-slow-r': `zoompan=z=1.4:x='(iw/2-(iw/zoom/2))*(1-0.5*${t})':y='ih/2-(ih/zoom/2)'${zdur}`,
-        'handheld-1': `zoompan=z=1.1:x='iw/2-(iw/zoom/2)+10*sin(on/10)':y='ih/2-(ih/zoom/2)+10*cos(on/15)'${zdur}`
-    };
-
-    const selected = moves[moveId] || moves['kenburns'];
-
-    const pre = `scale=${targetW*2}:${targetH*2}:force_original_aspect_ratio=increase,crop=${targetW*2}:${targetH*2},setsar=1`;
-    const post = `scale=${targetW}:${targetH},pad=ceil(iw/2)*2:ceil(ih/2)*2,fps=24,format=yuv420p`;
-
-    return `${pre},${selected},${post}`;
-}
-
-// ==============================
-//      TRANSIÇÕES
-// ==============================
-function getTransitionXfade(t) {
-    const map = {
-        'cut': 'cut',
-        'fade':'fade',
-        'mix':'dissolve',
-        'black':'fadeblack',
-        'white':'fadewhite',
-        'slide-left':'slideleft',
-        'slide-right':'slideright'
-    };
-    return map[t] || 'fade';
-}
-
-// ==============================
-//      ARGS PADRÃO
-// ==============================
-const getVideoArgs = () => [
-    '-c:v','libx264',
-    '-preset','ultrafast',
-    '-pix_fmt','yuv420p',
-    '-movflags','+faststart',
-    '-r','24'
-];
-
-const getAudioArgs = () => [
-    '-c:a','aac',
-    '-b:a','192k',
-    '-ar','44100',
-    '-ac','2'
-];
-
-// ==============================
-//  FRONTEND BUILD
-// ==============================
-async function buildFrontend() {
-    try {
-        const copySafe = (src, dest) => {
-            if (fs.existsSync(src)) {
-                fs.copyFileSync(src, dest);
-            }
-        };
-
-        copySafe('index.html', path.join(PUBLIC_DIR,'index.html'));
-        copySafe('index.css', path.join(PUBLIC_DIR,'index.css'));
-
-        await esbuild.build({
-            entryPoints:['index.tsx'],
-            outfile:path.join(PUBLIC_DIR,'bundle.js'),
-            bundle:true,
-            format:'esm',
-            minify:true,
-            external: ['fs', 'path', 'child_process', 'url', 'https', 'ffmpeg-static', 'ffprobe-static'],
-            define: { 'process.env.API_KEY': JSON.stringify(GEMINI_KEY), 'global': 'window' },
-            loader: { '.tsx': 'tsx', '.ts': 'ts', '.css': 'css' },
-        });
-
-    } catch(e) {
-        console.error("Frontend error:", e);
-    }
-}
-
-await buildFrontend();
-
-// ==============================
-//  SERVER PREFS
-// ==============================
+app.use(express.json({ limit: "200mb" }));
 app.use(cors());
-app.use(express.json({limit:'900mb'}));
-app.use(express.urlencoded({extended:true, limit:'900mb'}));
-app.use(express.static(PUBLIC_DIR));
-app.use('/outputs', express.static(OUTPUT_DIR));
 
-const storage = multer.diskStorage({
-    destination:(req,file,cb)=>cb(null,UPLOAD_DIR),
-    filename:(req,file,cb)=>cb(null, Date.now()+"-"+file.originalname.replace(/[^a-zA-Z0-9_.-]/g,"_"))
-});
+const TEMP_DIR = "/app/temp";
+const OUTPUT_DIR = "/app/outputs";
+const PUBLIC_URL = process.env.PUBLIC_URL || "https://darkmaker-backend-production.up.railway.app";
 
-const uploadAny = multer({storage}).any();
+if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
+if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
 
-const jobs = {};
+const ffmpegRun = util.promisify((cmd, callback) => cmd.on("end", () => callback(null)).on("error", callback).run());
 
-// ============================================================================
-//                           RENDER ENGINE
-// ============================================================================
+async function downloadFile(url, filepath) {
+  const writer = fs.createWriteStream(filepath);
+  const response = await axios({ url, method: "GET", responseType: "stream" });
 
-async function renderVideoProject(project, jobId) {
-    const sessionDir = path.join(OUTPUT_DIR, `job_${jobId}`);
-    if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
-
-    const tempClips = [];
-    const durations = [];
-
-    let targetW = 1280;
-    let targetH = 720;
-    if (project.aspectRatio === '9:16') {
-        targetW = 720;
-        targetH = 1280;
-    }
-
-    for (let i = 0; i < project.clips.length; i++) {
-        const clip = project.clips[i];
-        const inputPath = path.join(UPLOAD_DIR, clip.file);
-        
-        let duration = clip.duration || 5;
-        if (duration <= 0) duration = 5;
-        durations.push(duration);
-
-        const outFile = path.join(sessionDir, `clip_${i}.mp4`);
-        tempClips.push(outFile);
-
-        const args = ["-y"];
-        const isVideo = await isVideoFile(inputPath);
-
-        if (isVideo) {
-             args.push("-stream_loop", "-1", "-i", inputPath);
-        } else {
-             args.push("-loop", "1", "-i", inputPath);
-        }
-
-        let hasExternalAudio = false;
-        let hasInternalAudio = false;
-
-        if (clip.audio) {
-            const aPath = path.join(UPLOAD_DIR, clip.audio);
-            if (fs.existsSync(aPath)) {
-                args.push("-i", aPath);
-                hasExternalAudio = true;
-            }
-        }
-
-        if (!hasExternalAudio) {
-            hasInternalAudio = await fileHasAudio(inputPath);
-        }
-
-        let filterComplex = "";
-
-        if (isVideo) {
-            const pre = `scale=${targetW*2}:${targetH*2}:force_original_aspect_ratio=increase,crop=${targetW*2}:${targetH*2},setsar=1`;
-            const post = `scale=${targetW}:${targetH},pad=ceil(iw/2)*2:ceil(ih/2)*2,fps=24,format=yuv420p`;
-            filterComplex = `[0:v]${pre},${post}[v_out];`;
-        } else {
-            const movementFilter = getMovementFilter(clip.movement || "kenburns", duration, targetW, targetH);
-            filterComplex = `[0:v]${movementFilter}[v_out];`;
-        }
-        
-        // Audio Logic: 
-        // Force audio format to be consistent across all clips to prevent concat issues
-        if (hasExternalAudio) {
-            // External audio is input 1 (input 0 is video)
-            filterComplex += `[1:a]apad,atrim=0:${duration},aformat=sample_rates=44100:channel_layouts=stereo[a_out];`;
-
-        } else if (hasInternalAudio) {
-            // Internal audio is input 0
-            filterComplex += `[0:a]apad,atrim=0:${duration},aformat=sample_rates=44100:channel_layouts=stereo[a_out];`;
-        } else {
-            // Generate silence matching duration
-            filterComplex += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration},aformat=sample_rates=44100:channel_layouts=stereo[a_out];
-
-        }
-
-        args.push(
-            "-filter_complex", filterComplex,
-            "-map", "[v_out]",
-            "-map", "[a_out]",
-            "-t", duration.toString(),
-            ...getVideoArgs(),
-            ...getAudioArgs(),
-            outFile
-        );
-
-        await runFFmpeg(args).catch(e => {
-            console.error(`Failed to process clip ${i}:`, e);
-            throw e;
-        });
-        
-        jobs[jobId].progress = Math.floor((i / project.clips.length) * 45);
-    }
-
-    const concatOut = path.join(sessionDir, "video_final.mp4");
-    const trType = getTransitionXfade(project.transition || "fade");
-
-    if (tempClips.length === 1) {
-        fs.copyFileSync(tempClips[0], concatOut);
-        jobs[jobId].progress = 70;
-    } else if (trType === 'cut') {
-        const listPath = path.join(sessionDir, "concat_list.txt");
-        const listContent = tempClips.map(p => `file '${p.replace(/\\/g, '/')}'`).join('\n');
-        fs.writeFileSync(listPath, listContent);
-
-        try {
-            await runFFmpeg([
-                "-y", "-f", "concat", "-safe", "0", "-i", listPath,
-                "-c", "copy",
-                concatOut
-            ]);
-        } catch (e) {
-            // Re-encode if copy fails
-            await runFFmpeg([
-                "-y", "-f", "concat", "-safe", "0", "-i", listPath,
-                ...getVideoArgs(), ...getAudioArgs(),
-                concatOut
-            ]);
-        }
-        jobs[jobId].progress = 70;
-    } else {
-        const inputArgs = [];
-        tempClips.forEach(path => inputArgs.push("-i", path));
-        
-        let filterGraph = "";
-        let prevLabelV = "[0:v]";
-        let prevLabelA = "[0:a]";
-        let outIndex = 0;
-        const trDur = project.transitionDuration || 1.0;
-        let timeCursor = durations[0];
-
-        for (let i = 1; i < tempClips.length; i++) {
-            const offset = timeCursor - trDur;
-            const outLabelV = `[v${outIndex + 1}]`;
-            const outLabelA = `[a${outIndex + 1}]`;
-
-            // XFade for Video
-            filterGraph += `${prevLabelV}[${i}:v]xfade=transition=${trType}:duration=${trDur}:offset=${offset}${outLabelV};`;
-            
-            // Acrossfade for Audio (with format normalization included via chain if needed, but clips are already normalized)
-            // Note: We avoid mixing simple filter (-af) later by ensuring the graph output is ready
-            filterGraph += `${prevLabelA}[${i}:a]acrossfade=d=${trDur}:c1=tri:c2=tri[a_tmp${i}];`;
-            filterGraph += `[a_tmp${i}]aformat=sample_rates=44100:channel_layouts=stereo${outLabelA};`;
-
-            prevLabelV = outLabelV;
-            prevLabelA = outLabelA;
-            outIndex++;
-            timeCursor += (durations[i] - trDur);
-        }
-
-        // IMPORTANT: Do NOT use -af in combination with -filter_complex for the same stream.
-        // The audio formatting is already handled inside the clips processing or the graph loop.
-        await runFFmpeg([
-            "-y",
-            ...inputArgs,
-            "-filter_complex", filterGraph,
-            "-map", prevLabelV,
-            "-map", prevLabelA,
-            ...getVideoArgs(),
-            ...getAudioArgs(),
-            concatOut
-        ]);
-
-        jobs[jobId].progress = 70;
-    }
-
-    const bgm = project.audio?.bgm ? path.join(UPLOAD_DIR, project.audio.bgm) : null;
-    let finalOutput = path.join(OUTPUT_DIR, `video_${jobId}.mp4`);
-
-    if (bgm && fs.existsSync(bgm)) {
-        // Ensure inputs match duration roughly
-        const duration = durations.reduce((a,b)=>a+b, 0);
-        // Use apad to extend concatOut just in case, and amix
-        // Use -t duration to cut cleanly at the end
-        const mixGraph = `[1:a]aloop=loop=-1:size=2e+09,volume=${project.audio.bgmVolume ?? 0.2}[bgm];[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=0[a_final]`;
-        
-        await runFFmpeg([
-            "-y", "-i", concatOut, "-i", bgm,
-            "-filter_complex", mixGraph,
-            "-map", "0:v", "-map", "[a_final]",
-            "-t", duration.toString(),
-            ...getVideoArgs(), ...getAudioArgs(),
-            finalOutput
-        ]);
-    } else {
-        fs.copyFileSync(concatOut, finalOutput);
-    }
-
-    jobs[jobId].progress = 100;
-    return finalOutput;
+  return new Promise((resolve, reject) => {
+    response.data.pipe(writer);
+    writer.on("finish", resolve);
+    writer.on("error", reject);
+  });
 }
 
-function runFFmpeg(args) {
-    return new Promise((resolve, reject) => {
-        const ff = spawn(ffmpegPath, args);
-        let errData = "";
-        ff.stderr.on('data', d => errData += d.toString());
-        ff.on("close", code => {
-            if (code === 0) resolve();
-            else reject(`FFmpeg error ${code}: ${errData.slice(-300)}`);
-        });
-    });
+async function ensureAudioTrack(input, output) {
+  return new Promise((resolve, reject) => {
+    ffmpeg(input)
+      .outputOptions([
+        "-c:v copy",
+        "-c:a aac",
+        "-af aformat=sample_rates=44100:channel_layouts=stereo"
+      ])
+      .save(output)
+      .on("end", resolve)
+      .on("error", reject);
+  });
 }
 
-// ==============================
-//      ROUTES
-// ==============================
+async function concatVideosWithTransitions(inputs, output) {
+  return new Promise((resolve, reject) => {
+    const cmd = ffmpeg();
 
-app.post("/api/upload", (req, res) => {
-    uploadAny(req, res, (err) => {
-        if (err) return res.status(500).json({ error: "Falha no upload", details: err });
-        res.json({ files: req.files });
-    });
-});
+    inputs.forEach(i => cmd.input(i));
+
+    const filterGraph = buildTransitionFilter(inputs.length);
+
+    cmd
+      .complexFilter(filterGraph)
+      .outputOptions([
+        "-map", "[v_out]",
+        "-map", "[a_out]",
+        "-c:v libx264",
+        "-preset veryfast",
+        "-c:a aac",
+        "-b:a 192k",
+        "-pix_fmt yuv420p"
+      ])
+      .save(output)
+      .on("end", resolve)
+      .on("error", reject);
+  });
+}
+
+function buildTransitionFilter(nInputs) {
+  let graph = "";
+  let lastV = null;
+  let lastA = null;
+
+  for (let i = 0; i < nInputs; i++) {
+    const v = `v${i}`;
+    const a = `a${i}`;
+
+    graph += `[${i}:v]scale=1920:1080,format=yuv420p[${v}];`;
+    graph += `[${i}:a]aformat=sample_rates=44100:channel_layouts=stereo[${a}];`;
+
+    if (i === 0) {
+      lastV = v;
+      lastA = a;
+    } else {
+      const nextV = `v${i}_mix`;
+      const nextA = `a${i}_mix`;
+
+      graph += `[${lastV}][${v}]xfade=transition=fade:duration=1:offset=${i * 7}[${nextV}];`;
+      graph += `[${lastA}][${a}]acrossfade=d=1[${nextA}];`;
+
+      lastV = nextV;
+      lastA = nextA;
+    }
+  }
+
+  graph += `[${lastV}]format=yuv420p[v_out];`;
+  graph += `[${lastA}]aformat=sample_rates=44100:channel_layouts=stereo[a_out];`;
+
+  return graph;
+}
 
 app.post("/api/render/start", async (req, res) => {
-    uploadAny(req, res, async (err) => {
-        if (err) return res.status(500).json({ error: "Upload failed" });
+  try {
+    const { scenes, bgmUrl } = req.body;
+    const jobId = "job_" + Date.now();
 
-        try {
-            const jobId = Date.now().toString();
-            jobs[jobId] = { progress: 1, status: "processing" };
+    const tempPath = path.join(TEMP_DIR, jobId);
+    fs.mkdirSync(tempPath, { recursive: true });
 
-            let config = {};
-            if (req.body.config) {
-                try { config = JSON.parse(req.body.config); } catch(e) {}
-            }
+    let videoFiles = [];
 
-            const project = {
-                clips: [],
-                audio: {
-                    bgm: null,
-                    bgmVolume: config.musicVolume || 0.2,
-                    sfxVolume: config.sfxVolume || 0.5
-                },
-                transition: config.transition || 'cut', 
-                transitionDuration: 1.0,
-                aspectRatio: config.aspectRatio || '16:9'
-            };
+    for (let i = 0; i < scenes.length; i++) {
+      const scene = scenes[i];
 
-            const visuals = req.files.filter(f => f.fieldname === 'visualFiles');
-            const audios = req.files.filter(f => f.fieldname === 'audioFiles');
-            const extras = req.files.filter(f => f.fieldname === 'additionalFiles');
+      const videoPath = path.join(tempPath, `scene_${i}.mp4`);
+      const audioFixedPath = path.join(tempPath, `scene_fixed_${i}.mp4`);
 
-            const bgmFile = extras.find(f => f.originalname.includes('background_music'));
-            if (bgmFile) project.audio.bgm = bgmFile.filename;
+      await downloadFile(scene.videoUrl, videoPath);
+      await ensureAudioTrack(videoPath, audioFixedPath);
 
-            for (let i = 0; i < visuals.length; i++) {
-                const vFile = visuals[i];
-                const aFile = audios[i]; 
-                const meta = config.sceneData ? config.sceneData[i] : {};
+      videoFiles.push(audioFixedPath);
+    }
 
-                project.clips.push({
-                    file: vFile.filename,
-                    audio: aFile ? aFile.filename : null,
-                    duration: parseFloat(meta?.duration || 5),
-                    movement: config.movement || 'kenburns'
-                });
-            }
+    const finalVideo = path.join(OUTPUT_DIR, `${jobId}_video_final.mp4`);
 
-            renderVideoProject(project, jobId)
-                .then(outputPath => {
-                    jobs[jobId].status = "completed";
-                    jobs[jobId].downloadUrl = `/outputs/${path.basename(outputPath)}`;
-                })
-                .catch(err => {
-                    console.error("Render error:", err);
-                    jobs[jobId].status = "failed";
-                    jobs[jobId].error = err.toString();
-                });
+    await concatVideosWithTransitions(videoFiles, finalVideo);
 
-            res.json({ jobId });
+    if (bgmUrl) {
+      const finalWithBgm = path.join(OUTPUT_DIR, `${jobId}_video_bgm.mp4`);
 
-        } catch (err) {
-            console.error("API render error:", err);
-            res.status(500).json({ error: "Erro ao iniciar renderização" });
-        }
+      await new Promise((resolve, reject) => {
+        ffmpeg(finalVideo)
+          .input(bgmUrl)
+          .complexFilter([
+            "[0:a][1:a]amix=inputs=2:dropout_transition=2[a]"
+          ])
+          .outputOptions([
+            "-map 0:v",
+            "-map [a]",
+            "-c:v copy",
+            "-c:a aac",
+            "-b:a 192k"
+          ])
+          .save(finalWithBgm)
+          .on("end", resolve)
+          .on("error", reject);
+      });
+
+      return res.json({
+        success: true,
+        url: `${PUBLIC_URL}/outputs/${path.basename(finalWithBgm)}`
+      });
+    }
+
+    res.json({
+      success: true,
+      url: `${PUBLIC_URL}/outputs/${path.basename(finalVideo)}`
     });
+
+  } catch (err) {
+    console.error("Render error:", err);
+    res.status(500).json({ success: false, error: err.toString() });
+  }
+});
+app.get("/outputs/:file", (req, res) => {
+  const filePath = path.join(OUTPUT_DIR, req.params.file);
+
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).send("File not found");
+  }
+
+  res.sendFile(filePath);
 });
 
-// NEW: Endpoint dedicated to simple merging (Video + Audio)
-app.post("/api/process/start/merge", async (req, res) => {
-    uploadAny(req, res, async (err) => {
-        if (err) return res.status(500).json({ error: "Upload failed" });
-        
-        try {
-            const jobId = Date.now().toString();
-            jobs[jobId] = { progress: 1, status: "processing" };
-            
-            const files = req.files;
-            if (!files || files.length < 2) throw new Error("Requires at least 2 files (video + audio)");
-            
-            const videoFile = files.find(f => f.mimetype.startsWith('video')) || files[0];
-            const audioFile = files.find(f => f.mimetype.startsWith('audio')) || files[1];
-            
-            const vPath = path.join(UPLOAD_DIR, videoFile.filename);
-            const aPath = path.join(UPLOAD_DIR, audioFile.filename);
-            const outPath = path.join(OUTPUT_DIR, `merged_${jobId}.mp4`);
-            
-            // FFMPEG Merge: video stream copy (if possible) or re-encode, replace audio
-            // Use shortest to cut audio to video length or stream_loop for video
-            const args = [
-                "-y",
-                "-i", vPath,
-                "-i", aPath,
-                "-c:v", "copy", // Try copy first for speed
-                "-c:a", "aac",
-                "-map", "0:v:0",
-                "-map", "1:a:0",
-                "-shortest", // Stop when shortest input ends (usually video)
-                outPath
-            ];
-            
-            // If copy fails or format mismatch, might need re-encode, but copy is safe for mp4/aac usually.
-            // If video is image (which shouldn't happen here usually but safety check):
-            if (videoFile.mimetype.startsWith('image')) {
-                 // Image + Audio merge
-                 // We need to know duration or loop image
-                 const dur = await getExactDuration(aPath) || 10;
-                 args.splice(3, 2); // remove -c:v copy
-                 args.splice(1, 0, "-loop", "1"); // add loop 1 before input 0
-                 args.push("-t", dur.toString(), ...getVideoArgs());
-            }
+app.get("/", (req, res) => {
+  res.send("DarkMaker Backend Running");
+});
 
-            runFFmpeg(args)
-                .then(() => {
-                    jobs[jobId].status = "completed";
-                    jobs[jobId].downloadUrl = `/outputs/${path.basename(outPath)}`;
-                    jobs[jobId].progress = 100;
-                })
-                .catch(e => {
-                    jobs[jobId].status = "failed";
-                    jobs[jobId].error = e.toString();
-                });
+// =============== CLEANUP OLD FILES (OPTIONAL) ==================
 
-            res.json({ jobId });
-        } catch (e) {
-            res.status(500).json({ error: e.message });
-        }
+function cleanupOldFiles() {
+  const now = Date.now();
+  const maxAge = 1000 * 60 * 60 * 12; // 12 horas
+
+  try {
+    const dirs = fs.readdirSync(TEMP_DIR);
+    dirs.forEach(d => {
+      const full = path.join(TEMP_DIR, d);
+      const stats = fs.statSync(full);
+
+      if (now - stats.mtimeMs > maxAge) {
+        fs.rmSync(full, { recursive: true, force: true });
+        console.log("Removed old temp:", full);
+      }
     });
-});
 
-app.post("/api/process/start/:action", async (req, res) => {
-    uploadAny(req, res, async (err) => {
-        if (err) return res.status(500).json({ error: "Upload failed" });
-        const jobId = Date.now().toString();
-        // Placeholder for other audio processing
-        const files = req.files || [];
-        if (files.length > 0) {
-            jobs[jobId] = { 
-                status: "completed", 
-                progress: 100, 
-                downloadUrl: `/uploads/${files[0].filename}` 
-            };
-        } else {
-            jobs[jobId] = { status: "failed", error: "No files provided" };
-        }
-        res.json({ jobId });
+    const outs = fs.readdirSync(OUTPUT_DIR);
+    outs.forEach(f => {
+      const full = path.join(OUTPUT_DIR, f);
+      const stats = fs.statSync(full);
+
+      if (now - stats.mtimeMs > maxAge) {
+        fs.rmSync(full, { force: true });
+        console.log("Removed old output:", full);
+      }
     });
-});
 
-app.post("/api/image/start/:action", async (req, res) => {
-    uploadAny(req, res, async (err) => {
-        if (err) return res.status(500).json({ error: "Upload failed" });
-        const jobId = Date.now().toString();
-        const files = req.files || [];
-        if (files.length > 0) {
-            jobs[jobId] = { 
-                status: "completed", 
-                progress: 100, 
-                downloadUrl: `/uploads/${files[0].filename}` 
-            };
-        } else {
-            jobs[jobId] = { status: "failed", error: "No files provided" };
-        }
-        res.json({ jobId });
+  } catch (e) {
+    console.log("Cleanup error:", e);
+  }
+}
+
+setInterval(cleanupOldFiles, 1000 * 60 * 30); // a cada 30 min
+
+// =============== EXTRA UTIL: SAFE VIDEO PROBE ==================
+
+function getVideoDuration(filepath) {
+  return new Promise((resolve) => {
+    ffmpeg.ffprobe(filepath, (err, data) => {
+      if (err) return resolve(0);
+      resolve(data.format.duration || 0);
     });
+  });
+}
+
+// =============== EXTRA: FORCE STEREO FOR ALL SCENES ============
+
+async function forceStereo(input, output) {
+  return new Promise((resolve, reject) => {
+    ffmpeg(input)
+      .outputOptions([
+        "-c:v copy",
+        "-c:a aac",
+        "-ar 44100",
+        "-ac 2"
+      ])
+      .save(output)
+      .on("end", resolve)
+      .on("error", reject);
+  });
+}
+
+// =============== LOGGING HELPERS ===============================
+
+function logScene(scene, index) {
+  console.log(`
+--- Scene ${index} ---
+Video: ${scene.videoUrl}
+Audio: ${scene.audioUrl || "none"}
+BG: ${scene.bg || "none"}
+------------------------`);
+}
+
+// =============== FUTURE: MULTI-AUDIO MIX =======================
+
+async function mixAudioTracks(videoPath, audioTrack, outputPath) {
+  return new Promise((resolve, reject) => {
+    ffmpeg(videoPath)
+      .input(audioTrack)
+      .complexFilter([
+        "[0:a][1:a]amix=inputs=2:weights=1 1:normalize=1[a]"
+      ])
+      .outputOptions([
+        "-map 0:v",
+        "-map [a]",
+        "-c:v copy",
+        "-c:a aac",
+        "-b:a 192k"
+      ])
+      .save(outputPath)
+      .on("end", resolve)
+      .on("error", reject);
+  });
+}
+
+// =============== EXTRA: DEBUG FILTER BUILDER ====================
+
+function debugFilterGraph(graph) {
+  console.log("======== FILTER GRAPH BEGIN ========");
+  console.log(graph);
+  console.log("======== FILTER GRAPH END ==========");
+}
+
+// =============== EXPORT FUNCTION FOR DEV ========================
+
+app.post("/api/debug/filter", (req, res) => {
+  const { count } = req.body;
+  const graph = buildTransitionFilter(count);
+  res.send(`<pre>${graph}</pre>`);
 });
 
-app.get("/api/process/status/:id", (req, res) => {
-    const job = jobs[req.params.id];
-    if (!job) return res.status(404).json({ status: "not_found" });
-    res.json(job);
-});
+// ================================================================
+// FINAL: START SERVER
+// ================================================================
 
-app.get("/api/download/:file", (req, res) => {
-    const filePath = path.join(OUTPUT_DIR, req.params.file);
-    if (!fs.existsSync(filePath)) return res.status(404).send("Arquivo não encontrado.");
-    res.download(filePath);
+const PORT = process.env.PORT || 8080;
+app.listen(PORT, () => {
+  console.log("DarkMaker backend running on port", PORT);
 });
+// ================================================================
+// SAFETY: ENSURE DIRECTORIES EXIST
+// ================================================================
 
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Turbo Server Running on Port ${PORT}`);
-});
+if (!fs.existsSync(TEMP_DIR)) {
+  fs.mkdirSync(TEMP_DIR, { recursive: true });
+}
+
+if (!fs.existsSync(OUTPUT_DIR)) {
+  fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+}
+
+// ================================================================
+// SERVER READY
+// ================================================================
+
+console.log("DarkMaker backend fully initialized.");
