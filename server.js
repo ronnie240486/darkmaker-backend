@@ -252,12 +252,18 @@ async function renderVideoProject(project, jobId) {
             filterComplex = `[0:v]${movementFilter}[v_out];`;
         }
         
-        // Audio processing logic ensures consistency for concat
+        // Audio Logic: 
+        // If hasAudio -> pad to duration -> [a_out]
+        // If no audio -> generate silence -> [a_out]
+        // We also enforce audio format to ensure seamless concatenation
         if (hasExternalAudio) {
-            filterComplex += `[1:a]apad,atrim=0:${duration},aformat=sample_rates=44100:channel_layouts=stereo[a_out]`;
+            // External audio is input 1 (input 0 is video)
+            filterComplex += `[1:a]apad,aformat=sample_rates=44100:channel_layouts=stereo[a_out]`;
         } else if (hasInternalAudio) {
-            filterComplex += `[0:a]apad,atrim=0:${duration},aformat=sample_rates=44100:channel_layouts=stereo[a_out]`;
+            // Internal audio is input 0
+            filterComplex += `[0:a]apad,aformat=sample_rates=44100:channel_layouts=stereo[a_out]`;
         } else {
+            // Generate silence matching duration
             filterComplex += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration}[a_out]`;
         }
 
