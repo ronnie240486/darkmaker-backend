@@ -83,22 +83,29 @@ const saveBase64OrUrl = async (input, prefix, ext) => {
     
     try {
         if (input.startsWith('data:')) {
-            const matches = input.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
-            if (!matches || matches.length !== 3) return null;
-            const buffer = Buffer.from(matches[2], 'base64');
-            fs.writeFileSync(filepath, buffer);
-            return filename;
+            // Optimized manual parsing instead of Regex for large files
+            const commaIndex = input.indexOf(',');
+            if (commaIndex !== -1) {
+                const base64Data = input.substring(commaIndex + 1);
+                const buffer = Buffer.from(base64Data, 'base64');
+                fs.writeFileSync(filepath, buffer);
+                return filename;
+            }
         } else if (input.startsWith('http')) {
             const res = await fetch(input);
-            if (!res.ok) return null;
+            if (!res.ok) {
+                console.error(`Failed to fetch URL: ${input} (${res.status})`);
+                return null;
+            }
             const arrayBuffer = await res.arrayBuffer();
             fs.writeFileSync(filepath, Buffer.from(arrayBuffer));
             return filename;
         }
     } catch(e) {
-        console.error("Error saving asset:", e);
+        console.error(`Error saving asset (${prefix}):`, e.message);
         return null;
     }
+    console.warn(`Invalid input format for ${prefix}: starts with ${input.substring(0, 20)}...`);
     return null;
 };
 
@@ -349,8 +356,13 @@ app.post("/api/render/start", async (req, res) => {
             for (let i = 0; i < scenes.length; i++) {
                 const s = scenes[i];
                 let visualFile = null;
-                if (s.videoUrl) visualFile = await saveBase64OrUrl(s.videoUrl, `scene_${i}_vid`, 'mp4');
-                else if (s.imageUrl) visualFile = await saveBase64OrUrl(s.imageUrl, `scene_${i}_img`, 'png');
+                
+                // Prioritize videoUrl, then imageUrl
+                if (s.videoUrl) {
+                    visualFile = await saveBase64OrUrl(s.videoUrl, `scene_${i}_vid`, 'mp4');
+                } else if (s.imageUrl) {
+                    visualFile = await saveBase64OrUrl(s.imageUrl, `scene_${i}_img`, 'png');
+                }
 
                 let audioFile = null;
                 if (s.audioUrl) audioFile = await saveBase64OrUrl(s.audioUrl, `scene_${i}_audio`, 'wav');
@@ -362,7 +374,13 @@ app.post("/api/render/start", async (req, res) => {
                         duration: parseFloat(s.duration || 5),
                         movement: s.effect || config.movement || 'kenburns'
                     });
+                } else {
+                    console.warn(`Skipping scene ${i}: Failed to save visual asset.`, s.mediaType);
                 }
+            }
+
+            if (project.clips.length === 0) {
+                throw new Error("Nenhum clipe foi processado com sucesso. Verifique se as imagens/vídeos foram gerados corretamente.");
             }
 
             renderVideoProject(project, jobId)
