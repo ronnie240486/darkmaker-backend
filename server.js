@@ -26,7 +26,7 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
 
-// --- INTERNAL PRESETS ---
+// --- INTERNAL PRESETS (Self-Contained to avoid import errors) ---
 
 function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 720) {
     const d = parseFloat(durationSec) || 5;
@@ -63,7 +63,7 @@ function getTransitionXfade(transId) {
         'slide-left': 'slideleft', 'slide-right': 'slideright', 'slide-up': 'slideup', 'slide-down': 'slidedown',
         'wipe-left': 'wipeleft', 'wipe-right': 'wiperight', 'wipe-up': 'wipeup', 'wipe-down': 'wipedown',
         'push-left': 'pushleft', 'push-right': 'pushright',
-        'burn': 'fadewhite'
+        'burn': 'fadewhite', 'queimadura de filme': 'fadewhite'
     };
     return map[id] || 'fade';
 }
@@ -85,7 +85,7 @@ const getAudioArgs = () => [
     '-c:a', 'aac',
     '-b:a', '192k', 
     '-ar', '44100',
-    '-ac', '2' // Force Stereo (Crucial for consistent audio mixing)
+    '-ac', '2' // FORCE STEREO TO AVOID CONCAT ISSUES
 ];
 
 const getExactDuration = (filePath) => {
@@ -230,12 +230,12 @@ async function handleExport(job, uploadDir, callback) {
         const videoClipDurations = [];
         const transDur = 1.0; 
 
-        // Renderizar Cenas Individuais
+        // Renderizar Cenas
         for (let i = 0; i < sortedScenes.length; i++) {
             const scene = sortedScenes[i];
             const clipPath = path.join(uploadDir, `temp_${job.id}_${i}.mp4`);
             
-            // Determine Duration
+            // Prioritize explicit duration passed from frontend
             let dur = 5;
             const metaDur = sceneData[i] && parseFloat(sceneData[i].duration);
             
@@ -247,12 +247,11 @@ async function handleExport(job, uploadDir, callback) {
                 dur = (await getExactDuration(scene.visual.path)) || 5;
             }
             
-            // Adjust for transition overlap
             if (dur < transDur + 0.1) dur = transDur + 0.1; 
             
             const args = [];
             
-            // 1. Visual Input (Index 0)
+            // Visual
             if (scene.visual?.mimetype?.includes('image')) {
                 args.push('-framerate', '24', '-loop', '1', '-i', scene.visual.path);
             } else if (scene.visual) {
@@ -261,50 +260,29 @@ async function handleExport(job, uploadDir, callback) {
                 args.push('-f', 'lavfi', '-i', `color=c=black:s=${targetW}x${targetH}:d=${dur}`);
             }
 
-            // 2. Audio Logic: Dynamic Input Indexing
-            let nextInputIdx = 1;
-            let mainAudioLabel = "";
-
+            // Audio Inputs
             if (scene.audio) {
-                // Case 1: Explicit Audio File Sent (TTS or Silence from Image)
                 args.push('-i', scene.audio.path);
-                mainAudioLabel = `[${nextInputIdx}:a]`;
-                nextInputIdx++;
-            } else if (scene.visual && scene.visual.mimetype.includes('video')) {
-                // Case 2: Video file with NO explicit audio -> Use Video's Internal Audio
-                // Note: If the video file has no audio stream, this might fail or be silent.
-                // We assume imported videos have audio as per requirement.
-                mainAudioLabel = `[0:a]`;
             } else {
-                // Case 3: Fallback (Missing Audio & Not a Video) -> Gen Silence
                 args.push('-f', 'lavfi', '-i', `anullsrc=cl=stereo:sr=44100:d=${dur}`);
-                mainAudioLabel = `[${nextInputIdx}:a]`;
-                nextInputIdx++;
             }
 
-            // 3. SFX Logic
             let hasSfx = false;
-            let sfxLabel = "";
             if (scene.sfx) {
                 args.push('-i', scene.sfx.path);
-                sfxLabel = `[${nextInputIdx}:a]`;
-                nextInputIdx++;
                 hasSfx = true;
             }
 
             let filterComplex = "";
+            let audioMap = "[a_out]";
             
-            // 4. Audio Mixing Filter
-            // We ensure we ALWAYS output to [a_out] regardless of source
+            // USE APAD TO ENSURE AUDIO IS LONG ENOUGH, AMIX DURATION=LONGEST
             if (hasSfx) {
-                // Mix Main Audio + SFX
-                filterComplex += `${mainAudioLabel}volume=1.0[voice];${sfxLabel}volume=${sfxVolume}[sfx];[voice][sfx]amix=inputs=2:duration=first:dropout_transition=0[a_out];`;
+                filterComplex += `[1:a]volume=1.5,apad[voice];[2:a]volume=${sfxVolume},apad[sfx];[voice][sfx]amix=inputs=2:duration=longest:dropout_transition=0[a_out];`;
             } else {
-                // Pass Main Audio through volume filter to ensure label existence
-                filterComplex += `${mainAudioLabel}volume=1.0[a_out];`;
+                filterComplex += `[1:a]volume=1.5,apad[a_out];`;
             }
 
-            // 5. Video Filter (Movement/Scale)
             const moveFilter = getMovementFilter(movement, dur, targetW, targetH);
             
             if (scene.visual?.mimetype?.includes('image')) {
@@ -316,7 +294,7 @@ async function handleExport(job, uploadDir, callback) {
             args.push(
                 '-filter_complex', filterComplex,
                 '-map', '[v_out]',
-                '-map', '[a_out]', // Ensure we map the processed audio
+                '-map', audioMap,
                 '-t', dur.toFixed(3),
                 ...getVideoArgs(), 
                 ...getAudioArgs(),
@@ -339,13 +317,10 @@ async function handleExport(job, uploadDir, callback) {
             if(jobs[job.id]) jobs[job.id].progress = Math.round((i / sortedScenes.length) * 80);
         }
 
-        // Concatenação Final
+        // Concatenação
         let finalArgs = [];
         
         if (transitionType === 'cut' || clipPaths.length < 2) {
-            // Concat Demuxer para cortes simples (rápido)
-            // IMPORTANTE: Para evitar problemas de timestamp/áudio ao usar 'cut', 
-            // re-codificamos tudo no final ao invés de usar '-c copy'
             const listPath = path.join(uploadDir, `list_${job.id}.txt`);
             const fileContent = clipPaths.map(p => `file '${path.resolve(p).replace(/\\/g, '/')}'`).join('\n');
             fs.writeFileSync(listPath, fileContent);
@@ -353,11 +328,9 @@ async function handleExport(job, uploadDir, callback) {
             if (bgMusicFile) {
                 finalArgs.push('-i', bgMusicFile.path, '-filter_complex', `[1:a]volume=${musicVolume},aloop=loop=-1:size=2e+09[bgm];[0:a][bgm]amix=inputs=2:duration=first[a_final]`, '-map', '0:v', '-map', '[a_final]');
             } else {
-                // Re-encoding ensures stable audio/video sync
+                finalArgs.push('-c', 'copy');
             }
-            finalArgs.push(...getVideoArgs(), ...getAudioArgs());
         } else {
-            // XFade Complex Filter para transições
             clipPaths.forEach(p => finalArgs.push('-i', p));
             let filter = "";
             let accumOffset = 0;
@@ -414,7 +387,6 @@ async function handleExport(job, uploadDir, callback) {
 app.post('/api/process/start/:action', uploadAny, (req, res) => {
     const action = req.params.action;
     const jobId = `${action}_${Date.now()}`;
-    // Mock processing for audio tools for now, can be expanded similarly to video export
     const outputPath = path.join(OUTPUT_DIR, `processed_${jobId}.mp4`);
     jobs[jobId] = { id: jobId, status: 'completed', progress: 100, downloadUrl: `/outputs/sample.mp4` };
     res.json({ jobId });
