@@ -26,7 +26,7 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
 
-// --- INTERNAL PRESETS ---
+// --- INTERNAL PRESETS (Self-Contained to avoid import errors) ---
 
 function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 720) {
     const d = parseFloat(durationSec) || 5;
@@ -35,6 +35,7 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
     const zdur = `:d=${totalFrames}:s=${targetW}x${targetH}`;
     const t = `(on/${totalFrames})`; 
 
+    // Mapeamento de movimentos
     const moves = {
         'static': `zoompan=z=1.0:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
         'kenburns': `zoompan=z='1.0+(0.3*${t})':x='(iw/2-(iw/zoom/2))*(1-0.2*${t})':y='(ih/2-(ih/zoom/2))*(1-0.2*${t})'${zdur}`,
@@ -48,77 +49,20 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
     };
 
     const selectedFilter = moves[moveId] || moves['kenburns'];
+    // IMPORTANTE: pad=ceil(iw/2)*2:ceil(ih/2)*2 Garante dimensões pares para libx264
     const pre = `scale=${targetW*2}:${targetH*2}:force_original_aspect_ratio=increase,crop=${targetW*2}:${targetH*2},setsar=1`;
     const post = `scale=${targetW}:${targetH}:flags=lanczos,pad=ceil(iw/2)*2:ceil(ih/2)*2,fps=${fps},format=yuv420p`;
     
     return `${pre},${selectedFilter},${post}`;
 }
 
-// Simula efeitos de cor ANTES da transição
-function getPreTransitionEffect(transId, duration) {
-    if (!transId) return "";
-    const id = transId.toLowerCase();
-    const transDur = 1.0; 
-    
-    // Inicia o efeito apenas durante o período da transição final (1s)
-    const startT = Math.max(0, duration - transDur).toFixed(2);
-    
-    // Efeito Burn: Flash Amarelo/Laranja Brilhante
-    // Simplificado para EQ e Hue para maior estabilidade no FFmpeg
-    if (id === 'burn' || id === 'queimadura de filme') {
-        return `,eq=enable='gt(t,${startT})':brightness=0.3:saturation=2,colorbalance=enable='gt(t,${startT})':rs=0.3:gs=0.1:bs=-0.3`;
-    }
-    
-    // Flash Bang: Estouro branco rápido
-    if (id === 'flash-bang') {
-        return `,eq=enable='gt(t,${startT})':brightness=0.8:contrast=1.5`;
-    }
-
-    // Glitch: Ruído visual
-    if (id === 'glitch' || id === 'rgb-split') {
-        return `,noise=enable='gt(t,${startT})':alls=20:allf=t`;
-    }
-
-    return "";
-}
-
 function getTransitionXfade(transId) {
     const id = transId?.toLowerCase() || 'fade';
     const map = {
-        'cut': 'fade',
-        'fade': 'fade', 
-        'mix': 'dissolve', 
-        'black': 'fadeblack', 
-        'white': 'fadewhite',
-        
-        // Efeitos Especiais
-        'burn': 'fadewhite',           
-        'queimadura de filme': 'fadewhite',
-        'flash-bang': 'fadewhite',
-        'flash-black': 'fadeblack',
-        'lens-flare': 'circleopen',    
-        'lens flare': 'circleopen',
-        'light-leak-tr': 'diagtr',     
-        'god-rays': 'radial',          
-        'glow-intense': 'dissolve',    
-
-        // Glitch
-        'glitch': 'pixelize',
-        'digital-noise': 'pixelize',
-        'pixelize': 'pixelize',
-        'datamosh': 'hblur',           
-        'rgb-split': 'rgbashift',      
-
-        // Movimento
-        'slide-left': 'slideleft', 
-        'slide-right': 'slideright', 
-        'slide-up': 'slideup', 
-        'slide-down': 'slidedown',
-        'wipe-left': 'wipeleft', 
-        'wipe-right': 'wiperight', 
-        'circle-open': 'circleopen',
-        'push-left': 'pushleft',
-        'push-right': 'pushright'
+        'cut': 'fade', 'fade': 'fade', 'mix': 'dissolve', 'black': 'fadeblack', 'white': 'fadewhite',
+        'slide-left': 'slideleft', 'slide-right': 'slideright', 'slide-up': 'slideup', 'slide-down': 'slidedown',
+        'wipe-left': 'wipeleft', 'wipe-right': 'wiperight', 'circle-open': 'circleopen', 'pixelize': 'pixelize',
+        'burn': 'fadewhite', 'queimadura de filme': 'fadewhite'
     };
     return map[id] || 'fade';
 }
@@ -204,11 +148,13 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
     
     ffmpeg.stderr.on('data', d => {
         const line = d.toString();
+        // Console log simples para debug
         if(line.includes('Error') || line.includes('Invalid')) console.error(`[FFMPEG ERROR] ${line}`);
         
         if(line.includes('time=')) {
              const timeMatch = line.match(/time=(\d{2}:\d{2}:\d{2}\.\d{2})/);
              if (timeMatch && expectedDuration > 0) {
+                // Cálculo simples de segundos
                 const parts = timeMatch[1].split(':');
                 const cur = (parseFloat(parts[0]) * 3600) + (parseFloat(parts[1]) * 60) + parseFloat(parts[2]);
                 let p = Math.round((cur / expectedDuration) * 100);
@@ -222,6 +168,7 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
         if (!jobs[jobId]) return;
         const finalPath = args[args.length - 1];
         
+        // Verificação extra: O arquivo existe e tem tamanho > 0?
         if (code === 0 && fs.existsSync(finalPath) && fs.statSync(finalPath).size > 1000) {
             jobs[jobId].status = 'completed';
             jobs[jobId].progress = 100;
@@ -281,7 +228,7 @@ async function handleExport(job, uploadDir, callback) {
         const sortedScenes = Object.keys(sceneMap).sort((a,b) => a - b).map(k => sceneMap[k]);
         const clipPaths = [];
         const videoClipDurations = [];
-        const transDur = 1.0; 
+        const transDur = 0.5;
 
         // Renderizar Cenas
         for (let i = 0; i < sortedScenes.length; i++) {
@@ -326,15 +273,12 @@ async function handleExport(job, uploadDir, callback) {
             }
 
             const moveFilter = getMovementFilter(movement, dur, targetW, targetH);
-            const preTransEffect = getPreTransitionEffect(transitionType, dur);
             
-            // FIX: Adicionado setpts=PTS-STARTPTS para reiniciar timestamps e evitar que efeitos baseados em 't' falhem ou cortem o vídeo
-            const finalVisualFilter = `${moveFilter},setpts=PTS-STARTPTS${preTransEffect}`;
-
             if (scene.visual?.mimetype?.includes('image')) {
-                filterComplex += `[0:v]${finalVisualFilter}[v_out]`;
+                filterComplex += `[0:v]${moveFilter}[v_out]`;
             } else {
-                filterComplex += `[0:v]scale=${targetW}:${targetH}:force_original_aspect_ratio=increase,crop=${targetW}:${targetH},pad=ceil(iw/2)*2:ceil(ih/2)*2,setsar=1,fps=24,format=yuv420p,setpts=PTS-STARTPTS${preTransEffect}[v_out]`;
+                // Ensure even dimensions for video inputs too
+                filterComplex += `[0:v]scale=${targetW}:${targetH}:force_original_aspect_ratio=increase,crop=${targetW}:${targetH},pad=ceil(iw/2)*2:ceil(ih/2)*2,setsar=1,fps=24,format=yuv420p[v_out]`;
             }
 
             args.push(
@@ -357,8 +301,7 @@ async function handleExport(job, uploadDir, callback) {
             }
 
             const actualDur = await getExactDuration(clipPath);
-            // Fallback para duração esperada se ffprobe falhar
-            videoClipDurations.push(actualDur > 0.1 ? actualDur : dur);
+            videoClipDurations.push(actualDur);
             clipPaths.push(clipPath);
             
             if(jobs[job.id]) jobs[job.id].progress = Math.round((i / sortedScenes.length) * 80);
