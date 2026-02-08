@@ -95,7 +95,7 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
 // ==============================
 function getTransitionXfade(t) {
     const map = {
-        'cut':'fade',
+        'cut': 'cut', // Preserva 'cut' para tratamento especial
         'fade':'fade',
         'mix':'dissolve',
         'black':'fadeblack',
@@ -250,46 +250,63 @@ async function renderVideoProject(project, jobId) {
     }
 
     // -----------------------------------------------
-    //   XFADES (CONCAT WITH TRANSITIONS)
+    //   CONCATENAÇÃO (CUT ou XFADE)
     // -----------------------------------------------
     const inputArgs = [];
     tempClips.forEach(path => inputArgs.push("-i", path));
 
-    let filterGraph = "";
-    let prevLabelV = "[0:v]";
-    let prevLabelA = "[0:a]";
-    let outIndex = 0;
-
-    const trDur = project.transitionDuration || 1.0;
+    const concatOut = path.join(sessionDir, "video_final.mp4");
     const trType = getTransitionXfade(project.transition || "fade");
 
-    let timeCursor = durations[0];
-
-    for (let i = 1; i < tempClips.length; i++) {
-        const offset = timeCursor - trDur;
-        const outLabelV = `[v${outIndex + 1}]`;
-        const outLabelA = `[a${outIndex + 1}]`;
-
-        // Video Xfade
-        filterGraph += `${prevLabelV}[${i}:v]xfade=transition=${trType}:duration=${trDur}:offset=${offset}${outLabelV};`;
-        
-        // Audio Acrossfade
-        filterGraph += `${prevLabelA}[${i}:a]acrossfade=d=${trDur}:c1=tri:c2=tri${outLabelA};`;
-
-        prevLabelV = outLabelV;
-        prevLabelA = outLabelA;
-        outIndex++;
-
-        timeCursor += (durations[i] - trDur);
-    }
-
-    const concatOut = path.join(sessionDir, "video_final.mp4");
-
-    // Note: If only 1 clip, handle gracefully
+    // Se só tiver 1 clipe, apenas copia
     if (tempClips.length === 1) {
         fs.copyFileSync(tempClips[0], concatOut);
+        jobs[jobId].progress = 70;
+    } else if (trType === 'cut') {
+        // === MODO CORTE SECO (CONCAT FILTER) ===
+        // Mais robusto que xfade para cortes simples
+        let concatFilter = "";
+        for(let i=0; i<tempClips.length; i++) {
+            concatFilter += `[${i}:v][${i}:a]`;
+        }
+        concatFilter += `concat=n=${tempClips.length}:v=1:a=1[v_final][a_final]`;
+        
+        await runFFmpeg([
+            "-y", ...inputArgs,
+            "-filter_complex", concatFilter,
+            "-map", "[v_final]", "-map", "[a_final]",
+            ...getVideoArgs(), ...getAudioArgs(),
+            concatOut
+        ]);
+        jobs[jobId].progress = 70;
     } else {
-        const concatArgs = [
+        // === MODO TRANSIÇÃO (XFADE) ===
+        let filterGraph = "";
+        let prevLabelV = "[0:v]";
+        let prevLabelA = "[0:a]";
+        let outIndex = 0;
+        const trDur = project.transitionDuration || 1.0;
+        let timeCursor = durations[0];
+
+        for (let i = 1; i < tempClips.length; i++) {
+            const offset = timeCursor - trDur;
+            const outLabelV = `[v${outIndex + 1}]`;
+            const outLabelA = `[a${outIndex + 1}]`;
+
+            // Video Xfade
+            filterGraph += `${prevLabelV}[${i}:v]xfade=transition=${trType}:duration=${trDur}:offset=${offset}${outLabelV};`;
+            
+            // Audio Acrossfade
+            filterGraph += `${prevLabelA}[${i}:a]acrossfade=d=${trDur}:c1=tri:c2=tri${outLabelA};`;
+
+            prevLabelV = outLabelV;
+            prevLabelA = outLabelA;
+            outIndex++;
+
+            timeCursor += (durations[i] - trDur);
+        }
+
+        await runFFmpeg([
             "-y",
             ...inputArgs,
             "-filter_complex", filterGraph,
@@ -297,12 +314,10 @@ async function renderVideoProject(project, jobId) {
             "-map", prevLabelA,
             ...getVideoArgs(),
             ...getAudioArgs(),
-            concatOut,
-        ];
-        await runFFmpeg(concatArgs);
+            concatOut
+        ]);
+        jobs[jobId].progress = 70;
     }
-    
-    jobs[jobId].progress = 70;
 
     // -----------------------------------------------
     //   GLOBAL AUDIO MIXING (BGM / SFX Overlays)
@@ -383,7 +398,7 @@ app.post("/api/render", async (req, res) => {
                     bgmVolume: config.musicVolume || 0.2,
                     sfxVolume: config.sfxVolume || 0.5
                 },
-                transition: config.transition || 'fade',
+                transition: config.transition || 'cut', // Default to cut for safety
                 transitionDuration: 1.0
             };
 
