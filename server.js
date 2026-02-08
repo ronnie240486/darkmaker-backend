@@ -107,13 +107,26 @@ app.post("/api/render/start", async (req, res) => {
     const { scenes, bgmUrl } = req.body;
     const jobId = "job_" + Date.now();
 
+    // --- VALIDAÇÃO CRUCIAL ---
+    if (!scenes || !Array.isArray(scenes)) {
+      console.error("❌ ERRO: 'scenes' não enviado pelo frontend.", req.body);
+      return res.status(400).json({
+        success: false,
+        error: "O servidor não recebeu a lista de cenas (scenes)."
+      });
+    }
+
     const tempPath = path.join(TEMP_DIR, jobId);
     fs.mkdirSync(tempPath, { recursive: true });
 
     let videoFiles = [];
 
+    console.log(`▶ Recebidas ${scenes.length} cenas.`);
+
     for (let i = 0; i < scenes.length; i++) {
       const scene = scenes[i];
+
+      console.log(`⬇ Baixando cena ${i}:`, scene.videoUrl);
 
       const videoPath = path.join(tempPath, `scene_${i}.mp4`);
       const audioFixedPath = path.join(tempPath, `scene_fixed_${i}.mp4`);
@@ -126,20 +139,29 @@ app.post("/api/render/start", async (req, res) => {
 
     const finalVideo = path.join(OUTPUT_DIR, `${jobId}_video_final.mp4`);
 
+    console.log("🎬 Concatenando vídeos...");
     await concatVideosWithTransitions(videoFiles, finalVideo);
 
+    // -----------------------------
+    // 🔊 SE TIVER MÚSICA DE FUNDO
+    // -----------------------------
     if (bgmUrl) {
+      console.log("🎵 Mixando com BGM...");
+
       const finalWithBgm = path.join(OUTPUT_DIR, `${jobId}_video_bgm.mp4`);
 
       await new Promise((resolve, reject) => {
-        ffmpeg(finalVideo)
+        ffmpeg()
+          .input(finalVideo)
           .input(bgmUrl)
           .complexFilter([
-            "[0:a][1:a]amix=inputs=2:dropout_transition=2[a]"
+            "[0:a]volume=1[a0];",
+            "[1:a]volume=0.5[a1];",
+            "[a0][a1]amix=inputs=2:dropout_transition=2[aout]"
           ])
           .outputOptions([
             "-map 0:v",
-            "-map [a]",
+            "-map [aout]",
             "-c:v copy",
             "-c:a aac",
             "-b:a 192k"
@@ -155,16 +177,21 @@ app.post("/api/render/start", async (req, res) => {
       });
     }
 
+    // -----------------------------
+    // SEM BGM
+    // -----------------------------
     res.json({
       success: true,
       url: `${PUBLIC_URL}/outputs/${path.basename(finalVideo)}`
     });
 
   } catch (err) {
-    console.error("Render error:", err);
+    console.error("❌ Render error:", err);
     res.status(500).json({ success: false, error: err.toString() });
   }
 });
+
+// SERVE OUTPUTS
 app.get("/outputs/:file", (req, res) => {
   const filePath = path.join(OUTPUT_DIR, req.params.file);
 
@@ -178,6 +205,7 @@ app.get("/outputs/:file", (req, res) => {
 app.get("/", (req, res) => {
   res.send("DarkMaker Backend Running");
 });
+
 
 // =============== CLEANUP OLD FILES (OPTIONAL) ==================
 
