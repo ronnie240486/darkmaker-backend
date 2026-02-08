@@ -22,7 +22,7 @@ const UPLOAD_DIR = path.join(__dirname, 'uploads');
 const OUTPUT_DIR = path.join(__dirname, 'outputs');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
-// Clean and recreate public dir to avoid conflicts
+// Clean and recreate public dir to avoid conflicts and ENOTDIR errors
 if (fs.existsSync(PUBLIC_DIR)) {
     try {
         fs.rmSync(PUBLIC_DIR, { recursive: true, force: true });
@@ -258,10 +258,11 @@ async function handleExport(job, uploadDir, callback) {
             let filterComplex = "";
             let audioMap = "[a_out]";
             
+            // CRITICAL FIX: Use apad to fill any duration gaps so audio matches video length exactly.
             if (hasSfx) {
-                filterComplex += `[1:a]volume=1.5[voice];[2:a]volume=${sfxVolume}[sfx];[voice][sfx]amix=inputs=2:duration=first:dropout_transition=0[a_out];`;
+                filterComplex += `[1:a]volume=1.5[voice];[2:a]volume=${sfxVolume}[sfx];[voice][sfx]amix=inputs=2:duration=first:dropout_transition=0[a_mix];[a_mix]apad[a_out];`;
             } else {
-                filterComplex += `[1:a]volume=1.5[a_out];`;
+                filterComplex += `[1:a]volume=1.5[a_pre];[a_pre]apad[a_out];`;
             }
 
             const moveFilter = getMovementFilter(movement, dur, targetW, targetH);
@@ -306,6 +307,7 @@ async function handleExport(job, uploadDir, callback) {
             fs.writeFileSync(listPath, fileContent);
             finalArgs = ['-f', 'concat', '-safe', '0', '-i', listPath];
             if (bgMusicFile) {
+                // Ensure duration=first to match the concatenated visuals (input 0)
                 finalArgs.push('-i', bgMusicFile.path, '-filter_complex', `[1:a]volume=${musicVolume},aloop=loop=-1:size=2e+09[bgm];[0:a][bgm]amix=inputs=2:duration=first[a_final]`, '-map', '0:v', '-map', '[a_final]');
             } else {
                 finalArgs.push('-c', 'copy');
