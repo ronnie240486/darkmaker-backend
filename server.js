@@ -59,41 +59,10 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
 function getTransitionXfade(transId) {
     const id = transId?.toLowerCase() || 'fade';
     const map = {
-        // Clássicos
-        'cut': 'fade',
-        'fade': 'fade', 
-        'mix': 'dissolve', 
-        'black': 'fadeblack', 
-        'white': 'fadewhite',
-
-        // Luz & Atmosfera (Correção Solicitada)
-        'burn': 'fadewhite',           // Simula estouro de luz
-        'queimadura de filme': 'fadewhite',
-        'flash-bang': 'fadewhite',
-        'flash-black': 'fadeblack',
-        'lens-flare': 'circleopen',    // Simula abertura de íris/lente
-        'lens flare': 'circleopen',
-        'light-leak-tr': 'diagtr',     // Vazamento diagonal canto superior direito
-        'god-rays': 'radial',          // Efeito radial
-        'glow-intense': 'dissolve',    // Dissolve suave para brilho
-
-        // Glitch & Digital
-        'glitch': 'pixelize',
-        'digital-noise': 'pixelize',
-        'pixelize': 'pixelize',
-        'datamosh': 'hblur',           // Blur horizontal parece glitch
-        'rgb-split': 'rgbashift',      // (Se disponível) ou pixelize
-
-        // Movimento
-        'slide-left': 'slideleft', 
-        'slide-right': 'slideright', 
-        'slide-up': 'slideup', 
-        'slide-down': 'slidedown',
-        'wipe-left': 'wipeleft', 
-        'wipe-right': 'wiperight', 
-        'circle-open': 'circleopen',
-        'push-left': 'pushleft',
-        'push-right': 'pushright'
+        'cut': 'fade', 'fade': 'fade', 'mix': 'dissolve', 'black': 'fadeblack', 'white': 'fadewhite',
+        'slide-left': 'slideleft', 'slide-right': 'slideright', 'slide-up': 'slideup', 'slide-down': 'slidedown',
+        'wipe-left': 'wipeleft', 'wipe-right': 'wiperight', 'circle-open': 'circleopen', 'pixelize': 'pixelize',
+        'burn': 'fadewhite', 'queimadura de filme': 'fadewhite'
     };
     return map[id] || 'fade';
 }
@@ -259,7 +228,7 @@ async function handleExport(job, uploadDir, callback) {
         const sortedScenes = Object.keys(sceneMap).sort((a,b) => a - b).map(k => sceneMap[k]);
         const clipPaths = [];
         const videoClipDurations = [];
-        const transDur = 0.5;
+        const transDur = 1.0; // Duração fixa de 1s para transições suaves
 
         // Renderizar Cenas
         for (let i = 0; i < sortedScenes.length; i++) {
@@ -305,11 +274,13 @@ async function handleExport(job, uploadDir, callback) {
 
             const moveFilter = getMovementFilter(movement, dur, targetW, targetH);
             
+            // FIX CRÍTICO: setpts=PTS-STARTPTS
+            // Reinicia o relógio do vídeo para 00:00:00. Sem isso, clipes subsequentes 
+            // mantêm timestamps errados e o FFmpeg corta o vídeo final.
             if (scene.visual?.mimetype?.includes('image')) {
-                filterComplex += `[0:v]${moveFilter}[v_out]`;
+                filterComplex += `[0:v]${moveFilter},setpts=PTS-STARTPTS[v_out]`;
             } else {
-                // Ensure even dimensions for video inputs too
-                filterComplex += `[0:v]scale=${targetW}:${targetH}:force_original_aspect_ratio=increase,crop=${targetW}:${targetH},pad=ceil(iw/2)*2:ceil(ih/2)*2,setsar=1,fps=24,format=yuv420p[v_out]`;
+                filterComplex += `[0:v]scale=${targetW}:${targetH}:force_original_aspect_ratio=increase,crop=${targetW}:${targetH},pad=ceil(iw/2)*2:ceil(ih/2)*2,setsar=1,fps=24,format=yuv420p,setpts=PTS-STARTPTS[v_out]`;
             }
 
             args.push(
