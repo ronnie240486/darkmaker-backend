@@ -22,12 +22,20 @@ const UPLOAD_DIR = path.join(__dirname, 'uploads');
 const OUTPUT_DIR = path.join(__dirname, 'outputs');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
+// Clean and recreate public dir to avoid conflicts
+if (fs.existsSync(PUBLIC_DIR)) {
+    try {
+        fs.rmSync(PUBLIC_DIR, { recursive: true, force: true });
+    } catch (e) {
+        console.warn("Could not clean public dir:", e);
+    }
+}
+
 [UPLOAD_DIR, OUTPUT_DIR, PUBLIC_DIR].forEach(dir => {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
 
-// --- INTERNAL PRESETS (Self-Contained to avoid import errors) ---
-
+// ... INTERNAL PRESETS ...
 function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 720) {
     const d = parseFloat(durationSec) || 5;
     const fps = 24; 
@@ -35,7 +43,6 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
     const zdur = `:d=${totalFrames}:s=${targetW}x${targetH}`;
     const t = `(on/${totalFrames})`; 
 
-    // Mapeamento de movimentos
     const moves = {
         'static': `zoompan=z=1.0:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
         'kenburns': `zoompan=z='1.0+(0.3*${t})':x='(iw/2-(iw/zoom/2))*(1-0.2*${t})':y='(ih/2-(ih/zoom/2))*(1-0.2*${t})'${zdur}`,
@@ -49,7 +56,6 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
     };
 
     const selectedFilter = moves[moveId] || moves['kenburns'];
-    // IMPORTANTE: pad=ceil(iw/2)*2:ceil(ih/2)*2 Garante dimensões pares para libx264
     const pre = `scale=${targetW*2}:${targetH*2}:force_original_aspect_ratio=increase,crop=${targetW*2}:${targetH*2},setsar=1`;
     const post = `scale=${targetW}:${targetH}:flags=lanczos,pad=ceil(iw/2)*2:ceil(ih/2)*2,fps=${fps},format=yuv420p`;
     
@@ -66,8 +72,6 @@ function getTransitionXfade(transId) {
     };
     return map[id] || 'fade';
 }
-
-// --- FFmpeg Configuration ---
 
 const getVideoArgs = () => [
     '-c:v', 'libx264',
@@ -108,6 +112,7 @@ async function buildFrontend() {
     try {
         if (fs.existsSync('index.html')) fs.copyFileSync('index.html', path.join(PUBLIC_DIR, 'index.html'));
         if (fs.existsSync('index.css')) fs.copyFileSync('index.css', path.join(PUBLIC_DIR, 'index.css'));
+        
         await esbuild.build({
             entryPoints: ['index.tsx'],
             bundle: true,
@@ -119,6 +124,7 @@ async function buildFrontend() {
             define: { 'process.env.API_KEY': JSON.stringify(GEMINI_KEY), 'global': 'window' },
             loader: { '.tsx': 'tsx', '.ts': 'ts', '.css': 'css' },
         });
+        console.log("Frontend build completed.");
     } catch (e) { console.error("Frontend Build Error:", e); }
 }
 await buildFrontend();
@@ -143,18 +149,13 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
     jobs[jobId].status = 'processing';
     if (res && !res.headersSent) res.status(202).json({ jobId });
     
-    console.log(`[JOB ${jobId}] Executing FFmpeg...`);
     const ffmpeg = spawn(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-stats', '-y', ...args]);
     
     ffmpeg.stderr.on('data', d => {
         const line = d.toString();
-        // Console log simples para debug
-        if(line.includes('Error') || line.includes('Invalid')) console.error(`[FFMPEG ERROR] ${line}`);
-        
         if(line.includes('time=')) {
              const timeMatch = line.match(/time=(\d{2}:\d{2}:\d{2}\.\d{2})/);
              if (timeMatch && expectedDuration > 0) {
-                // Cálculo simples de segundos
                 const parts = timeMatch[1].split(':');
                 const cur = (parseFloat(parts[0]) * 3600) + (parseFloat(parts[1]) * 60) + parseFloat(parts[2]);
                 let p = Math.round((cur / expectedDuration) * 100);
@@ -167,16 +168,13 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
     ffmpeg.on('close', code => {
         if (!jobs[jobId]) return;
         const finalPath = args[args.length - 1];
-        
-        // Verificação extra: O arquivo existe e tem tamanho > 0?
         if (code === 0 && fs.existsSync(finalPath) && fs.statSync(finalPath).size > 1000) {
             jobs[jobId].status = 'completed';
             jobs[jobId].progress = 100;
             jobs[jobId].downloadUrl = `/outputs/${path.basename(finalPath)}`;
         } else {
-            console.error(`[JOB ${jobId}] Failed with code ${code} or empty file.`);
             jobs[jobId].status = 'failed';
-            jobs[jobId].error = 'Renderização falhou. Verifique os inputs.';
+            jobs[jobId].error = 'Render failed.';
         }
     });
 }
@@ -228,9 +226,8 @@ async function handleExport(job, uploadDir, callback) {
         const sortedScenes = Object.keys(sceneMap).sort((a,b) => a - b).map(k => sceneMap[k]);
         const clipPaths = [];
         const videoClipDurations = [];
-        const transDur = 1.0; // Duração fixa de 1s para transições suaves
+        const transDur = 1.0; 
 
-        // Renderizar Cenas
         for (let i = 0; i < sortedScenes.length; i++) {
             const scene = sortedScenes[i];
             const clipPath = path.join(uploadDir, `temp_${job.id}_${i}.mp4`);
@@ -241,7 +238,6 @@ async function handleExport(job, uploadDir, callback) {
             
             const args = [];
             
-            // Visual
             if (scene.visual?.mimetype?.includes('image')) {
                 args.push('-framerate', '24', '-loop', '1', '-i', scene.visual.path);
             } else if (scene.visual) {
@@ -250,12 +246,8 @@ async function handleExport(job, uploadDir, callback) {
                 args.push('-f', 'lavfi', '-i', `color=c=black:s=${targetW}x${targetH}:d=${dur}`);
             }
 
-            // Audio Inputs
-            if (scene.audio) {
-                args.push('-i', scene.audio.path);
-            } else {
-                args.push('-f', 'lavfi', '-i', `anullsrc=cl=stereo:sr=44100:d=${dur}`);
-            }
+            if (scene.audio) args.push('-i', scene.audio.path);
+            else args.push('-f', 'lavfi', '-i', `anullsrc=cl=stereo:sr=44100:d=${dur}`);
 
             let hasSfx = false;
             if (scene.sfx) {
@@ -274,9 +266,6 @@ async function handleExport(job, uploadDir, callback) {
 
             const moveFilter = getMovementFilter(movement, dur, targetW, targetH);
             
-            // FIX CRÍTICO: setpts=PTS-STARTPTS
-            // Reinicia o relógio do vídeo para 00:00:00. Sem isso, clipes subsequentes 
-            // mantêm timestamps errados e o FFmpeg corta o vídeo final.
             if (scene.visual?.mimetype?.includes('image')) {
                 filterComplex += `[0:v]${moveFilter},setpts=PTS-STARTPTS[v_out]`;
             } else {
@@ -309,7 +298,6 @@ async function handleExport(job, uploadDir, callback) {
             if(jobs[job.id]) jobs[job.id].progress = Math.round((i / sortedScenes.length) * 80);
         }
 
-        // Concatenação
         let finalArgs = [];
         
         if (transitionType === 'cut' || clipPaths.length < 2) {
@@ -369,15 +357,11 @@ async function handleExport(job, uploadDir, callback) {
         }, 300000);
 
     } catch (e) {
-        console.error("ERRO CRÍTICO EXPORT:", e);
         if (jobs[job.id]) { jobs[job.id].status = 'failed'; jobs[job.id].error = e.message; }
     }
 }
 
-// === ROUTES ===
-
 app.post('/api/process/start/:action', uploadAny, (req, res) => {
-    // Basic implementation for single file tools
     const action = req.params.action;
     const jobId = `${action}_${Date.now()}`;
     const outputPath = path.join(OUTPUT_DIR, `processed_${jobId}.mp4`);
