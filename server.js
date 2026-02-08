@@ -84,7 +84,8 @@ const getVideoArgs = () => [
 const getAudioArgs = () => [
     '-c:a', 'aac',
     '-b:a', '192k', 
-    '-ar', '44100'
+    '-ar', '44100',
+    '-ac', '2' // Force Stereo
 ];
 
 const getExactDuration = (filePath) => {
@@ -275,11 +276,10 @@ async function handleExport(job, uploadDir, callback) {
             let filterComplex = "";
             let audioMap = "[a_out]";
             
-            // IMPORTANT: Use apad to prevent audio from being shorter than video due to duration mismatch
             if (hasSfx) {
-                filterComplex += `[1:a]volume=1.5,apad[voice];[2:a]volume=${sfxVolume}[sfx];[voice][sfx]amix=inputs=2:duration=first:dropout_transition=0[a_out];`;
+                filterComplex += `[1:a]volume=1.5[voice];[2:a]volume=${sfxVolume}[sfx];[voice][sfx]amix=inputs=2:duration=first:dropout_transition=0[a_out];`;
             } else {
-                filterComplex += `[1:a]volume=1.5,apad[a_out];`;
+                filterComplex += `[1:a]volume=1.5[a_out];`;
             }
 
             const moveFilter = getMovementFilter(movement, dur, targetW, targetH);
@@ -327,8 +327,11 @@ async function handleExport(job, uploadDir, callback) {
             if (bgMusicFile) {
                 finalArgs.push('-i', bgMusicFile.path, '-filter_complex', `[1:a]volume=${musicVolume},aloop=loop=-1:size=2e+09[bgm];[0:a][bgm]amix=inputs=2:duration=first[a_final]`, '-map', '0:v', '-map', '[a_final]');
             } else {
-                finalArgs.push('-c', 'copy');
+                // Ensure we re-encode instead of copy to fix timestamp/audio mapping issues
+                // finalArgs.push('-c', 'copy'); // REMOVED CAUSES NO AUDIO
             }
+            // Always encode output
+            finalArgs.push(...getVideoArgs(), ...getAudioArgs());
         } else {
             clipPaths.forEach(p => finalArgs.push('-i', p));
             let filter = "";
