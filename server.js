@@ -253,15 +253,13 @@ async function renderVideoProject(project, jobId) {
         }
         
         // Audio Logic: 
-        // If hasAudio -> pad to duration -> [a_out]
-        // If no audio -> generate silence -> [a_out]
-        // We also enforce audio format to ensure seamless concatenation
+        // Force audio format to be consistent across all clips to prevent concat issues
         if (hasExternalAudio) {
             // External audio is input 1 (input 0 is video)
-            filterComplex += `[1:a]apad,aformat=sample_rates=44100:channel_layouts=stereo[a_out]`;
+            filterComplex += `[1:a]apad,atrim=0:${duration},aformat=sample_rates=44100:channel_layouts=stereo[a_out]`;
         } else if (hasInternalAudio) {
             // Internal audio is input 0
-            filterComplex += `[0:a]apad,aformat=sample_rates=44100:channel_layouts=stereo[a_out]`;
+            filterComplex += `[0:a]apad,atrim=0:${duration},aformat=sample_rates=44100:channel_layouts=stereo[a_out]`;
         } else {
             // Generate silence matching duration
             filterComplex += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration},aformat=sample_rates=44100:channel_layouts=stereo[a_out]`;
@@ -327,10 +325,13 @@ async function renderVideoProject(project, jobId) {
             const outLabelV = `[v${outIndex + 1}]`;
             const outLabelA = `[a${outIndex + 1}]`;
 
+            // XFade for Video
             filterGraph += `${prevLabelV}[${i}:v]xfade=transition=${trType}:duration=${trDur}:offset=${offset}${outLabelV};`;
+            
+            // Acrossfade for Audio (with format normalization included via chain if needed, but clips are already normalized)
+            // Note: We avoid mixing simple filter (-af) later by ensuring the graph output is ready
             filterGraph += `${prevLabelA}[${i}:a]acrossfade=d=${trDur}:c1=tri:c2=tri[a_tmp${i}];`;
-filterGraph += `[a_tmp${i}]aformat=sample_rates=44100:channel_layouts=stereo${outLabelA};`;
-
+            filterGraph += `[a_tmp${i}]aformat=sample_rates=44100:channel_layouts=stereo${outLabelA};`;
 
             prevLabelV = outLabelV;
             prevLabelA = outLabelA;
@@ -338,17 +339,18 @@ filterGraph += `[a_tmp${i}]aformat=sample_rates=44100:channel_layouts=stereo${ou
             timeCursor += (durations[i] - trDur);
         }
 
+        // IMPORTANT: Do NOT use -af in combination with -filter_complex for the same stream.
+        // The audio formatting is already handled inside the clips processing or the graph loop.
         await runFFmpeg([
-    "-y",
-    ...inputArgs,
-    "-filter_complex", filterGraph,
-    "-map", prevLabelV,
-    "-map", prevLabelA,
-    "-af", "aformat=sample_rates=44100:channel_layouts=stereo",
-    ...getVideoArgs(),
-    ...getAudioArgs(),
-    concatOut
-]);
+            "-y",
+            ...inputArgs,
+            "-filter_complex", filterGraph,
+            "-map", prevLabelV,
+            "-map", prevLabelA,
+            ...getVideoArgs(),
+            ...getAudioArgs(),
+            concatOut
+        ]);
 
         jobs[jobId].progress = 70;
     }
@@ -360,7 +362,8 @@ filterGraph += `[a_tmp${i}]aformat=sample_rates=44100:channel_layouts=stereo${ou
         // Ensure inputs match duration roughly
         const duration = durations.reduce((a,b)=>a+b, 0);
         // Use apad to extend concatOut just in case, and amix
-        const mixGraph = `[1:a]aloop=loop=-1:size=2e+09,volume=${project.audio.bgmVolume ?? 0.2},apad[bgm];[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=0[a_final]`;
+        // Use -t duration to cut cleanly at the end
+        const mixGraph = `[1:a]aloop=loop=-1:size=2e+09,volume=${project.audio.bgmVolume ?? 0.2}[bgm];[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=0[a_final]`;
         
         await runFFmpeg([
             "-y", "-i", concatOut, "-i", bgm,
@@ -385,7 +388,7 @@ function runFFmpeg(args) {
         ff.stderr.on('data', d => errData += d.toString());
         ff.on("close", code => {
             if (code === 0) resolve();
-            else reject(`FFmpeg error ${code}: ${errData.slice(-200)}`);
+            else reject(`FFmpeg error ${code}: ${errData.slice(-300)}`);
         });
     });
 }
