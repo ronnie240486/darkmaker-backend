@@ -25,6 +25,10 @@ const OUTPUT_DIR = path.join(__dirname, 'outputs');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
 [UPLOAD_DIR, OUTPUT_DIR, PUBLIC_DIR].forEach(dir => {
+    // If it exists but is a file, remove it (prevents ENOTDIR)
+    if (fs.existsSync(dir) && !fs.lstatSync(dir).isDirectory()) {
+        fs.rmSync(dir, { force: true });
+    }
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
 
@@ -145,7 +149,15 @@ async function buildFrontend() {
     try {
         const copySafe = (src, dest) => {
             if (fs.existsSync(src)) {
-                fs.copyFileSync(src, dest);
+                try {
+                    // Ensure dest directory exists
+                    const destDir = path.dirname(dest);
+                    if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
+                    
+                    fs.copyFileSync(src, dest);
+                } catch(e) {
+                    console.warn(`Failed to copy ${src} to ${dest}:`, e.message);
+                }
             }
         };
 
@@ -651,8 +663,4 @@ app.get("/api/download/:file", (req, res) => {
     const filePath = path.join(OUTPUT_DIR, req.params.file);
     if (!fs.existsSync(filePath)) return res.status(404).send("Arquivo não encontrado.");
     res.download(filePath);
-});
-
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Turbo Server Running on Port ${PORT}`);
 });
