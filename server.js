@@ -128,7 +128,7 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
     // Safer to use 'time' for zoompan animations in stream mode.
     const zNorm = `(time/${d})`; 
     
-    // Rotate filter vars: uses 't' (timestamp in seconds).
+    // Rotate/GBlur filter vars: uses 't' (timestamp in seconds).
     const rNorm = `(t/${d})`;
     
     const PI = 3.14159265; 
@@ -189,10 +189,14 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
         'mov-shake-violent': `${zp}:z=1.2:x='iw/2-(iw/zoom/2)+iw*0.1*(random(1)-0.5)':y='ih/2-(ih/zoom/2)+ih*0.1*(random(1)-0.5)'`,
         'mov-rgb-shift-move': `rgbashift=rh=20:bv=20,${zp}:z=1.05${center}`,
         'mov-vibrate': `${zp}:z=1.02:x='iw/2-(iw/zoom/2)+iw*0.01*sin(time*50)':y='ih/2-(ih/zoom/2)+ih*0.01*cos(time*50)'`,
-        'mov-blur-in': `boxblur=luma_radius='20*(1-${rNorm})':enable='between(t,0,${d})',${zp}:z=1${center}`,
-        'mov-blur-out': `boxblur=luma_radius='20*${rNorm}':enable='between(t,0,${d})',${zp}:z=1${center}`,
-        'mov-blur-pulse': `boxblur=luma_radius='10*abs(sin(t))',${zp}:z=1${center}`,
-        'mov-tilt-shift': `boxblur=luma_radius=10:enable='if(between(y,0,h*0.2)+between(y,h*0.8,h),1,0)',${zp}:z=1${center}`,
+        
+        // FOCUS & BLUR FIXES (Using gblur for dynamic evaluation)
+        'mov-blur-in': `gblur=sigma='20*(1-${rNorm})':steps=2,${zp}:z=1${center}`,
+        'mov-blur-out': `gblur=sigma='20*${rNorm}':steps=2,${zp}:z=1${center}`,
+        'mov-blur-pulse': `gblur=sigma='10*abs(sin(t*2))':steps=2,${zp}:z=1${center}`,
+        // Tilt Shift Approximation (High contrast + subtle blur) as true spatial blur is complex in linear chain
+        'mov-tilt-shift': `gblur=sigma=1.5:steps=1,eq=saturation=1.4:contrast=1.1,${zp}:z=1.1${center}`,
+
         'mov-rubber-band': `${zp}:z='1.0+0.3*abs(sin(time*2))'${center}`,
         'mov-jelly-wobble': `${zp}:z='1.0+0.1*sin(time)':x='iw/2-(iw/zoom/2)+iw*0.03*sin(time*2)':y='ih/2-(ih/zoom/2)+ih*0.03*cos(time*2)'`,
         'mov-pop-up': `${zp}:z='min(1.0 + ${zNorm}*5, 1.0)'${center}`,
