@@ -17,6 +17,10 @@ const app = express();
 const PORT = process.env.PORT || 8080;
 const GEMINI_KEY = process.env.GEMINI_API_KEY || process.env.API_KEY || "";
 
+// ffprobe-static exporta um objeto { path: "..." }, enquanto ffmpeg-static exporta a string direta.
+const FFMPEG_BIN = typeof ffmpegPath === 'string' ? ffmpegPath : ffmpegPath.path;
+const FFPROBE_BIN = typeof ffprobePath === 'string' ? ffprobePath : ffprobePath.path;
+
 // ... DIR SETUP ...
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
 const OUTPUT_DIR = path.join(__dirname, 'outputs');
@@ -32,7 +36,7 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 // ... HELPERS ...
 async function fileHasAudio(file) {
     return new Promise(resolve => {
-        execFile(ffprobePath, [
+        execFile(FFPROBE_BIN, [
             "-v","error",
             "-select_streams","a",
             "-show_entries","stream=codec_type",
@@ -46,7 +50,7 @@ async function fileHasAudio(file) {
 
 async function isVideoFile(file) {
     return new Promise(resolve => {
-        execFile(ffprobePath, [
+        execFile(FFPROBE_BIN, [
             "-v", "error",
             "-select_streams", "v:0",
             "-show_entries", "stream=codec_type",
@@ -54,9 +58,8 @@ async function isVideoFile(file) {
             file
         ], (err, stdout) => {
             const output = stdout ? stdout.toString().trim() : "";
-            // Algumas imagens são detectadas como stream de vídeo (mjpeg), então checamos frames
             if (output.includes('video')) {
-                execFile(ffprobePath, [
+                execFile(FFPROBE_BIN, [
                     "-v", "error",
                     "-select_streams", "v:0",
                     "-show_entries", "stream=nb_frames",
@@ -75,7 +78,7 @@ async function isVideoFile(file) {
 
 function getExactDuration(filePath) {
     return new Promise(resolve => {
-        execFile(ffprobePath, [
+        execFile(FFPROBE_BIN, [
             '-v','error',
             '-show_entries','format=duration',
             '-of','default=noprint_wrappers=1:nokey=1',
@@ -122,8 +125,6 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
     const rNorm = `(t/${d})`;
     const PI = 3.14159; 
 
-    // zoompan outputs a stream of frames.
-    // Importante: Usamos d=1 porque o loop do input já fornece os frames necessários.
     const zp = `zoompan=d=1:fps=${fps}:s=${w}x${h}`;
     const center = `:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
     const scaleFactor = 2.0; 
@@ -271,7 +272,6 @@ async function renderVideoProject(project, jobId) {
         if (isVideo) {
             args.push("-stream_loop", "-1", "-i", inputPath);
         } else {
-            // Imagens precisam de loop explicito e framerate antes do input
             args.push("-loop", "1", "-framerate", "24", "-i", inputPath);
         }
 
@@ -365,7 +365,7 @@ async function renderVideoProject(project, jobId) {
 
 function runFFmpeg(args) {
     return new Promise((resolve, reject) => {
-        const ff = spawn(ffmpegPath, args);
+        const ff = spawn(FFMPEG_BIN, args);
         let errData = "";
         ff.stderr.on('data', d => errData += d.toString());
         ff.on("close", code => {
@@ -416,7 +416,7 @@ app.post("/api/render/start", async (req, res) => {
                         audio: audioFile,
                         duration: parseFloat(s.duration || 5),
                         movement: s.effect || config.movement || 'kenburns',
-                        mediaType: s.mediaType // Importante para o FFmpeg saber se dá loop ou stream
+                        mediaType: s.mediaType 
                     });
                 }
             }
