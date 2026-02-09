@@ -1,5 +1,4 @@
 
-// ... existing imports ...
 import express from 'express';
 import cors from 'cors';
 import multer from 'multer';
@@ -18,6 +17,7 @@ const app = express();
 const PORT = process.env.PORT || 8080;
 const GEMINI_KEY = process.env.GEMINI_API_KEY || process.env.API_KEY || "";
 
+// ... DIR SETUP ...
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
 const OUTPUT_DIR = path.join(__dirname, 'outputs');
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -29,9 +29,10 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
 
+// ... HELPERS ...
 async function fileHasAudio(file) {
     return new Promise(resolve => {
-        execFile(ffprobePath.path, [
+        execFile(ffprobePath, [
             "-v","error",
             "-select_streams","a",
             "-show_entries","stream=codec_type",
@@ -45,7 +46,7 @@ async function fileHasAudio(file) {
 
 async function isVideoFile(file) {
     return new Promise(resolve => {
-        execFile(ffprobePath.path, [
+        execFile(ffprobePath, [
             "-v", "error",
             "-select_streams", "v:0",
             "-show_entries", "stream=codec_type",
@@ -53,14 +54,28 @@ async function isVideoFile(file) {
             file
         ], (err, stdout) => {
             const output = stdout ? stdout.toString().trim() : "";
-            resolve(output.includes('video'));
+            // Algumas imagens são detectadas como stream de vídeo (mjpeg), então checamos frames
+            if (output.includes('video')) {
+                execFile(ffprobePath, [
+                    "-v", "error",
+                    "-select_streams", "v:0",
+                    "-show_entries", "stream=nb_frames",
+                    "-of", "csv=p=0",
+                    file
+                ], (err2, stdout2) => {
+                    const frames = parseInt(stdout2);
+                    resolve(!isNaN(frames) && frames > 1);
+                });
+            } else {
+                resolve(false);
+            }
         });
     });
 }
 
 function getExactDuration(filePath) {
     return new Promise(resolve => {
-        execFile(ffprobePath.path, [
+        execFile(ffprobePath, [
             '-v','error',
             '-show_entries','format=duration',
             '-of','default=noprint_wrappers=1:nokey=1',
@@ -96,15 +111,19 @@ const saveBase64OrUrl = async (input, prefix, ext) => {
     return null;
 };
 
-// ... MOVEMENT (Inalterado) ...
+// ... MOVEMENT ...
 function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 720) {
     const d = parseFloat(durationSec) || 5;
     const w = parseInt(targetW) || 1280;
     const h = parseInt(targetH) || 720;
     const fps = 24;
+    
     const zNorm = `(time/${d})`; 
     const rNorm = `(t/${d})`;
     const PI = 3.14159; 
+
+    // zoompan outputs a stream of frames.
+    // Importante: Usamos d=1 porque o loop do input já fornece os frames necessários.
     const zp = `zoompan=d=1:fps=${fps}:s=${w}x${h}`;
     const center = `:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
     const scaleFactor = 2.0; 
@@ -153,7 +172,7 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
         'mov-blur-pulse': `gblur=sigma='10*abs(sin(t*2))':steps=1,${zp}:z=1${center}`,
         'mov-tilt-shift': `eq=saturation=1.4:contrast=1.1,${zp}:z=1.1${center}`,
         'mov-rubber-band': `${zp}:z='1.0+0.3*abs(sin(time*2))'${center}`,
-        'mov-jelly-wobble': `${zp}:z='1.0+0.1*sin(time)':x='iw/2-(iw/zoom/2)+iw*0.03*sin(time*2)':y='ih/2-(ih/zoom/2)+ih*0.03*cos(time*2)'`,
+        'mov-jelly-wobble': `${zp}:z='1.0+0.1*sin(time)':x='iw/2-(iw/zoom/2)+iw*0.03*sin(time*2)':y='ih/2-(ih/zoom/2)+iw*0.03*cos(time*2)'`,
         'mov-pop-up': `${zp}:z='min(1.0 + ${zNorm}*5, 1.0)'${center}`,
         'mov-bounce-drop': `${zp}:z='1.0':y='(ih/2-(ih/zoom/2)) + (ih/2 * abs(cos(${zNorm}*5*${PI})) * (1-${zNorm}))'`
     };
@@ -246,14 +265,14 @@ async function renderVideoProject(project, jobId) {
         const outFile = path.join(sessionDir, `clip_${i}.mp4`);
         tempClips.push(outFile);
 
+        const isVideo = clip.mediaType === 'video' || await isVideoFile(inputPath);
         const args = ["-y"];
-        const isVideo = await isVideoFile(inputPath);
 
-        // --- CORREÇÃO PARA IMAGEM ---
         if (isVideo) {
             args.push("-stream_loop", "-1", "-i", inputPath);
         } else {
-            args.push("-loop", "1", "-i", inputPath);
+            // Imagens precisam de loop explicito e framerate antes do input
+            args.push("-loop", "1", "-framerate", "24", "-i", inputPath);
         }
 
         let hasExternalAudio = false;
@@ -270,7 +289,6 @@ async function renderVideoProject(project, jobId) {
 
         const movementFilter = getMovementFilter(clip.movement || "kenburns", duration, targetW, targetH);
         let filterComplex = `[0:v]${movementFilter}[v_out];`;
-        
         const audioFmt = "aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp";
         
         if (hasExternalAudio) filterComplex += `[1:a]apad,atrim=0:${duration},${audioFmt}[a_out]`;
@@ -357,6 +375,7 @@ function runFFmpeg(args) {
     });
 }
 
+// ... ROUTES ...
 app.post("/api/render/start", async (req, res) => {
     const contentType = req.headers['content-type'] || '';
     const jobId = Date.now().toString();
@@ -385,13 +404,8 @@ app.post("/api/render/start", async (req, res) => {
             for (let i = 0; i < scenes.length; i++) {
                 const s = scenes[i];
                 let visualFile = null;
-                
-                // Mapeia corretamente campos vindo do front
-                const vUrl = s.videoUrl || s.imageUrl || s.visualUrl;
-                const isVideo = (s.mediaType === 'video' || (vUrl && vUrl.includes('.mp4')) || (vUrl && vUrl.startsWith('data:video/mp4')));
-
-                if (isVideo) visualFile = await saveBase64OrUrl(vUrl, `scene_${i}_vid`, 'mp4');
-                else visualFile = await saveBase64OrUrl(vUrl, `scene_${i}_img`, 'png');
+                if (s.videoUrl) visualFile = await saveBase64OrUrl(s.videoUrl, `scene_${i}_vid`, 'mp4');
+                else if (s.imageUrl) visualFile = await saveBase64OrUrl(s.imageUrl, `scene_${i}_img`, 'png');
 
                 let audioFile = null;
                 if (s.audioUrl) audioFile = await saveBase64OrUrl(s.audioUrl, `scene_${i}_audio`, 'wav');
@@ -401,7 +415,8 @@ app.post("/api/render/start", async (req, res) => {
                         file: visualFile,
                         audio: audioFile,
                         duration: parseFloat(s.duration || 5),
-                        movement: s.effect || config.movement || 'kenburns'
+                        movement: s.effect || config.movement || 'kenburns',
+                        mediaType: s.mediaType // Importante para o FFmpeg saber se dá loop ou stream
                     });
                 }
             }
@@ -420,7 +435,6 @@ app.post("/api/render/start", async (req, res) => {
             return res.json({ jobId });
         } catch (e) { return res.status(500).json({ error: e.message }); }
     } else {
-        // Fluxo Multipart Upload (Inalterado)
         uploadAny(req, res, async (err) => {
             if (err) return res.status(500).json({ error: "Upload failed: " + err.message });
             try {
@@ -450,7 +464,8 @@ app.post("/api/render/start", async (req, res) => {
                         file: vFile.filename,
                         audio: aFile ? aFile.filename : null,
                         duration: parseFloat(meta?.duration || 5),
-                        movement: config.movement || 'kenburns'
+                        movement: config.movement || 'kenburns',
+                        mediaType: vFile.mimetype.startsWith('video') ? 'video' : 'image'
                     });
                 }
                 if (project.clips.length === 0) return res.status(400).json({ error: "No clips" });
@@ -471,14 +486,52 @@ app.post("/api/render/start", async (req, res) => {
     }
 });
 
+// ... OTHER ROUTES (upload, merge, etc) ...
+app.post("/api/upload", (req, res) => {
+    uploadAny(req, res, (err) => {
+        if (err) return res.status(500).json({ error: "Upload failed" });
+        res.json({ files: req.files || [] });
+    });
+});
+
+app.post("/api/process/start/merge", async (req, res) => {
+    uploadAny(req, res, async (err) => {
+        if (err) return res.status(500).json({ error: "Upload failed" });
+        try {
+            const jobId = Date.now().toString();
+            jobs[jobId] = { progress: 1, status: "processing" };
+            const files = req.files || [];
+            if (files.length < 2) throw new Error("Requires video + audio");
+            
+            const vPath = path.join(UPLOAD_DIR, files[0].filename);
+            const aPath = path.join(UPLOAD_DIR, files[1].filename);
+            const outPath = path.join(OUTPUT_DIR, `merged_${jobId}.mp4`);
+            
+            const args = ["-y", "-i", vPath, "-i", aPath, "-c:v", "copy", "-c:a", "aac", "-map", "0:v:0", "-map", "1:a:0", "-shortest", outPath];
+            if (files[0].mimetype.startsWith('image')) {
+                 const dur = await getExactDuration(aPath) || 10;
+                 args.splice(3, 2); args.splice(1, 0, "-loop", "1"); args.push("-t", dur.toString(), ...getVideoArgs());
+            }
+
+            runFFmpeg(args).then(() => {
+                jobs[jobId].status = "completed"; jobs[jobId].downloadUrl = `/outputs/${path.basename(outPath)}`;
+            }).catch(e => { jobs[jobId].status = "failed"; jobs[jobId].error = e.toString(); });
+
+            res.json({ jobId });
+        } catch (e) { res.status(500).json({ error: e.message }); }
+    });
+});
+
 app.get("/api/process/status/:id", (req, res) => {
     const job = jobs[req.params.id];
     if (!job) return res.status(404).json({ status: "not_found" });
-    // Impedir cache de status
-    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
-    res.setHeader('Pragma', 'no-cache');
-    res.setHeader('Expires', '0');
     res.json(job);
+});
+
+app.get("/api/download/:file", (req, res) => {
+    const filePath = path.join(OUTPUT_DIR, req.params.file);
+    if (!fs.existsSync(filePath)) return res.status(404).send("File not found");
+    res.download(filePath);
 });
 
 app.listen(PORT, '0.0.0.0', () => {
