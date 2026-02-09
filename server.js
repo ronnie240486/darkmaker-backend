@@ -1,4 +1,4 @@
-
+// ... existing imports ...
 import express from 'express';
 import cors from 'cors';
 import multer from 'multer';
@@ -124,10 +124,9 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
     const d = parseFloat(durationSec) || 5;
     const fps = 24;
     
-    // Zoompan uses 'time' (seconds) or 'on' (output frame index).
+    // Vars for Zoompan (uses 'time' or 'on')
     const zNorm = `(time/${d})`; 
-    
-    // Rotate/GBlur/EQ filters use 't' (timestamp in seconds).
+    // Vars for Rotate/Enable (uses 't')
     const rNorm = `(t/${d})`;
     
     const PI = 3.14159; 
@@ -138,6 +137,9 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
 
     const scaleFactor = 2.0; 
     
+    // Helper: Escaped commas for 'enable' filters to prevent argument parsing errors
+    const enableBetween = (start, end) => `enable=between(t\\,${start}\\,${end})`;
+
     const moves = {
         'static': `${zp}:z=1.0${center}`,
         'kenburns': `${zp}:z='1.0+(0.3*${zNorm})':x='(iw/2-(iw/zoom/2))*(1-0.2*${zNorm})':y='(ih/2-(ih/zoom/2))*(1-0.2*${zNorm})'`,
@@ -152,14 +154,15 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
         'mov-zoom-pulse-slow': `${zp}:z='1.1+0.1*sin(time*2)'${center}`,
         'mov-dolly-vertigo': `${zp}:z='1.0+(1.0*${zNorm})'${center}`,
         
-        // ROTATION & 3D FIXES - Removed complex quotes to prevent parsing errors
+        // ROTATION & 3D FIXES (Using Safe Syntax without extra quotes)
         'mov-3d-spin-axis': `rotate=angle=2*${PI}*${rNorm}:fillcolor=black:ow=iw:oh=ih,${zp}:z=1.7${center}`,
         'mov-3d-roll': `rotate=angle=-2*${PI}*${rNorm}:fillcolor=black:ow=iw:oh=ih,${zp}:z=1.7${center}`,
         'mov-zoom-twist-in': `rotate=angle=(${PI}/8)*${rNorm}:fillcolor=black,${zp}:z='1.0+(0.5*${zNorm})'${center}`,
+        'mov-3d-swing-l': `rotate=angle=(${PI}/8)*sin(t):fillcolor=black:ow=iw:oh=ih,${zp}:z=1.3${center}`,
         
+        // Faked 3D Flips (Using Zoom/Pos)
         'mov-3d-flip-x': `${zp}:z='1.0+0.4*abs(sin(time*3))':x='iw/2-(iw/zoom/2)+(iw/4)*sin(time*5)'${center}`,
         'mov-3d-flip-y': `${zp}:z='1.0+0.4*abs(cos(time*3))':y='ih/2-(iw/zoom/2)+(ih/4)*cos(time*5)'${center}`,
-        'mov-3d-swing-l': `rotate=angle=(${PI}/8)*sin(t):fillcolor=black,${zp}:z=1.3${center}`,
 
         'mov-zoom-wobble': `${zp}:z='1.1':x='iw/2-(iw/zoom/2)+iw*0.05*sin(time*2)':y='ih/2-(ih/zoom/2)+ih*0.05*cos(time*2)'`,
         'mov-scale-pulse': `${zp}:z='1.0+0.2*sin(time*3)'${center}`,
@@ -183,19 +186,18 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
         'mov-rgb-shift-move': `rgbashift=rh=20:bv=20,${zp}:z=1.05${center}`,
         'mov-vibrate': `${zp}:z=1.02:x='iw/2-(iw/zoom/2)+iw*0.01*sin(time*50)':y='ih/2-(ih/zoom/2)+ih*0.01*cos(time*50)'`,
         
-        // FOCUS & BLUR - GRADUAL & SAFE SYNTAX
-        // Using basic math operations to avoid parser issues with commas in max/min
-        // Blur In: 20 -> 0 over duration 'd'
-        'mov-blur-in': `gblur=sigma='20*(1-(t/${d}))':steps=2,${zp}:z=1${center}`,
+        // FOCUS & BLUR FIXES - GRADUAL PROGRESSION
+        // Blur In (Focar): Starts blurred (radius 20) -> ends clear (radius 0)
+        'mov-blur-in': `boxblur=luma_radius='20*(1-${rNorm})':luma_power=2,${zp}:z=1${center}`,
         
-        // Blur Out: 0 -> 20 over duration 'd'
-        'mov-blur-out': `gblur=sigma='20*(t/${d})':steps=2,${zp}:z=1${center}`,
+        // Blur Out (Desfocar): Starts clear (radius 0) -> ends blurred (radius 20)
+        'mov-blur-out': `boxblur=luma_radius='20*${rNorm}':luma_power=2,${zp}:z=1${center}`,
         
-        // Blur Pulse: Oscillates
-        'mov-blur-pulse': `gblur=sigma='10*abs(sin(t*2))':steps=1,${zp}:z=1${center}`,
+        // Pulse Blur (Kept oscillating)
+        'mov-blur-pulse': `boxblur=luma_radius='10*abs(sin(t*2))':luma_power=2,${zp}:z=1${center}`,
         
-        // Tilt Shift: Gradual increase of vignette, contrast and minor edge blur
-        'mov-tilt-shift': `gblur=sigma='3*(t/${d})':steps=1,vignette='PI/4+(t/${d})*0.2',eq=saturation='1+(0.4*t/${d})':contrast='1+(0.2*t/${d})',${zp}:z=1.1${center}`,
+        // Tilt Shift Gradual: Top/Bottom blur increases over time
+        'mov-tilt-shift': `boxblur=luma_radius='10*${rNorm}':luma_power=2:enable='if(between(y,0,h*0.25)+between(y,h*0.75,h),1,0)',eq=saturation=1.3:contrast=1.1,${zp}:z=1.1${center}`,
 
         'mov-rubber-band': `${zp}:z='1.0+0.3*abs(sin(time*2))'${center}`,
         'mov-jelly-wobble': `${zp}:z='1.0+0.1*sin(time)':x='iw/2-(iw/zoom/2)+iw*0.03*sin(time*2)':y='ih/2-(ih/zoom/2)+ih*0.03*cos(time*2)'`,
