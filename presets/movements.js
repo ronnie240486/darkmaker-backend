@@ -75,12 +75,13 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
 
         // --- Foco & Blur (Dynamic/Gradual) ---
         // CORREÇÃO: Usar 'tNorm' (baseado em tempo) para boxblur, pois boxblur não suporta 'on'.
+        // Clamping para evitar valores negativos
         
         // Focar (Blur In): Começa desfocado (20) e termina focado (0) gradualmente
-        'mov-blur-in': `boxblur=luma_radius='20*(1-${tNorm})':luma_power=1,${zp}:z=1${zdur}`,
+        'mov-blur-in': `boxblur=luma_radius='20*max(0,1-${tNorm})':luma_power=1,${zp}:z=1${zdur}`,
         
         // Desfocar (Blur Out): Começa focado (0) e termina desfocado (20) gradualmente
-        'mov-blur-out': `boxblur=luma_radius='20*${tNorm}':luma_power=1,${zp}:z=1${zdur}`,
+        'mov-blur-out': `boxblur=luma_radius='min(20,20*${tNorm})':luma_power=1,${zp}:z=1${zdur}`,
         
         'mov-blur-pulse': `boxblur=luma_radius='10*abs(sin(t*2))':luma_power=1,zoompan=z=1${zdur}`,
         
