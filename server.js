@@ -126,25 +126,30 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
     const totalFrames = Math.ceil(d * fps);
     const zdur = `:d=${totalFrames}:s=${targetW}x${targetH}`;
     const t = `(on/${totalFrames})`; // Normalized time 0 to 1
+    const PI = 3.14159265; 
 
+    // Scale input to 2.5x to allow for aggressive pans/zooms/shakes without black borders
+    // Using 2.5x buffer (safe for 1080p -> 720p output)
+    const scaleFactor = 2.5; 
+    
     const moves = {
         // --- Estático & Suave ---
         'static': `zoompan=z=1.0:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
         'kenburns': `zoompan=z='1.0+(0.3*${t})':x='(iw/2-(iw/zoom/2))*(1-0.2*${t})':y='(ih/2-(ih/zoom/2))*(1-0.2*${t})'${zdur}`,
-        'mov-3d-float': `zoompan=z='1.1+0.05*sin(on/24)':x='iw/2-(iw/zoom/2)+10*sin(on/40)':y='ih/2-(ih/zoom/2)+10*sin(on/50)'${zdur}`,
+        'mov-3d-float': `zoompan=z='1.1+0.05*sin(on/24)':x='iw/2-(iw/zoom/2)+iw*0.03*sin(on/40)':y='ih/2-(ih/zoom/2)+ih*0.03*sin(on/50)'${zdur}`,
         'mov-tilt-up-slow': `zoompan=z=1.2:x='iw/2-(iw/zoom/2)':y='(ih/2-(ih/zoom/2))+(ih/4*${t})'${zdur}`,
         'mov-tilt-down-slow': `zoompan=z=1.2:x='iw/2-(iw/zoom/2)':y='(ih/2-(ih/zoom/2))-(ih/4*${t})'${zdur}`,
 
         // --- Zoom Dinâmico ---
-        'zoom-in': `zoompan=z='1.0+(0.5*${t})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
-        'zoom-out': `zoompan=z='1.5-(0.5*${t})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
+        'zoom-in': `zoompan=z='1.0+(0.6*${t})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
+        'zoom-out': `zoompan=z='1.6-(0.6*${t})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
         'mov-zoom-crash-in': `zoompan=z='1.0+3*${t}*${t}*${t}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
         'mov-zoom-crash-out': `zoompan=z='4-3*${t}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
         'mov-zoom-bounce-in': `zoompan=z='if(lt(${t},0.8), 1.0+0.5*${t}, 1.5-0.1*sin((${t}-0.8)*20))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
         'mov-zoom-pulse-slow': `zoompan=z='1.1+0.1*sin(on/24)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
         'mov-dolly-vertigo': `zoompan=z='1.0+(1.0*${t})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
-        'mov-zoom-twist-in': `rotate=angle='(PI/12)*${t}':fillcolor=black,zoompan=z='1.0+(0.5*${t})'${zdur}`,
-        'mov-zoom-wobble': `zoompan=z='1.1':x='iw/2-(iw/zoom/2)+20*sin(on/10)':y='ih/2-(ih/zoom/2)+20*cos(on/10)'${zdur}`,
+        'mov-zoom-twist-in': `rotate=angle='(${PI}/12)*${t}':fillcolor=black,zoompan=z='1.0+(0.5*${t})'${zdur}`,
+        'mov-zoom-wobble': `zoompan=z='1.1':x='iw/2-(iw/zoom/2)+iw*0.05*sin(on/10)':y='ih/2-(ih/zoom/2)+ih*0.05*cos(on/10)'${zdur}`,
         'mov-scale-pulse': `zoompan=z='1.0+0.2*sin(on/10)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
 
         // --- Panorâmicas ---
@@ -158,25 +163,25 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
         'mov-pan-diag-br': `zoompan=z=1.4:x='(iw/2-(iw/zoom/2))*(1-0.5*${t})':y='(ih/2-(ih/zoom/2))*(1-0.5*${t})'${zdur}`,
 
         // --- Câmera na Mão & Realismo ---
-        'handheld-1': `zoompan=z=1.1:x='iw/2-(iw/zoom/2)+10*sin(on/10)':y='ih/2-(ih/zoom/2)+10*cos(on/15)'${zdur}`,
-        'handheld-2': `zoompan=z=1.1:x='iw/2-(iw/zoom/2)+20*sin(on/6)':y='ih/2-(ih/zoom/2)+20*cos(on/9)'${zdur}`,
-        'earthquake': `zoompan=z=1.1:x='iw/2-(iw/zoom/2)+40*(random(1)-0.5)':y='ih/2-(ih/zoom/2)+40*(random(1)-0.5)'${zdur}`,
-        'mov-jitter-x': `zoompan=z=1.05:x='iw/2-(iw/zoom/2)+10*sin(on*10)':y='ih/2-(ih/zoom/2)'${zdur}`,
-        'mov-walk': `zoompan=z=1.1:x='iw/2-(iw/zoom/2)+15*sin(on/15)':y='ih/2-(ih/zoom/2)+10*abs(sin(on/7))'${zdur}`,
+        'handheld-1': `zoompan=z=1.1:x='iw/2-(iw/zoom/2)+iw*0.02*sin(on/10)':y='ih/2-(ih/zoom/2)+ih*0.02*cos(on/15)'${zdur}`,
+        'handheld-2': `zoompan=z=1.1:x='iw/2-(iw/zoom/2)+iw*0.04*sin(on/6)':y='ih/2-(ih/zoom/2)+ih*0.04*cos(on/9)'${zdur}`,
+        'earthquake': `zoompan=z=1.1:x='iw/2-(iw/zoom/2)+iw*0.05*(random(1)-0.5)':y='ih/2-(ih/zoom/2)+ih*0.05*(random(1)-0.5)'${zdur}`,
+        'mov-jitter-x': `zoompan=z=1.05:x='iw/2-(iw/zoom/2)+iw*0.02*sin(on*10)':y='ih/2-(ih/zoom/2)'${zdur}`,
+        'mov-walk': `zoompan=z=1.1:x='iw/2-(iw/zoom/2)+iw*0.02*sin(on/15)':y='ih/2-(ih/zoom/2)+ih*0.015*abs(sin(on/7))'${zdur}`,
 
         // --- 3D & Rotação ---
-        'mov-3d-spin-axis': `rotate=angle='2*PI*${t}':fillcolor=black,zoompan=z=1.2${zdur}`,
+        'mov-3d-spin-axis': `rotate=angle='2*${PI}*${t}':fillcolor=black,zoompan=z=1.2${zdur}`,
         'mov-3d-flip-x': `zoompan=z=1${zdur}`, 
         'mov-3d-flip-y': `zoompan=z=1${zdur}`,
-        'mov-3d-swing-l': `rotate=angle='(PI/8)*sin(on/24)':fillcolor=black,zoompan=z=1.2${zdur}`,
-        'mov-3d-roll': `rotate=angle='2*PI*${t}':fillcolor=black,zoompan=z=1.5${zdur}`,
+        'mov-3d-swing-l': `rotate=angle='(${PI}/8)*sin(on/24)':fillcolor=black,zoompan=z=1.2${zdur}`,
+        'mov-3d-roll': `rotate=angle='2*${PI}*${t}':fillcolor=black,zoompan=z=1.5${zdur}`,
 
         // --- Glitch & Caos ---
-        'mov-glitch-snap': `zoompan=z='if(mod(on,20)<2, 1.3, 1.0)':x='iw/2-(iw/zoom/2)+if(mod(on,20)<2, 50, 0)':y='ih/2-(ih/zoom/2)'${zdur},noise=alls=20:allf=t`,
-        'mov-glitch-skid': `zoompan=z=1.0:x='iw/2-(iw/zoom/2)+if(mod(on,10)<2, 100, 0)':y='ih/2-(ih/zoom/2)'${zdur}`,
-        'mov-shake-violent': `zoompan=z=1.2:x='iw/2-(iw/zoom/2)+60*(random(1)-0.5)':y='ih/2-(ih/zoom/2)+60*(random(1)-0.5)'${zdur}`,
-        'mov-rgb-shift-move': `zoompan=z='1.05+0.05*sin(on/2)'${zdur}`, // Fallback safe
-        'mov-vibrate': `zoompan=z=1.02:x='iw/2-(iw/zoom/2)+5*sin(on*50)':y='ih/2-(ih/zoom/2)+5*cos(on*50)'${zdur}`,
+        'mov-glitch-snap': `zoompan=z='if(mod(on,20)<2, 1.3, 1.0)':x='iw/2-(iw/zoom/2)+if(mod(on,20)<2, iw*0.1, 0)':y='ih/2-(ih/zoom/2)'${zdur},noise=alls=20:allf=t`,
+        'mov-glitch-skid': `zoompan=z=1.0:x='iw/2-(iw/zoom/2)+if(mod(on,10)<2, iw*0.2, 0)':y='ih/2-(ih/zoom/2)'${zdur}`,
+        'mov-shake-violent': `zoompan=z=1.2:x='iw/2-(iw/zoom/2)+iw*0.1*(random(1)-0.5)':y='ih/2-(ih/zoom/2)+ih*0.1*(random(1)-0.5)'${zdur}`,
+        'mov-rgb-shift-move': `zoompan=z='1.05+0.05*sin(on/2)'${zdur}`, 
+        'mov-vibrate': `zoompan=z=1.02:x='iw/2-(iw/zoom/2)+iw*0.01*sin(on*50)':y='ih/2-(ih/zoom/2)+ih*0.01*cos(on*50)'${zdur}`,
 
         // --- Foco & Blur ---
         'mov-blur-in': `boxblur=luma_radius='20*(1-${t})':enable='between(t,0,${d})',zoompan=z=1${zdur}`,
@@ -186,14 +191,14 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
 
         // --- Elástico & Divertido ---
         'mov-rubber-band': `zoompan=z='1.0+0.3*abs(sin(on/10))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
-        'mov-jelly-wobble': `zoompan=z='1.0+0.1*sin(on/5)':x='iw/2-(iw/zoom/2)+10*sin(on/4)':y='ih/2-(ih/zoom/2)+10*cos(on/4)'${zdur}`,
+        'mov-jelly-wobble': `zoompan=z='1.0+0.1*sin(on/5)':x='iw/2-(iw/zoom/2)+iw*0.03*sin(on/4)':y='ih/2-(ih/zoom/2)+ih*0.03*cos(on/4)'${zdur}`,
         'mov-pop-up': `zoompan=z='min(1.0 + ${t}*5, 1.0)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
-        'mov-bounce-drop': `zoompan=z='1.0':y='(ih/2-(ih/zoom/2)) + (ih/2 * abs(cos(${t}*5*PI)) * (1-${t}))'${zdur}`
+        'mov-bounce-drop': `zoompan=z='1.0':y='(ih/2-(ih/zoom/2)) + (ih/2 * abs(cos(${t}*5*${PI})) * (1-${t}))'${zdur}`
     };
 
     const selected = moves[moveId] || moves['kenburns'];
-    // Use lanczos for better scaling quality and ensure even dimensions
-    const pre = `scale=${targetW*2}:${targetH*2}:force_original_aspect_ratio=increase,crop=${targetW*2}:${targetH*2},setsar=1`;
+    // Increased oversampling to 2.5x to handle aggressive shake/pan without black borders
+    const pre = `scale=${Math.ceil(targetW*scaleFactor)}:${Math.ceil(targetH*scaleFactor)}:force_original_aspect_ratio=increase,crop=${Math.ceil(targetW*scaleFactor)}:${Math.ceil(targetH*scaleFactor)},setsar=1`;
     const post = `scale=${targetW}:${targetH}:flags=lanczos,pad=ceil(iw/2)*2:ceil(ih/2)*2,fps=24,format=yuv420p`;
     return `${pre},${selected},${post}`;
 }
