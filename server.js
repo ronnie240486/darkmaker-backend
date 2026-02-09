@@ -1,5 +1,4 @@
 // ... imports ...
-// (Retaining existing imports and setup)
 import express from 'express';
 import cors from 'cors';
 import multer from 'multer';
@@ -74,7 +73,6 @@ function getExactDuration(filePath) {
 }
 
 const saveBase64OrUrl = async (input, prefix, ext) => {
-    // ... existing implementation ...
     if (!input) {
         console.log(`[Server] Input is empty for ${prefix}`);
         return null;
@@ -107,6 +105,9 @@ const saveBase64OrUrl = async (input, prefix, ext) => {
 // ... MOVEMENT ...
 function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 720) {
     const d = parseFloat(durationSec) || 5;
+    // Force valid integers for dimensions
+    const w = parseInt(targetW) || 1280;
+    const h = parseInt(targetH) || 720;
     const fps = 24;
     
     const zNorm = `(time/${d})`; 
@@ -114,13 +115,14 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
     
     const PI = 3.14159; 
 
-    const zp = `zoompan=d=1:fps=${fps}:s=${targetW}x${targetH}`;
+    // zoompan outputs a stream of frames.
+    const zp = `zoompan=d=1:fps=${fps}:s=${w}x${h}`;
     const center = `:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
 
     const scaleFactor = 2.0; 
     
-    // Escaped comma for filters
-    const escComma = '\\,';
+    // NOTE: When using single quotes in filter parameters, we don't need to escape commas for the filter chain
+    // but the expressions must be valid.
 
     const moves = {
         'static': `${zp}:z=1.0${center}`,
@@ -167,15 +169,13 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
         'mov-rgb-shift-move': `rgbashift=rh=20:bv=20,${zp}:z=1.05${center}`,
         'mov-vibrate': `${zp}:z=1.02:x='iw/2-(iw/zoom/2)+iw*0.01*sin(time*50)':y='ih/2-(ih/zoom/2)+ih*0.01*cos(time*50)'`,
         
-        // FOCUS & BLUR FIXES - Switching to gblur (Gaussian Blur) for better support and quality
-        // Escaping commas inside expressions is crucial for complex filters
-        'mov-blur-in': `gblur=sigma='20*max(0${escComma}1-${rNorm})':steps=2,${zp}:z=1${center}`,
-        'mov-blur-out': `gblur=sigma='min(20${escComma}20*${rNorm})':steps=2,${zp}:z=1${center}`,
+        // FOCUS & BLUR FIXES
+        // Removed broken escComma (\,) and used direct commas inside quotes
+        'mov-blur-in': `gblur=sigma='20*max(0,1-${rNorm})':steps=2,${zp}:z=1${center}`,
+        'mov-blur-out': `gblur=sigma='min(20,20*${rNorm})':steps=2,${zp}:z=1${center}`,
         
-        // Pulse Blur
         'mov-blur-pulse': `gblur=sigma='10*abs(sin(t*2))':steps=1,${zp}:z=1${center}`,
         
-        // Tilt Shift Safe
         'mov-tilt-shift': `eq=saturation=1.4:contrast=1.1,${zp}:z=1.1${center}`,
 
         'mov-rubber-band': `${zp}:z='1.0+0.3*abs(sin(time*2))'${center}`,
@@ -185,8 +185,8 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
     };
 
     const selected = moves[moveId] || moves['kenburns'];
-    const pre = `scale=${Math.ceil(targetW*scaleFactor)}:${Math.ceil(targetH*scaleFactor)}:force_original_aspect_ratio=increase,crop=${Math.ceil(targetW*scaleFactor)}:${Math.ceil(targetH*scaleFactor)},setsar=1`;
-    const post = `scale=${targetW}:${targetH}:flags=lanczos,pad=ceil(iw/2)*2:ceil(ih/2)*2,fps=24,format=yuv420p`;
+    const pre = `scale=${Math.ceil(w*scaleFactor)}:${Math.ceil(h*scaleFactor)}:force_original_aspect_ratio=increase,crop=${Math.ceil(w*scaleFactor)}:${Math.ceil(h*scaleFactor)},setsar=1`;
+    const post = `scale=${w}:${h}:flags=lanczos,pad=ceil(iw/2)*2:ceil(ih/2)*2,fps=${fps},format=yuv420p`;
     return `${pre},${selected},${post}`;
 }
 
@@ -382,7 +382,6 @@ function runFFmpeg(args) {
 
 // ... ROUTES ...
 app.post("/api/render/start", async (req, res) => {
-    // ... existing route handler logic ...
     const contentType = req.headers['content-type'] || '';
     const jobId = Date.now().toString();
     jobs[jobId] = { progress: 1, status: "processing" };
