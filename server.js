@@ -124,13 +124,12 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
     const d = parseFloat(durationSec) || 5;
     const fps = 24;
     
-    // Zoompan uses 'time' (in seconds) for its expression evaluation
+    // Vars for Zoompan (uses 'time' or 'on')
     const zNorm = `(time/${d})`; 
-    
-    // For rotate/enable filters, 't' is standard for timestamp
+    // Vars for Rotate/Enable (uses 't')
     const rNorm = `(t/${d})`;
     
-    const PI = 3.14159265; 
+    const PI = 3.14159; 
 
     // Zoompan base config
     const zp = `zoompan=d=1:fps=${fps}:s=${targetW}x${targetH}`;
@@ -138,6 +137,9 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
 
     const scaleFactor = 2.0; 
     
+    // Helper: Escaped commas for 'enable' filters to prevent argument parsing errors
+    const enableBetween = (start, end) => `enable=between(t\\,${start}\\,${end})`;
+
     const moves = {
         'static': `${zp}:z=1.0${center}`,
         'kenburns': `${zp}:z='1.0+(0.3*${zNorm})':x='(iw/2-(iw/zoom/2))*(1-0.2*${zNorm})':y='(ih/2-(ih/zoom/2))*(1-0.2*${zNorm})'`,
@@ -152,15 +154,15 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
         'mov-zoom-pulse-slow': `${zp}:z='1.1+0.1*sin(time*2)'${center}`,
         'mov-dolly-vertigo': `${zp}:z='1.0+(1.0*${zNorm})'${center}`,
         
-        // ROTATION & 3D FIXES
-        // Explicitly using 't' for rotate angle expressions to ensure compatibility
-        'mov-3d-spin-axis': `rotate=angle='2*${PI}*${rNorm}':fillcolor=black:ow='iw':oh='ih',${zp}:z=1.7${center}`,
-        'mov-3d-roll': `rotate=angle='-2*${PI}*${rNorm}':fillcolor=black:ow='iw':oh='ih',${zp}:z=1.7${center}`,
-        'mov-zoom-twist-in': `rotate=angle='(${PI}/8)*${rNorm}':fillcolor=black,${zp}:z='1.0+(0.5*${zNorm})'${center}`,
+        // ROTATION & 3D FIXES (Using Safe Syntax without extra quotes)
+        'mov-3d-spin-axis': `rotate=angle=2*${PI}*${rNorm}:fillcolor=black:ow=iw:oh=ih,${zp}:z=1.7${center}`,
+        'mov-3d-roll': `rotate=angle=-2*${PI}*${rNorm}:fillcolor=black:ow=iw:oh=ih,${zp}:z=1.7${center}`,
+        'mov-zoom-twist-in': `rotate=angle=(${PI}/8)*${rNorm}:fillcolor=black,${zp}:z='1.0+(0.5*${zNorm})'${center}`,
+        'mov-3d-swing-l': `rotate=angle=(${PI}/8)*sin(t):fillcolor=black:ow=iw:oh=ih,${zp}:z=1.3${center}`,
         
+        // Faked 3D Flips (Using Zoom/Pos)
         'mov-3d-flip-x': `${zp}:z='1.0+0.4*abs(sin(time*3))':x='iw/2-(iw/zoom/2)+(iw/4)*sin(time*5)'${center}`,
-        'mov-3d-flip-y': `${zp}:z='1.0+0.4*abs(cos(time*3))':y='ih/2-(ih/zoom/2)+(ih/4)*cos(time*5)'${center}`,
-        'mov-3d-swing-l': `rotate=angle='(${PI}/8)*sin(t)':fillcolor=black,${zp}:z=1.3${center}`,
+        'mov-3d-flip-y': `${zp}:z='1.0+0.4*abs(cos(time*3))':y='ih/2-(iw/zoom/2)+(ih/4)*cos(time*5)'${center}`,
 
         'mov-zoom-wobble': `${zp}:z='1.1':x='iw/2-(iw/zoom/2)+iw*0.05*sin(time*2)':y='ih/2-(ih/zoom/2)+ih*0.05*cos(time*2)'`,
         'mov-scale-pulse': `${zp}:z='1.0+0.2*sin(time*3)'${center}`,
@@ -184,15 +186,11 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
         'mov-rgb-shift-move': `rgbashift=rh=20:bv=20,${zp}:z=1.05${center}`,
         'mov-vibrate': `${zp}:z=1.02:x='iw/2-(iw/zoom/2)+iw*0.01*sin(time*50)':y='ih/2-(ih/zoom/2)+ih*0.01*cos(time*50)'`,
         
-        // FOCUS & BLUR FIXES - ROBUST IMPLEMENTATION
-        // Replaced error-prone dynamic 'gblur' with time-enabled 'boxblur' and 'eq'.
-        // Boxblur enable uses 't' to turn blur on/off, creating a focus pull effect.
-        'mov-blur-in': `boxblur=luma_radius=20:luma_power=2:enable='between(t,0,${d*0.2})',${zp}:z=1${center}`,
-        'mov-blur-out': `boxblur=luma_radius=20:luma_power=2:enable='between(t,${d*0.8},${d})',${zp}:z=1${center}`,
-        'mov-blur-pulse': `boxblur=luma_radius=10:enable='lt(mod(t,1.0),0.3)',${zp}:z=1${center}`,
-        
-        // Tilt Shift - Safe implementation using vignette and static slight blur/contrast
-        'mov-tilt-shift': `vignette=PI/4,gblur=sigma=2:steps=1,eq=saturation=1.3:contrast=1.1,${zp}:z=1.1${center}`,
+        // FOCUS & BLUR FIXES (Using Safe Syntax)
+        'mov-blur-in': `boxblur=luma_radius=20:luma_power=2:${enableBetween(0, d*0.2)},${zp}:z=1${center}`,
+        'mov-blur-out': `boxblur=luma_radius=20:luma_power=2:${enableBetween(d*0.8, d)},${zp}:z=1${center}`,
+        'mov-blur-pulse': `boxblur=luma_radius=10:luma_power=2:enable=lt(mod(t\\,1.0)\\,0.3),${zp}:z=1${center}`,
+        'mov-tilt-shift': `gblur=sigma=2:steps=1,eq=saturation=1.3:contrast=1.1,${zp}:z=1.1${center}`,
 
         'mov-rubber-band': `${zp}:z='1.0+0.3*abs(sin(time*2))'${center}`,
         'mov-jelly-wobble': `${zp}:z='1.0+0.1*sin(time)':x='iw/2-(iw/zoom/2)+iw*0.03*sin(time*2)':y='ih/2-(ih/zoom/2)+ih*0.03*cos(time*2)'`,
