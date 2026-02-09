@@ -77,35 +77,43 @@ function getExactDuration(filePath) {
 }
 
 const saveBase64OrUrl = async (input, prefix, ext) => {
-    if (!input) return null;
+    if (!input) {
+        console.log(`[Server] Input is empty for ${prefix}`);
+        return null;
+    }
     const filename = `${prefix}_${Date.now()}_${Math.random().toString(36).substr(2, 5)}.${ext}`;
     const filepath = path.join(UPLOAD_DIR, filename);
     
     try {
         if (input.startsWith('data:')) {
-            // Optimized manual parsing instead of Regex for large files
             const commaIndex = input.indexOf(',');
-            if (commaIndex !== -1) {
-                const base64Data = input.substring(commaIndex + 1);
-                const buffer = Buffer.from(base64Data, 'base64');
-                fs.writeFileSync(filepath, buffer);
-                return filename;
+            if (commaIndex === -1) {
+                console.error(`[Server] Invalid Data URI for ${prefix}: No comma found.`);
+                return null;
             }
+            const base64Data = input.substring(commaIndex + 1);
+            const buffer = Buffer.from(base64Data, 'base64');
+            fs.writeFileSync(filepath, buffer);
+            console.log(`[Server] Saved Data URI as ${filename} (${buffer.length} bytes)`);
+            return filename;
         } else if (input.startsWith('http')) {
+            console.log(`[Server] Fetching URL for ${prefix}: ${input.substring(0, 50)}...`);
             const res = await fetch(input);
             if (!res.ok) {
-                console.error(`Failed to fetch URL: ${input} (${res.status})`);
+                console.error(`[Server] Failed to fetch URL: ${res.statusText}`);
                 return null;
             }
             const arrayBuffer = await res.arrayBuffer();
             fs.writeFileSync(filepath, Buffer.from(arrayBuffer));
+            console.log(`[Server] Saved URL as ${filename}`);
             return filename;
+        } else {
+            console.warn(`[Server] Unknown input format for ${prefix}: ${input.substring(0, 30)}...`);
         }
     } catch(e) {
-        console.error(`Error saving asset (${prefix}):`, e.message);
+        console.error(`[Server] Error saving asset ${prefix}:`, e);
         return null;
     }
-    console.warn(`Invalid input format for ${prefix}: starts with ${input.substring(0, 20)}...`);
     return null;
 };
 
@@ -117,28 +125,87 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
     const fps = 24;
     const totalFrames = Math.ceil(d * fps);
     const zdur = `:d=${totalFrames}:s=${targetW}x${targetH}`;
-    const t = `(on/${totalFrames})`;
+    const t = `(on/${totalFrames})`; // Normalized time 0 to 1
 
     const moves = {
+        // --- Estático & Suave ---
         'static': `zoompan=z=1.0:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
         'kenburns': `zoompan=z='1.0+(0.3*${t})':x='(iw/2-(iw/zoom/2))*(1-0.2*${t})':y='(ih/2-(ih/zoom/2))*(1-0.2*${t})'${zdur}`,
+        'mov-3d-float': `zoompan=z='1.1+0.05*sin(on/24)':x='iw/2-(iw/zoom/2)+10*sin(on/40)':y='ih/2-(ih/zoom/2)+10*sin(on/50)'${zdur}`,
+        'mov-tilt-up-slow': `zoompan=z=1.2:x='iw/2-(iw/zoom/2)':y='(ih/2-(ih/zoom/2))+(ih/4*${t})'${zdur}`,
+        'mov-tilt-down-slow': `zoompan=z=1.2:x='iw/2-(iw/zoom/2)':y='(ih/2-(ih/zoom/2))-(ih/4*${t})'${zdur}`,
+
+        // --- Zoom Dinâmico ---
         'zoom-in': `zoompan=z='1.0+(0.5*${t})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
         'zoom-out': `zoompan=z='1.5-(0.5*${t})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
+        'mov-zoom-crash-in': `zoompan=z='1.0+3*${t}*${t}*${t}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
+        'mov-zoom-crash-out': `zoompan=z='4-3*${t}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
+        'mov-zoom-bounce-in': `zoompan=z='if(lt(${t},0.8), 1.0+0.5*${t}, 1.5-0.1*sin((${t}-0.8)*20))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
+        'mov-zoom-pulse-slow': `zoompan=z='1.1+0.1*sin(on/24)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
+        'mov-dolly-vertigo': `zoompan=z='1.0+(1.0*${t})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
+        'mov-zoom-twist-in': `rotate=angle='(PI/12)*${t}':fillcolor=black,zoompan=z='1.0+(0.5*${t})'${zdur}`,
+        'mov-zoom-wobble': `zoompan=z='1.1':x='iw/2-(iw/zoom/2)+20*sin(on/10)':y='ih/2-(ih/zoom/2)+20*cos(on/10)'${zdur}`,
+        'mov-scale-pulse': `zoompan=z='1.0+0.2*sin(on/10)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
+
+        // --- Panorâmicas ---
         'mov-pan-slow-l': `zoompan=z=1.4:x='(iw/2-(iw/zoom/2))*(1+0.5*${t})':y='ih/2-(ih/zoom/2)'${zdur}`,
         'mov-pan-slow-r': `zoompan=z=1.4:x='(iw/2-(iw/zoom/2))*(1-0.5*${t})':y='ih/2-(ih/zoom/2)'${zdur}`,
-        'handheld-1': `zoompan=z=1.1:x='iw/2-(iw/zoom/2)+10*sin(on/10)':y='ih/2-(ih/zoom/2)+10*cos(on/15)'${zdur}`
+        'mov-pan-slow-u': `zoompan=z=1.4:x='iw/2-(iw/zoom/2)':y='(ih/2-(ih/zoom/2))*(1+0.5*${t})'${zdur}`,
+        'mov-pan-slow-d': `zoompan=z=1.4:x='iw/2-(iw/zoom/2)':y='(ih/2-(ih/zoom/2))*(1-0.5*${t})'${zdur}`,
+        'mov-pan-fast-l': `zoompan=z=1.4:x='(iw/2-(iw/zoom/2))*(1+1.0*${t})':y='ih/2-(ih/zoom/2)'${zdur}`,
+        'mov-pan-fast-r': `zoompan=z=1.4:x='(iw/2-(iw/zoom/2))*(1-1.0*${t})':y='ih/2-(ih/zoom/2)'${zdur}`,
+        'mov-pan-diag-tl': `zoompan=z=1.4:x='(iw/2-(iw/zoom/2))*(1+0.5*${t})':y='(ih/2-(ih/zoom/2))*(1+0.5*${t})'${zdur}`,
+        'mov-pan-diag-br': `zoompan=z=1.4:x='(iw/2-(iw/zoom/2))*(1-0.5*${t})':y='(ih/2-(ih/zoom/2))*(1-0.5*${t})'${zdur}`,
+
+        // --- Câmera na Mão & Realismo ---
+        'handheld-1': `zoompan=z=1.1:x='iw/2-(iw/zoom/2)+10*sin(on/10)':y='ih/2-(ih/zoom/2)+10*cos(on/15)'${zdur}`,
+        'handheld-2': `zoompan=z=1.1:x='iw/2-(iw/zoom/2)+20*sin(on/6)':y='ih/2-(ih/zoom/2)+20*cos(on/9)'${zdur}`,
+        'earthquake': `zoompan=z=1.1:x='iw/2-(iw/zoom/2)+40*(random(1)-0.5)':y='ih/2-(ih/zoom/2)+40*(random(1)-0.5)'${zdur}`,
+        'mov-jitter-x': `zoompan=z=1.05:x='iw/2-(iw/zoom/2)+10*sin(on*10)':y='ih/2-(ih/zoom/2)'${zdur}`,
+        'mov-walk': `zoompan=z=1.1:x='iw/2-(iw/zoom/2)+15*sin(on/15)':y='ih/2-(ih/zoom/2)+10*abs(sin(on/7))'${zdur}`,
+
+        // --- 3D & Rotação ---
+        'mov-3d-spin-axis': `rotate=angle='2*PI*${t}':fillcolor=black,zoompan=z=1.2${zdur}`,
+        'mov-3d-flip-x': `zoompan=z=1${zdur}`, 
+        'mov-3d-flip-y': `zoompan=z=1${zdur}`,
+        'mov-3d-swing-l': `rotate=angle='(PI/8)*sin(on/24)':fillcolor=black,zoompan=z=1.2${zdur}`,
+        'mov-3d-roll': `rotate=angle='2*PI*${t}':fillcolor=black,zoompan=z=1.5${zdur}`,
+
+        // --- Glitch & Caos ---
+        'mov-glitch-snap': `zoompan=z='if(mod(on,20)<2, 1.3, 1.0)':x='iw/2-(iw/zoom/2)+if(mod(on,20)<2, 50, 0)':y='ih/2-(ih/zoom/2)'${zdur},noise=alls=20:allf=t`,
+        'mov-glitch-skid': `zoompan=z=1.0:x='iw/2-(iw/zoom/2)+if(mod(on,10)<2, 100, 0)':y='ih/2-(ih/zoom/2)'${zdur}`,
+        'mov-shake-violent': `zoompan=z=1.2:x='iw/2-(iw/zoom/2)+60*(random(1)-0.5)':y='ih/2-(ih/zoom/2)+60*(random(1)-0.5)'${zdur}`,
+        'mov-rgb-shift-move': `zoompan=z='1.05+0.05*sin(on/2)'${zdur}`, // Fallback safe
+        'mov-vibrate': `zoompan=z=1.02:x='iw/2-(iw/zoom/2)+5*sin(on*50)':y='ih/2-(ih/zoom/2)+5*cos(on*50)'${zdur}`,
+
+        // --- Foco & Blur ---
+        'mov-blur-in': `boxblur=luma_radius='20*(1-${t})':enable='between(t,0,${d})',zoompan=z=1${zdur}`,
+        'mov-blur-out': `boxblur=luma_radius='20*${t}':enable='between(t,0,${d})',zoompan=z=1${zdur}`,
+        'mov-blur-pulse': `boxblur=luma_radius='10*abs(sin(on/10))',zoompan=z=1${zdur}`,
+        'mov-tilt-shift': `boxblur=luma_radius=10:enable='if(between(y,0,h*0.2)+between(y,h*0.8,h),1,0)',zoompan=z=1${zdur}`,
+
+        // --- Elástico & Divertido ---
+        'mov-rubber-band': `zoompan=z='1.0+0.3*abs(sin(on/10))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
+        'mov-jelly-wobble': `zoompan=z='1.0+0.1*sin(on/5)':x='iw/2-(iw/zoom/2)+10*sin(on/4)':y='ih/2-(ih/zoom/2)+10*cos(on/4)'${zdur}`,
+        'mov-pop-up': `zoompan=z='min(1.0 + ${t}*5, 1.0)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
+        'mov-bounce-drop': `zoompan=z='1.0':y='(ih/2-(ih/zoom/2)) + (ih/2 * abs(cos(${t}*5*PI)) * (1-${t}))'${zdur}`
     };
 
     const selected = moves[moveId] || moves['kenburns'];
+    // Use lanczos for better scaling quality and ensure even dimensions
     const pre = `scale=${targetW*2}:${targetH*2}:force_original_aspect_ratio=increase,crop=${targetW*2}:${targetH*2},setsar=1`;
-    const post = `scale=${targetW}:${targetH},pad=ceil(iw/2)*2:ceil(ih/2)*2,fps=24,format=yuv420p`;
+    const post = `scale=${targetW}:${targetH}:flags=lanczos,pad=ceil(iw/2)*2:ceil(ih/2)*2,fps=24,format=yuv420p`;
     return `${pre},${selected},${post}`;
 }
 
 function getTransitionXfade(t) {
     const map = {
         'cut': 'cut', 'fade':'fade', 'mix':'dissolve', 'black':'fadeblack', 'white':'fadewhite',
-        'slide-left':'slideleft', 'slide-right':'slideright'
+        'slide-left':'slideleft', 'slide-right':'slideright',
+        'wipe-left': 'wipeleft', 'wipe-right': 'wiperight', 'wipe-up': 'wipeup', 'wipe-down': 'wipedown',
+        'circle-open': 'circleopen', 'circle-close': 'circleclose', 
+        'zoom-in': 'zoomin', 'zoom-out': 'zoomout',
+        'pixelize': 'pixelize', 'hologram': 'holographic', 'glitch': 'pixelize'
     };
     return map[t] || 'fade';
 }
@@ -198,7 +265,7 @@ async function renderVideoProject(project, jobId) {
     if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
 
     if (!project.clips || project.clips.length === 0) {
-        throw new Error("Nenhum clipe para renderizar.");
+        throw new Error("Nenhum clipe para renderizar. Verifique se as imagens/vídeos foram processados corretamente.");
     }
 
     const tempClips = [];
@@ -356,13 +423,9 @@ app.post("/api/render/start", async (req, res) => {
             for (let i = 0; i < scenes.length; i++) {
                 const s = scenes[i];
                 let visualFile = null;
-                
-                // Prioritize videoUrl, then imageUrl
-                if (s.videoUrl) {
-                    visualFile = await saveBase64OrUrl(s.videoUrl, `scene_${i}_vid`, 'mp4');
-                } else if (s.imageUrl) {
-                    visualFile = await saveBase64OrUrl(s.imageUrl, `scene_${i}_img`, 'png');
-                }
+                // Save visual content (Video or Image)
+                if (s.videoUrl) visualFile = await saveBase64OrUrl(s.videoUrl, `scene_${i}_vid`, 'mp4');
+                else if (s.imageUrl) visualFile = await saveBase64OrUrl(s.imageUrl, `scene_${i}_img`, 'png');
 
                 let audioFile = null;
                 if (s.audioUrl) audioFile = await saveBase64OrUrl(s.audioUrl, `scene_${i}_audio`, 'wav');
@@ -375,12 +438,8 @@ app.post("/api/render/start", async (req, res) => {
                         movement: s.effect || config.movement || 'kenburns'
                     });
                 } else {
-                    console.warn(`Skipping scene ${i}: Failed to save visual asset.`, s.mediaType);
+                    console.warn(`[Server] Scene ${i} ignored: No visual file saved.`);
                 }
-            }
-
-            if (project.clips.length === 0) {
-                throw new Error("Nenhum clipe foi processado com sucesso. Verifique se as imagens/vídeos foram gerados corretamente.");
             }
 
             renderVideoProject(project, jobId)
