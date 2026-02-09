@@ -59,12 +59,18 @@ export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targe
         'mov-pan-diag-br': `zoompan=z=1.5:x='(iw/2-(iw/zoom/2)) + (iw/8 * ${p_zoom})':y='(ih/2-(ih/zoom/2)) + (ih/8 * ${p_zoom})'${zdur}`,
 
         // --- 4. BLUR & FOCO ---
-        'mov-blur-in': `zoompan=z='min(1.15, 1.0+0.001*on)'${zdur}${blurIn}`,
-        'mov-blur-out': `zoompan=z='min(1.15, 1.0+0.001*on)'${zdur}${blurOut}`,
-        'mov-blur-pulse': `zoompan=z='1.05+0.02*sin(on/30)'${zdur}${pulseBlur}`,
+      
+        // Focar (Blur In): Começa desfocado (20) e termina focado (0) gradualmente
+        'mov-blur-in': `boxblur=luma_radius='20*(1-${t})':luma_power=1,${zp}:z=1${center}`,
         
-        // Tilt Shift: Vignette + Blur nas bordas (simulado com boxblur geral leve + vignette forte)
-        'mov-tilt-shift': `zoompan=z=1.1${zdur},boxblur=2:1,vignette=a=PI/4`,
+        // Desfocar (Blur Out): Começa focado (0) e termina desfocado (20) gradualmente
+        'mov-blur-out': `boxblur=luma_radius='20*${t}':luma_power=1,${zp}:z=1${center}`,
+        
+        'mov-blur-pulse': `boxblur=luma_radius='10*abs(sin(on/10))',zoompan=z=1${zdur}`,
+        
+        // Tilt Shift: Bordas superiores e inferiores desfocam gradualmente
+        'mov-tilt-shift': `boxblur=luma_radius='10*${t}':luma_power=2:enable='if(between(y,0,h*0.3)+between(y,h*0.7,h),1,0)',eq=saturation=1.3:contrast=1.1,${zp}:z=1.1${center}`
+
 
         // --- 5. EFEITOS ESPECIAIS & MOVIMENTO REALISTA ---
         'handheld-1': `zoompan=z=1.2:x='iw/2-(iw/zoom/2)+8*sin(on/15)':y='ih/2-(ih/zoom/2)+8*cos(on/18)'${zdur}`,
