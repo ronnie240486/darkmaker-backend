@@ -1,4 +1,5 @@
 
+// ... existing imports ...
 import express from 'express';
 import cors from 'cors';
 import multer from 'multer';
@@ -17,9 +18,6 @@ const app = express();
 const PORT = process.env.PORT || 8080;
 const GEMINI_KEY = process.env.GEMINI_API_KEY || process.env.API_KEY || "";
 
-// ==============================
-//      DIR SETUP
-// ==============================
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
 const OUTPUT_DIR = path.join(__dirname, 'outputs');
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -31,9 +29,6 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
 
-// ==============================
-//      FILE CHECKS & HELPERS
-// ==============================
 async function fileHasAudio(file) {
     return new Promise(resolve => {
         execFile(ffprobePath.path, [
@@ -57,7 +52,8 @@ async function isVideoFile(file) {
             "-of", "csv=p=0",
             file
         ], (err, stdout) => {
-            resolve(stdout && stdout.toString().trim().includes('video'));
+            const output = stdout ? stdout.toString().trim() : "";
+            resolve(output.includes('video'));
         });
     });
 }
@@ -77,68 +73,41 @@ function getExactDuration(filePath) {
 }
 
 const saveBase64OrUrl = async (input, prefix, ext) => {
-    if (!input) {
-        console.log(`[Server] Input is empty for ${prefix}`);
-        return null;
-    }
+    if (!input) return null;
     const filename = `${prefix}_${Date.now()}_${Math.random().toString(36).substr(2, 5)}.${ext}`;
     const filepath = path.join(UPLOAD_DIR, filename);
     
     try {
         if (input.startsWith('data:')) {
             const commaIndex = input.indexOf(',');
-            if (commaIndex === -1) {
-                console.error(`[Server] Invalid Data URI for ${prefix}: No comma found.`);
-                return null;
-            }
+            if (commaIndex === -1) return null;
             const base64Data = input.substring(commaIndex + 1);
             const buffer = Buffer.from(base64Data, 'base64');
             fs.writeFileSync(filepath, buffer);
-            console.log(`[Server] Saved Data URI as ${filename} (${buffer.length} bytes)`);
             return filename;
         } else if (input.startsWith('http')) {
-            console.log(`[Server] Fetching URL for ${prefix}: ${input.substring(0, 50)}...`);
             const res = await fetch(input);
-            if (!res.ok) {
-                console.error(`[Server] Failed to fetch URL: ${res.statusText}`);
-                return null;
-            }
+            if (!res.ok) return null;
             const arrayBuffer = await res.arrayBuffer();
             fs.writeFileSync(filepath, Buffer.from(arrayBuffer));
-            console.log(`[Server] Saved URL as ${filename}`);
             return filename;
-        } else {
-            console.warn(`[Server] Unknown input format for ${prefix}: ${input.substring(0, 30)}...`);
         }
-    } catch(e) {
-        console.error(`[Server] Error saving asset ${prefix}:`, e);
-        return null;
-    }
+    } catch(e) { console.error(e); return null; }
     return null;
 };
 
-// ==============================
-//      MOVEMENT & FILTERS
-// ==============================
+// ... MOVEMENT (Inalterado) ...
 function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 720) {
     const d = parseFloat(durationSec) || 5;
+    const w = parseInt(targetW) || 1280;
+    const h = parseInt(targetH) || 720;
     const fps = 24;
-    
-    // Vars for Zoompan (uses 'time' or 'on')
     const zNorm = `(time/${d})`; 
-    // Vars for Rotate/Enable (uses 't')
     const rNorm = `(t/${d})`;
-    
     const PI = 3.14159; 
-
-    // Zoompan base config
-    const zp = `zoompan=d=1:fps=${fps}:s=${targetW}x${targetH}`;
+    const zp = `zoompan=d=1:fps=${fps}:s=${w}x${h}`;
     const center = `:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
-
     const scaleFactor = 2.0; 
-    
-    // Helper: Escaped commas for 'enable' filters to prevent argument parsing errors
-    const enableBetween = (start, end) => `enable=between(t\\,${start}\\,${end})`;
 
     const moves = {
         'static': `${zp}:z=1.0${center}`,
@@ -153,17 +122,12 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
         'mov-zoom-bounce-in': `${zp}:z='if(lt(${zNorm},0.8), 1.0+0.5*${zNorm}, 1.5-0.1*sin((${zNorm}-0.8)*20))'${center}`,
         'mov-zoom-pulse-slow': `${zp}:z='1.1+0.1*sin(time*2)'${center}`,
         'mov-dolly-vertigo': `${zp}:z='1.0+(1.0*${zNorm})'${center}`,
-        
-        // ROTATION & 3D FIXES (Using Safe Syntax without extra quotes)
         'mov-3d-spin-axis': `rotate=angle=2*${PI}*${rNorm}:fillcolor=black:ow=iw:oh=ih,${zp}:z=1.7${center}`,
         'mov-3d-roll': `rotate=angle=-2*${PI}*${rNorm}:fillcolor=black:ow=iw:oh=ih,${zp}:z=1.7${center}`,
         'mov-zoom-twist-in': `rotate=angle=(${PI}/8)*${rNorm}:fillcolor=black,${zp}:z='1.0+(0.5*${zNorm})'${center}`,
         'mov-3d-swing-l': `rotate=angle=(${PI}/8)*sin(t):fillcolor=black:ow=iw:oh=ih,${zp}:z=1.3${center}`,
-        
-        // Faked 3D Flips (Using Zoom/Pos)
         'mov-3d-flip-x': `${zp}:z='1.0+0.4*abs(sin(time*3))':x='iw/2-(iw/zoom/2)+(iw/4)*sin(time*5)'${center}`,
-        'mov-3d-flip-y': `${zp}:z='1.0+0.4*abs(cos(time*3))':y='ih/2-(iw/zoom/2)+(ih/4)*cos(time*5)'${center}`,
-
+        'mov-3d-flip-y': `${zp}:z='1.0+0.4*abs(cos(time*3))':y='ih/2-(ih/zoom/2)+(ih/4)*cos(time*5)'${center}`,
         'mov-zoom-wobble': `${zp}:z='1.1':x='iw/2-(iw/zoom/2)+iw*0.05*sin(time*2)':y='ih/2-(ih/zoom/2)+ih*0.05*cos(time*2)'`,
         'mov-scale-pulse': `${zp}:z='1.0+0.2*sin(time*3)'${center}`,
         'mov-pan-slow-l': `${zp}:z=1.4:x='(iw/2-(iw/zoom/2))*(1+0.5*${zNorm})'${center}`,
@@ -179,19 +143,15 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
         'earthquake': `${zp}:z=1.1:x='iw/2-(iw/zoom/2)+iw*0.05*(random(1)-0.5)':y='ih/2-(ih/zoom/2)+ih*0.05*(random(1)-0.5)'`,
         'mov-jitter-x': `${zp}:z=1.05:x='iw/2-(iw/zoom/2)+iw*0.02*sin(time*20)'${center}`,
         'mov-walk': `${zp}:z=1.1:x='iw/2-(iw/zoom/2)+iw*0.02*sin(time)':y='ih/2-(ih/zoom/2)+ih*0.015*abs(sin(time*2))'`,
-        
         'mov-glitch-snap': `${zp}:z='if(lt(mod(time,1.0),0.1), 1.3, 1.0)':x='iw/2-(iw/zoom/2)+if(lt(mod(time,1.0),0.1), iw*0.1, 0)'${center},noise=alls=20:allf=t`,
         'mov-glitch-skid': `${zp}:z=1.0:x='iw/2-(iw/zoom/2)+if(lt(mod(time,0.5),0.1), iw*0.2, 0)'${center}`,
         'mov-shake-violent': `${zp}:z=1.2:x='iw/2-(iw/zoom/2)+iw*0.1*(random(1)-0.5)':y='ih/2-(ih/zoom/2)+ih*0.1*(random(1)-0.5)'`,
         'mov-rgb-shift-move': `rgbashift=rh=20:bv=20,${zp}:z=1.05${center}`,
         'mov-vibrate': `${zp}:z=1.02:x='iw/2-(iw/zoom/2)+iw*0.01*sin(time*50)':y='ih/2-(ih/zoom/2)+ih*0.01*cos(time*50)'`,
-        
-        // FOCUS & BLUR FIXES (Using Safe Syntax)
-        'mov-blur-in': `boxblur=luma_radius=20:luma_power=2:${enableBetween(0, d*0.2)},${zp}:z=1${center}`,
-        'mov-blur-out': `boxblur=luma_radius=20:luma_power=2:${enableBetween(d*0.8, d)},${zp}:z=1${center}`,
-        'mov-blur-pulse': `boxblur=luma_radius=10:luma_power=2:enable=lt(mod(t\\,1.0)\\,0.3),${zp}:z=1${center}`,
-        'mov-tilt-shift': `gblur=sigma=2:steps=1,eq=saturation=1.3:contrast=1.1,${zp}:z=1.1${center}`,
-
+        'mov-blur-in': `gblur=sigma='20*max(0,1-${rNorm})':steps=2,${zp}:z=1${center}`,
+        'mov-blur-out': `gblur=sigma='min(20,20*${rNorm})':steps=2,${zp}:z=1${center}`,
+        'mov-blur-pulse': `gblur=sigma='10*abs(sin(t*2))':steps=1,${zp}:z=1${center}`,
+        'mov-tilt-shift': `eq=saturation=1.4:contrast=1.1,${zp}:z=1.1${center}`,
         'mov-rubber-band': `${zp}:z='1.0+0.3*abs(sin(time*2))'${center}`,
         'mov-jelly-wobble': `${zp}:z='1.0+0.1*sin(time)':x='iw/2-(iw/zoom/2)+iw*0.03*sin(time*2)':y='ih/2-(ih/zoom/2)+ih*0.03*cos(time*2)'`,
         'mov-pop-up': `${zp}:z='min(1.0 + ${zNorm}*5, 1.0)'${center}`,
@@ -199,8 +159,8 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
     };
 
     const selected = moves[moveId] || moves['kenburns'];
-    const pre = `scale=${Math.ceil(targetW*scaleFactor)}:${Math.ceil(targetH*scaleFactor)}:force_original_aspect_ratio=increase,crop=${Math.ceil(targetW*scaleFactor)}:${Math.ceil(targetH*scaleFactor)},setsar=1`;
-    const post = `scale=${targetW}:${targetH}:flags=lanczos,pad=ceil(iw/2)*2:ceil(ih/2)*2,fps=24,format=yuv420p`;
+    const pre = `scale=${Math.ceil(w*scaleFactor)}:${Math.ceil(h*scaleFactor)}:force_original_aspect_ratio=increase,crop=${Math.ceil(w*scaleFactor)}:${Math.ceil(h*scaleFactor)},setsar=1`;
+    const post = `scale=${w}:${h}:flags=lanczos,pad=ceil(iw/2)*2:ceil(ih/2)*2,fps=${fps},format=yuv420p`;
     return `${pre},${selected},${post}`;
 }
 
@@ -217,11 +177,9 @@ function getTransitionXfade(t) {
 }
 
 const getVideoArgs = () => ['-c:v','libx264','-preset','ultrafast','-pix_fmt','yuv420p','-movflags','+faststart','-r','24'];
-const getAudioArgs = () => ['-c:a','aac','-b:a','192k','-ar','44100','-ac','2'];
+const getAudioArgs = () => ['-c:a','aac','-b:a','192k','-ar','44100','-ac','2', '-strict', 'experimental'];
 
-// ==============================
-//  FRONTEND BUILD
-// ==============================
+// ... FRONTEND BUILD & SERVER CONFIG ...
 async function buildFrontend() {
     try {
         const copySafe = (src, dest) => {
@@ -248,7 +206,7 @@ async function buildFrontend() {
 await buildFrontend();
 
 // ==============================
-//  SERVER CONFIG
+//  SERVER ROUTES & ENGINE
 // ==============================
 app.use(cors());
 app.use(express.json({limit:'900mb'}));
@@ -263,15 +221,12 @@ const storage = multer.diskStorage({
 const uploadAny = multer({storage}).any();
 const jobs = {};
 
-// ==============================
-//  RENDER ENGINE
-// ==============================
 async function renderVideoProject(project, jobId) {
     const sessionDir = path.join(OUTPUT_DIR, `job_${jobId}`);
     if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
 
     if (!project.clips || project.clips.length === 0) {
-        throw new Error("Nenhum clipe para renderizar. Verifique se as imagens/vídeos foram processados corretamente.");
+        throw new Error("Nenhum clipe para renderizar.");
     }
 
     const tempClips = [];
@@ -294,9 +249,12 @@ async function renderVideoProject(project, jobId) {
         const args = ["-y"];
         const isVideo = await isVideoFile(inputPath);
 
-        // ALWAYS loop input. For images it's required. For videos, it loops if clip duration > file duration.
-        // If clip duration <= file duration, -t cuts it.
-        args.push("-stream_loop", "-1", "-i", inputPath);
+        // --- CORREÇÃO PARA IMAGEM ---
+        if (isVideo) {
+            args.push("-stream_loop", "-1", "-i", inputPath);
+        } else {
+            args.push("-loop", "1", "-i", inputPath);
+        }
 
         let hasExternalAudio = false;
         let hasInternalAudio = false;
@@ -310,13 +268,14 @@ async function renderVideoProject(project, jobId) {
         }
         if (!hasExternalAudio && isVideo) hasInternalAudio = await fileHasAudio(inputPath);
 
-        // Apply movement filter to ALL clips (images AND videos)
         const movementFilter = getMovementFilter(clip.movement || "kenburns", duration, targetW, targetH);
         let filterComplex = `[0:v]${movementFilter}[v_out];`;
         
-        if (hasExternalAudio) filterComplex += `[1:a]apad,atrim=0:${duration},aformat=sample_rates=44100:channel_layouts=stereo[a_out]`;
-        else if (hasInternalAudio) filterComplex += `[0:a]apad,atrim=0:${duration},aformat=sample_rates=44100:channel_layouts=stereo[a_out]`;
-        else filterComplex += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration},aformat=sample_rates=44100:channel_layouts=stereo[a_out]`;
+        const audioFmt = "aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp";
+        
+        if (hasExternalAudio) filterComplex += `[1:a]apad,atrim=0:${duration},${audioFmt}[a_out]`;
+        else if (hasInternalAudio) filterComplex += `[0:a]apad,atrim=0:${duration},${audioFmt}[a_out]`;
+        else filterComplex += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration},${audioFmt}[a_out]`;
 
         args.push("-filter_complex", filterComplex, "-map", "[v_out]", "-map", "[a_out]", "-t", duration.toString(), ...getVideoArgs(), ...getAudioArgs(), outFile);
 
@@ -340,25 +299,34 @@ async function renderVideoProject(project, jobId) {
     } else {
         const inputArgs = [];
         tempClips.forEach(path => inputArgs.push("-i", path));
+        
+        const minDuration = Math.min(...durations);
+        let trDur = project.transitionDuration || 1.0;
+        if (trDur * 2 > minDuration) {
+            trDur = minDuration / 2.2;
+        }
+        
         let filterGraph = "";
         let prevLabelV = "[0:v]";
         let prevLabelA = "[0:a]";
         let outIndex = 0;
-        const trDur = project.transitionDuration || 1.0;
         let timeCursor = durations[0];
 
         for (let i = 1; i < tempClips.length; i++) {
-            const offset = timeCursor - trDur;
+            const offset = (timeCursor - trDur).toFixed(3); 
             const outLabelV = `[v${outIndex + 1}]`;
             const outLabelA = `[a${outIndex + 1}]`;
+            
             filterGraph += `${prevLabelV}[${i}:v]xfade=transition=${trType}:duration=${trDur}:offset=${offset}${outLabelV};`;
             filterGraph += `${prevLabelA}[${i}:a]acrossfade=d=${trDur}:c1=tri:c2=tri[a_tmp${i}];`;
-            filterGraph += `[a_tmp${i}]aformat=sample_rates=44100:channel_layouts=stereo${outLabelA};`;
+            filterGraph += `[a_tmp${i}]aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp${outLabelA};`;
+            
             prevLabelV = outLabelV;
             prevLabelA = outLabelA;
             outIndex++;
             timeCursor += (durations[i] - trDur);
         }
+        
         await runFFmpeg(["-y", ...inputArgs, "-filter_complex", filterGraph, "-map", prevLabelV, "-map", prevLabelA, ...getVideoArgs(), ...getAudioArgs(), concatOut]);
         jobs[jobId].progress = 70;
     }
@@ -367,9 +335,8 @@ async function renderVideoProject(project, jobId) {
     let finalOutput = path.join(OUTPUT_DIR, `video_${jobId}.mp4`);
 
     if (bgm && fs.existsSync(bgm)) {
-        const duration = durations.reduce((a,b)=>a+b, 0);
         const mixGraph = `[1:a]aloop=loop=-1:size=2e+09,volume=${project.audio.bgmVolume ?? 0.2}[bgm];[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=0[a_final]`;
-        await runFFmpeg(["-y", "-i", concatOut, "-i", bgm, "-filter_complex", mixGraph, "-map", "0:v", "-map", "[a_final]", "-t", duration.toString(), ...getVideoArgs(), ...getAudioArgs(), finalOutput]);
+        await runFFmpeg(["-y", "-i", concatOut, "-i", bgm, "-filter_complex", mixGraph, "-map", "0:v", "-map", "[a_final]", ...getVideoArgs(), ...getAudioArgs(), finalOutput]);
     } else {
         fs.copyFileSync(concatOut, finalOutput);
     }
@@ -390,17 +357,11 @@ function runFFmpeg(args) {
     });
 }
 
-// ==============================
-//      ROUTES
-// ==============================
-
-// Main Render Endpoint with JSON/Multipart separation
 app.post("/api/render/start", async (req, res) => {
     const contentType = req.headers['content-type'] || '';
     const jobId = Date.now().toString();
     jobs[jobId] = { progress: 1, status: "processing" };
 
-    // 1. JSON Mode (Magic Workflow, no file upload)
     if (contentType.includes('application/json')) {
         try {
             const scenes = req.body.scenes;
@@ -424,9 +385,13 @@ app.post("/api/render/start", async (req, res) => {
             for (let i = 0; i < scenes.length; i++) {
                 const s = scenes[i];
                 let visualFile = null;
-                // Save visual content (Video or Image)
-                if (s.videoUrl) visualFile = await saveBase64OrUrl(s.videoUrl, `scene_${i}_vid`, 'mp4');
-                else if (s.imageUrl) visualFile = await saveBase64OrUrl(s.imageUrl, `scene_${i}_img`, 'png');
+                
+                // Mapeia corretamente campos vindo do front
+                const vUrl = s.videoUrl || s.imageUrl || s.visualUrl;
+                const isVideo = (s.mediaType === 'video' || (vUrl && vUrl.includes('.mp4')) || (vUrl && vUrl.startsWith('data:video/mp4')));
+
+                if (isVideo) visualFile = await saveBase64OrUrl(vUrl, `scene_${i}_vid`, 'mp4');
+                else visualFile = await saveBase64OrUrl(vUrl, `scene_${i}_img`, 'png');
 
                 let audioFile = null;
                 if (s.audioUrl) audioFile = await saveBase64OrUrl(s.audioUrl, `scene_${i}_audio`, 'wav');
@@ -438,8 +403,6 @@ app.post("/api/render/start", async (req, res) => {
                         duration: parseFloat(s.duration || 5),
                         movement: s.effect || config.movement || 'kenburns'
                     });
-                } else {
-                    console.warn(`[Server] Scene ${i} ignored: No visual file saved.`);
                 }
             }
 
@@ -449,27 +412,22 @@ app.post("/api/render/start", async (req, res) => {
                     jobs[jobId].downloadUrl = `/outputs/${path.basename(outputPath)}`;
                 })
                 .catch(err => {
-                    console.error("Render error (JSON):", err);
+                    console.error("Render error:", err);
                     jobs[jobId].status = "failed";
                     jobs[jobId].error = err.toString();
                 });
 
             return res.json({ jobId });
-        } catch (e) {
-            return res.status(500).json({ error: e.message });
-        }
-    } 
-    // 2. Multipart Mode (Manual/Turbo Uploads)
-    else {
+        } catch (e) { return res.status(500).json({ error: e.message }); }
+    } else {
+        // Fluxo Multipart Upload (Inalterado)
         uploadAny(req, res, async (err) => {
             if (err) return res.status(500).json({ error: "Upload failed: " + err.message });
-
             try {
                 let config = {};
                 if (req.body.config) {
                     try { config = typeof req.body.config === 'string' ? JSON.parse(req.body.config) : req.body.config; } catch(e) {}
                 }
-
                 const project = {
                     clips: [],
                     audio: { bgm: null, bgmVolume: config.musicVolume || 0.2, sfxVolume: config.sfxVolume || 0.5 },
@@ -477,12 +435,10 @@ app.post("/api/render/start", async (req, res) => {
                     transitionDuration: 1.0,
                     aspectRatio: config.aspectRatio || '16:9'
                 };
-
                 const files = req.files || [];
                 const visuals = files.filter(f => f.fieldname === 'visualFiles');
                 const audios = files.filter(f => f.fieldname === 'audioFiles');
                 const extras = files.filter(f => f.fieldname === 'additionalFiles');
-
                 const bgmFile = extras.find(f => f.originalname.includes('background_music'));
                 if (bgmFile) project.audio.bgm = bgmFile.filename;
 
@@ -490,7 +446,6 @@ app.post("/api/render/start", async (req, res) => {
                     const vFile = visuals[i];
                     const aFile = audios[i]; 
                     const meta = config.sceneData ? config.sceneData[i] : {};
-
                     project.clips.push({
                         file: vFile.filename,
                         audio: aFile ? aFile.filename : null,
@@ -498,10 +453,7 @@ app.post("/api/render/start", async (req, res) => {
                         movement: config.movement || 'kenburns'
                     });
                 }
-
-                if (project.clips.length === 0) {
-                    return res.status(400).json({ error: "No clips provided" });
-                }
+                if (project.clips.length === 0) return res.status(400).json({ error: "No clips" });
 
                 renderVideoProject(project, jobId)
                     .then(outputPath => {
@@ -513,96 +465,22 @@ app.post("/api/render/start", async (req, res) => {
                         jobs[jobId].status = "failed";
                         jobs[jobId].error = err.toString();
                     });
-
                 res.json({ jobId });
-
-            } catch (err) {
-                console.error("API render error:", err);
-                res.status(500).json({ error: "Erro ao iniciar renderização" });
-            }
+            } catch (err) { res.status(500).json({ error: "Start render error" }); }
         });
     }
-});
-
-app.post("/api/upload", (req, res) => {
-    uploadAny(req, res, (err) => {
-        if (err) return res.status(500).json({ error: "Falha no upload", details: err });
-        res.json({ files: req.files || [] });
-    });
-});
-
-app.post("/api/process/start/merge", async (req, res) => {
-    uploadAny(req, res, async (err) => {
-        if (err) return res.status(500).json({ error: "Upload failed" });
-        try {
-            const jobId = Date.now().toString();
-            jobs[jobId] = { progress: 1, status: "processing" };
-            
-            const files = req.files || [];
-            if (files.length < 2) throw new Error("Requires video + audio");
-            
-            const videoFile = files.find(f => f.mimetype.startsWith('video')) || files[0];
-            const audioFile = files.find(f => f.mimetype.startsWith('audio')) || files[1];
-            
-            const vPath = path.join(UPLOAD_DIR, videoFile.filename);
-            const aPath = path.join(UPLOAD_DIR, audioFile.filename);
-            const outPath = path.join(OUTPUT_DIR, `merged_${jobId}.mp4`);
-            
-            const args = ["-y", "-i", vPath, "-i", aPath, "-c:v", "copy", "-c:a", "aac", "-map", "0:v:0", "-map", "1:a:0", "-shortest", outPath];
-            if (videoFile.mimetype.startsWith('image')) {
-                 const dur = await getExactDuration(aPath) || 10;
-                 args.splice(3, 2); args.splice(1, 0, "-loop", "1"); args.push("-t", dur.toString(), ...getVideoArgs());
-            }
-
-            runFFmpeg(args).then(() => {
-                jobs[jobId].status = "completed"; jobs[jobId].downloadUrl = `/outputs/${path.basename(outPath)}`; jobs[jobId].progress = 100;
-            }).catch(e => { jobs[jobId].status = "failed"; jobs[jobId].error = e.toString(); });
-
-            res.json({ jobId });
-        } catch (e) { res.status(500).json({ error: e.message }); }
-    });
-});
-
-app.post("/api/process/start/:action", async (req, res) => {
-    uploadAny(req, res, async (err) => {
-        if (err) return res.status(500).json({ error: "Upload failed" });
-        const jobId = Date.now().toString();
-        const files = req.files || [];
-        if (files.length > 0) {
-            jobs[jobId] = { status: "completed", progress: 100, downloadUrl: `/uploads/${files[0].filename}` };
-        } else {
-            jobs[jobId] = { status: "failed", error: "No files provided" };
-        }
-        res.json({ jobId });
-    });
-});
-
-app.post("/api/image/start/:action", async (req, res) => {
-    uploadAny(req, res, async (err) => {
-        if (err) return res.status(500).json({ error: "Upload failed" });
-        const jobId = Date.now().toString();
-        const files = req.files || [];
-        if (files.length > 0) {
-            jobs[jobId] = { status: "completed", progress: 100, downloadUrl: `/uploads/${files[0].filename}` };
-        } else {
-            jobs[jobId] = { status: "failed", error: "No files provided" };
-        }
-        res.json({ jobId });
-    });
 });
 
 app.get("/api/process/status/:id", (req, res) => {
     const job = jobs[req.params.id];
     if (!job) return res.status(404).json({ status: "not_found" });
+    // Impedir cache de status
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
     res.json(job);
 });
 
-app.get("/api/download/:file", (req, res) => {
-    const filePath = path.join(OUTPUT_DIR, req.params.file);
-    if (!fs.existsSync(filePath)) return res.status(404).send("Arquivo não encontrado.");
-    res.download(filePath);
-});
-
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Turbo Server Running on Port ${PORT}`);
+    console.log(`Server Running on Port ${PORT}`);
 });
