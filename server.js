@@ -501,6 +501,60 @@ app.post("/api/render/start", async (req, res) => {
     }
 });
 
+// ... PROXY ROUTES ...
+// Rota de proxy genérica para chamadas de API externas
+app.post("/api/proxy", async (req, res) => {
+    const { url, method, headers, body } = req.body;
+    try {
+        console.log(`[Proxy] Requesting: ${url}`);
+        const fetchOptions = {
+            method: method || 'GET',
+            headers: headers || { 'Content-Type': 'application/json' },
+        };
+        if (body && (method === 'POST' || method === 'PUT')) {
+            fetchOptions.body = typeof body === 'string' ? body : JSON.stringify(body);
+        }
+        const response = await fetch(url, fetchOptions);
+        const contentType = response.headers.get("content-type");
+        
+        let responseData;
+        if (contentType && contentType.includes("application/json")) {
+            responseData = await response.json();
+        } else {
+            responseData = await response.text();
+        }
+        
+        res.status(response.status).json(responseData);
+    } catch (e) {
+        console.error(`[Proxy Error] ${e.message}`);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Rota específica para o gerador Runway
+app.post("/api/runway/generate", async (req, res) => {
+    const { prompt, aspectRatio, apiKey } = req.body;
+    try {
+        const response = await fetch('https://api.runwayml.com/v1/image_to_video', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${apiKey}`,
+                'Content-Type': 'application/json',
+                'X-Runway-Version': '2024-05-01'
+            },
+            body: JSON.stringify({
+                promptText: prompt,
+                aspectRatio: aspectRatio || '9:16',
+                model: 'gen3'
+            })
+        });
+        const data = await response.json();
+        res.status(response.status).json(data);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // ... OTHER ROUTES (upload, merge, etc) ...
 app.post("/api/upload", (req, res) => {
     uploadAny(req, res, (err) => {
