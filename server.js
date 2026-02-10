@@ -1,4 +1,3 @@
-
 import express from 'express';
 import cors from 'cors';
 import multer from 'multer';
@@ -283,6 +282,8 @@ async function renderVideoProject(project, jobId) {
             if (fs.existsSync(aPath)) {
                 args.push("-i", aPath);
                 hasExternalAudio = true;
+            } else {
+                console.warn(`Audio file missing for scene ${i+1}: ${clip.audio}`);
             }
         }
         if (!hasExternalAudio && isVideo) hasInternalAudio = await fileHasAudio(inputPath);
@@ -297,7 +298,21 @@ async function renderVideoProject(project, jobId) {
 
         args.push("-filter_complex", filterComplex, "-map", "[v_out]", "-map", "[a_out]", "-t", duration.toString(), ...getVideoArgs(), ...getAudioArgs(), outFile);
 
-        await runFFmpeg(args).catch(e => { console.error(`Failed clip ${i}:`, e); throw e; });
+        // DETAILED ERROR CATCHING FOR INDIVIDUAL CLIPS
+        try {
+            await runFFmpeg(args);
+            
+            // Verify output integrity immediately
+            if (!fs.existsSync(outFile) || fs.statSync(outFile).size < 1000) {
+                throw new Error("Arquivo de saída vazio ou muito pequeno.");
+            }
+        } catch (e) {
+            const errorMsg = `ERRO FATAL NA CENA ${i + 1}: Falha ao processar este clipe. \nDetalhes: ${e}`;
+            console.error(errorMsg);
+            // Throwing specific error to interrupt the process and inform user exactly where it failed
+            throw new Error(errorMsg);
+        }
+
         jobs[jobId].progress = Math.floor((i / project.clips.length) * 45);
     }
 
