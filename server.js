@@ -16,11 +16,9 @@ const app = express();
 const PORT = process.env.PORT || 8080;
 const GEMINI_KEY = process.env.GEMINI_API_KEY || process.env.API_KEY || "";
 
-// ffprobe-static exporta um objeto { path: "..." }, enquanto ffmpeg-static exporta a string direta.
 const FFMPEG_BIN = typeof ffmpegPath === 'string' ? ffmpegPath : ffmpegPath.path;
 const FFPROBE_BIN = typeof ffprobePath === 'string' ? ffprobePath : ffprobePath.path;
 
-// ... DIR SETUP ...
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
 const OUTPUT_DIR = path.join(__dirname, 'outputs');
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -32,7 +30,6 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
 
-// ... HELPERS ...
 async function fileHasAudio(file) {
     return new Promise(resolve => {
         execFile(FFPROBE_BIN, [
@@ -113,7 +110,6 @@ const saveBase64OrUrl = async (input, prefix, ext) => {
     return null;
 };
 
-// ... MOVEMENT ...
 function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 720) {
     const d = parseFloat(durationSec) || 5;
     const w = parseInt(targetW) || 1280;
@@ -147,7 +143,7 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
         'mov-3d-swing-l': `rotate=angle=(${PI}/8)*sin(t):fillcolor=black:ow=iw:oh=ih,${zp}:z=1.3${center}`,
         'mov-3d-flip-x': `${zp}:z='1.0+0.4*abs(sin(time*3))':x='iw/2-(iw/zoom/2)+(iw/4)*sin(time*5)'${center}`,
         'mov-3d-flip-y': `${zp}:z='1.0+0.4*abs(cos(time*3))':y='ih/2-(ih/zoom/2)+(ih/4)*cos(time*5)'${center}`,
-        'mov-zoom-wobble': `${zp}:z='1.1':x='iw/2-(iw/zoom/2)+iw*0.05*sin(time*2)':y='ih/2-(ih/zoom/2)+ih*0.05*cos(time*2)'`,
+        'mov-zoom-wobble': `${zp}:z='1.1':x='iw/2-(iw/zoom/2)+iw*0.05*sin(time*2)':y='ih/2-(iw/zoom/2)+ih*0.05*cos(time*2)'`,
         'mov-scale-pulse': `${zp}:z='1.0+0.2*sin(time*3)'${center}`,
         'mov-pan-slow-l': `${zp}:z=1.4:x='(iw/2-(iw/zoom/2))*(1+0.5*${zNorm})'${center}`,
         'mov-pan-slow-r': `${zp}:z=1.4:x='(iw/2-(iw/zoom/2))*(1-0.5*${zNorm})'${center}`,
@@ -195,10 +191,9 @@ function getTransitionXfade(t) {
     return map[t] || 'fade';
 }
 
-const getVideoArgs = () => ['-c:v','libx264','-preset','ultrafast','-pix_fmt','yuv420p','-movflags','+faststart','-r','24'];
-const getAudioArgs = () => ['-c:a','aac','-b:a','192k','-ar','44100','-ac','2', '-strict', 'experimental'];
+const getVideoArgs = () => ['-c:v','libx264','-preset','faster','-pix_fmt','yuv420p','-movflags','+faststart','-r','24', '-threads', '2'];
+const getAudioArgs = () => ['-c:a','aac','-b:a','192k','-ar','44100','-ac', '2', '-strict', 'experimental'];
 
-// ... FRONTEND BUILD & SERVER CONFIG ...
 async function buildFrontend() {
     try {
         const copySafe = (src, dest) => {
@@ -224,9 +219,6 @@ async function buildFrontend() {
 }
 await buildFrontend();
 
-// ==============================
-//  SERVER ROUTES & ENGINE
-// ==============================
 app.use(cors());
 app.use(express.json({limit:'900mb'}));
 app.use(express.urlencoded({extended:true, limit:'900mb'}));
@@ -254,6 +246,8 @@ async function renderVideoProject(project, jobId) {
     let targetH = 720;
     if (project.aspectRatio === '9:16') { targetW = 720; targetH = 1280; }
 
+    // Optimization: If many clips, we limit the complexity of transitions in one go or use chunks
+    // For now, limiting threads and using faster preset to avoid resource crash
     for (let i = 0; i < project.clips.length; i++) {
         const clip = project.clips[i];
         const inputPath = path.join(UPLOAD_DIR, clip.file);
@@ -282,8 +276,6 @@ async function renderVideoProject(project, jobId) {
             if (fs.existsSync(aPath)) {
                 args.push("-i", aPath);
                 hasExternalAudio = true;
-            } else {
-                console.warn(`Audio file missing for scene ${i+1}: ${clip.audio}`);
             }
         }
         if (!hasExternalAudio && isVideo) hasInternalAudio = await fileHasAudio(inputPath);
@@ -298,18 +290,13 @@ async function renderVideoProject(project, jobId) {
 
         args.push("-filter_complex", filterComplex, "-map", "[v_out]", "-map", "[a_out]", "-t", duration.toString(), ...getVideoArgs(), ...getAudioArgs(), outFile);
 
-        // DETAILED ERROR CATCHING FOR INDIVIDUAL CLIPS
         try {
             await runFFmpeg(args);
-            
-            // Verify output integrity immediately
             if (!fs.existsSync(outFile) || fs.statSync(outFile).size < 1000) {
                 throw new Error("Arquivo de saída vazio ou muito pequeno.");
             }
         } catch (e) {
-            const errorMsg = `ERRO FATAL NA CENA ${i + 1}: Falha ao processar este clipe. \nDetalhes: ${e}`;
-            console.error(errorMsg);
-            // Throwing specific error to interrupt the process and inform user exactly where it failed
+            const errorMsg = `ERRO NA CENA ${i + 1}: ${e}`;
             throw new Error(errorMsg);
         }
 
@@ -330,6 +317,7 @@ async function renderVideoProject(project, jobId) {
         catch (e) { await runFFmpeg(["-y", "-f", "concat", "-safe", "0", "-i", listPath, ...getVideoArgs(), ...getAudioArgs(), concatOut]); }
         jobs[jobId].progress = 70;
     } else {
+        // Multi-clip XFADE can be heavy on memory and threads
         const inputArgs = [];
         tempClips.forEach(path => inputArgs.push("-i", path));
         
@@ -380,7 +368,9 @@ async function renderVideoProject(project, jobId) {
 
 function runFFmpeg(args) {
     return new Promise((resolve, reject) => {
-        const ff = spawn(FFMPEG_BIN, args);
+        // Enforce thread limit across all ffmpeg calls to prevent OS resource exhaustion
+        const enforcedArgs = ['-threads', '2', ...args];
+        const ff = spawn(FFMPEG_BIN, enforcedArgs);
         let errData = "";
         ff.stderr.on('data', d => errData += d.toString());
         ff.on("close", code => {
@@ -390,7 +380,6 @@ function runFFmpeg(args) {
     });
 }
 
-// ... ROUTES ...
 app.post("/api/render/start", async (req, res) => {
     const contentType = req.headers['content-type'] || '';
     const jobId = Date.now().toString();
@@ -501,12 +490,9 @@ app.post("/api/render/start", async (req, res) => {
     }
 });
 
-// ... PROXY ROUTES ...
-// Rota de proxy genérica para chamadas de API externas
 app.post("/api/proxy", async (req, res) => {
     const { url, method, headers, body } = req.body;
     try {
-        console.log(`[Proxy] Requesting: ${url}`);
         const fetchOptions = {
             method: method || 'GET',
             headers: headers || { 'Content-Type': 'application/json' },
@@ -526,36 +512,10 @@ app.post("/api/proxy", async (req, res) => {
         
         res.status(response.status).json(responseData);
     } catch (e) {
-        console.error(`[Proxy Error] ${e.message}`);
         res.status(500).json({ error: e.message });
     }
 });
 
-// Rota específica para o gerador Runway
-app.post("/api/runway/generate", async (req, res) => {
-    const { prompt, aspectRatio, apiKey } = req.body;
-    try {
-        const response = await fetch('https://api.runwayml.com/v1/image_to_video', {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${apiKey}`,
-                'Content-Type': 'application/json',
-                'X-Runway-Version': '2024-05-01'
-            },
-            body: JSON.stringify({
-                promptText: prompt,
-                aspectRatio: aspectRatio || '9:16',
-                model: 'gen3'
-            })
-        });
-        const data = await response.json();
-        res.status(response.status).json(data);
-    } catch (e) {
-        res.status(500).json({ error: e.message });
-    }
-});
-
-// ... OTHER ROUTES (upload, merge, etc) ...
 app.post("/api/upload", (req, res) => {
     uploadAny(req, res, (err) => {
         if (err) return res.status(500).json({ error: "Upload failed" });
