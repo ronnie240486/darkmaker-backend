@@ -72,20 +72,6 @@ async function isVideoFile(file) {
     });
 }
 
-function getExactDuration(filePath) {
-    return new Promise(resolve => {
-        execFile(FFPROBE_BIN, [
-            '-v','error',
-            '-show_entries','format=duration',
-            '-of','default=noprint_wrappers=1:nokey=1',
-            filePath
-        ], (err, stdout) => {
-            const d = parseFloat(stdout);
-            resolve(isNaN(d) ? 0 : d);
-        });
-    });
-}
-
 const saveBase64OrUrl = async (input, prefix, ext) => {
     if (!input) return null;
     const filename = `${prefix}_${Date.now()}_${Math.random().toString(36).substr(2, 5)}.${ext}`;
@@ -191,8 +177,8 @@ function getTransitionXfade(t) {
     return map[t] || 'fade';
 }
 
-const getVideoArgs = () => ['-c:v','libx264','-preset','faster','-pix_fmt','yuv420p','-movflags','+faststart','-r','24', '-threads', '2'];
-const getAudioArgs = () => ['-c:a','aac','-b:a','192k','-ar','44100','-ac', '2', '-strict', 'experimental'];
+const getVideoArgs = () => ['-c:v','libx264','-preset','faster','-pix_fmt','yuv420p','-movflags','+faststart','-r','24', '-threads', '1'];
+const getAudioArgs = () => ['-c:a','aac','-b:a','128k','-ar','44100','-ac', '2', '-strict', 'experimental'];
 
 async function buildFrontend() {
     try {
@@ -246,13 +232,11 @@ async function renderVideoProject(project, jobId) {
     let targetH = 720;
     if (project.aspectRatio === '9:16') { targetW = 720; targetH = 1280; }
 
-    // Optimization: If many clips, we limit the complexity of transitions in one go or use chunks
-    // For now, limiting threads and using faster preset to avoid resource crash
     for (let i = 0; i < project.clips.length; i++) {
         const clip = project.clips[i];
         const inputPath = path.join(UPLOAD_DIR, clip.file);
         
-        let duration = clip.duration || 5;
+        let duration = parseFloat(clip.duration) || 5;
         if (duration <= 0) duration = 5;
         durations.push(duration);
 
@@ -292,12 +276,8 @@ async function renderVideoProject(project, jobId) {
 
         try {
             await runFFmpeg(args);
-            if (!fs.existsSync(outFile) || fs.statSync(outFile).size < 1000) {
-                throw new Error("Arquivo de saída vazio ou muito pequeno.");
-            }
         } catch (e) {
-            const errorMsg = `ERRO NA CENA ${i + 1}: ${e}`;
-            throw new Error(errorMsg);
+            throw new Error(`Erro na Cena ${i+1}: ${e}`);
         }
 
         jobs[jobId].progress = Math.floor((i / project.clips.length) * 45);
@@ -317,15 +297,12 @@ async function renderVideoProject(project, jobId) {
         catch (e) { await runFFmpeg(["-y", "-f", "concat", "-safe", "0", "-i", listPath, ...getVideoArgs(), ...getAudioArgs(), concatOut]); }
         jobs[jobId].progress = 70;
     } else {
-        // Multi-clip XFADE can be heavy on memory and threads
         const inputArgs = [];
         tempClips.forEach(path => inputArgs.push("-i", path));
         
         const minDuration = Math.min(...durations);
-        let trDur = project.transitionDuration || 1.0;
-        if (trDur * 2 > minDuration) {
-            trDur = minDuration / 2.2;
-        }
+        let trDur = parseFloat(project.transitionDuration) || 1.0;
+        if (trDur * 2 > minDuration) trDur = minDuration / 2.2;
         
         let filterGraph = "";
         let prevLabelV = "[0:v]";
@@ -356,7 +333,7 @@ async function renderVideoProject(project, jobId) {
     let finalOutput = path.join(OUTPUT_DIR, `video_${jobId}.mp4`);
 
     if (bgm && fs.existsSync(bgm)) {
-        const mixGraph = `[1:a]aloop=loop=-1:size=2e+09,volume=${project.audio.bgmVolume ?? 0.2}[bgm];[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=0[a_final]`;
+        const mixGraph = `[1:a]aloop=loop=-1:size=2e+09,volume=${project.audio.bgmVolume ?? 0.2}[bgm];[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=0,aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp[a_final]`;
         await runFFmpeg(["-y", "-i", concatOut, "-i", bgm, "-filter_complex", mixGraph, "-map", "0:v", "-map", "[a_final]", ...getVideoArgs(), ...getAudioArgs(), finalOutput]);
     } else {
         fs.copyFileSync(concatOut, finalOutput);
@@ -368,14 +345,20 @@ async function renderVideoProject(project, jobId) {
 
 function runFFmpeg(args) {
     return new Promise((resolve, reject) => {
-        // Enforce thread limit across all ffmpeg calls to prevent OS resource exhaustion
-        const enforcedArgs = ['-threads', '2', ...args];
+        // Force threads 1 for single-task stability in constrained environments
+        const enforcedArgs = ['-threads', '1', ...args];
         const ff = spawn(FFMPEG_BIN, enforcedArgs);
         let errData = "";
-        ff.stderr.on('data', d => errData += d.toString());
+        ff.stderr.on('data', d => {
+            const str = d.toString();
+            errData += str;
+        });
         ff.on("close", code => {
             if (code === 0) resolve();
-            else reject(`FFmpeg error ${code}: ${errData.slice(-300)}`);
+            else {
+                console.error("FFMPEG CRASH:", errData);
+                reject(`FFmpeg error ${code}: ${errData.slice(-400)}`);
+            }
         });
     });
 }
