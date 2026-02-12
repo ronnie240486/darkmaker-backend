@@ -1,3 +1,4 @@
+
 import express from 'express';
 import cors from 'cors';
 import multer from 'multer';
@@ -16,11 +17,9 @@ const app = express();
 const PORT = process.env.PORT || 8080;
 const GEMINI_KEY = process.env.GEMINI_API_KEY || process.env.API_KEY || "";
 
-// ffprobe-static exporta um objeto { path: "..." }, enquanto ffmpeg-static exporta a string direta.
 const FFMPEG_BIN = typeof ffmpegPath === 'string' ? ffmpegPath : ffmpegPath.path;
 const FFPROBE_BIN = typeof ffprobePath === 'string' ? ffprobePath : ffprobePath.path;
 
-// ... DIR SETUP ...
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
 const OUTPUT_DIR = path.join(__dirname, 'outputs');
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -32,7 +31,6 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
 
-// ... HELPERS ...
 async function fileHasAudio(file) {
     return new Promise(resolve => {
         execFile(FFPROBE_BIN, [
@@ -113,7 +111,6 @@ const saveBase64OrUrl = async (input, prefix, ext) => {
     return null;
 };
 
-// ... MOVEMENT ...
 function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 720) {
     const d = parseFloat(durationSec) || 5;
     const w = parseInt(targetW) || 1280;
@@ -198,7 +195,6 @@ function getTransitionXfade(t) {
 const getVideoArgs = () => ['-c:v','libx264','-preset','ultrafast','-pix_fmt','yuv420p','-movflags','+faststart','-r','24'];
 const getAudioArgs = () => ['-c:a','aac','-b:a','192k','-ar','44100','-ac','2', '-strict', 'experimental'];
 
-// ... FRONTEND BUILD & SERVER CONFIG ...
 async function buildFrontend() {
     try {
         const copySafe = (src, dest) => {
@@ -224,9 +220,6 @@ async function buildFrontend() {
 }
 await buildFrontend();
 
-// ==============================
-//  SERVER ROUTES & ENGINE
-// ==============================
 app.use(cors());
 app.use(express.json({limit:'900mb'}));
 app.use(express.urlencoded({extended:true, limit:'900mb'}));
@@ -274,43 +267,71 @@ async function renderVideoProject(project, jobId) {
             args.push("-loop", "1", "-framerate", "24", "-i", inputPath);
         }
 
-        let hasExternalAudio = false;
-        let hasInternalAudio = false;
+        let inputCount = 1;
+        let audioFilterParts = [];
+        const audioFmt = "aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp";
 
+        // Check internal audio in video
+        const hasInternalAudio = !clip.audio && !clip.sfx && isVideo && await fileHasAudio(inputPath);
+        if (hasInternalAudio) {
+             audioFilterParts.push(`[0:a]volume=1.0[int_a]`);
+        }
+
+        // Add Narration (Input 1 if exists)
         if (clip.audio) {
             const aPath = path.join(UPLOAD_DIR, clip.audio);
             if (fs.existsSync(aPath)) {
                 args.push("-i", aPath);
-                hasExternalAudio = true;
-            } else {
-                console.warn(`Audio file missing for scene ${i+1}: ${clip.audio}`);
+                audioFilterParts.push(`[${inputCount}:a]volume=1.0[narr]`);
+                inputCount++;
             }
         }
-        if (!hasExternalAudio && isVideo) hasInternalAudio = await fileHasAudio(inputPath);
+
+        // Add SFX (Input 2 or 1 if exists)
+        if (clip.sfx) {
+            const sfxPath = path.join(UPLOAD_DIR, clip.sfx);
+            if (fs.existsSync(sfxPath)) {
+                args.push("-i", sfxPath);
+                // Apply Scene SFX Volume (using the global config sfxVolume if not specific to scene, 
+                // but currently passed as global project config.audio.sfxVolume)
+                const sfxVol = project.audio.sfxVolume !== undefined ? project.audio.sfxVolume : 0.5;
+                audioFilterParts.push(`[${inputCount}:a]volume=${sfxVol}[sfx]`);
+                inputCount++;
+            }
+        }
 
         const movementFilter = getMovementFilter(clip.movement || "kenburns", duration, targetW, targetH);
         let filterComplex = `[0:v]${movementFilter}[v_out];`;
-        const audioFmt = "aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp";
-        
-        if (hasExternalAudio) filterComplex += `[1:a]apad,atrim=0:${duration},${audioFmt}[a_out]`;
-        else if (hasInternalAudio) filterComplex += `[0:a]apad,atrim=0:${duration},${audioFmt}[a_out]`;
-        else filterComplex += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration},${audioFmt}[a_out]`;
+
+        // MIX AUDIO STREAMS
+        if (audioFilterParts.length > 0) {
+            filterComplex += audioFilterParts.join(';') + ';';
+            
+            const mixInputs = [];
+            if (hasInternalAudio) mixInputs.push('[int_a]');
+            if (clip.audio) mixInputs.push('[narr]');
+            if (clip.sfx) mixInputs.push('[sfx]');
+            
+            if (mixInputs.length > 1) {
+                filterComplex += `${mixInputs.join('')}amix=inputs=${mixInputs.length}:duration=longest[a_mixed];[a_mixed]apad,atrim=0:${duration},${audioFmt}[a_out]`;
+            } else {
+                // Just one source
+                filterComplex += `${mixInputs[0]}apad,atrim=0:${duration},${audioFmt}[a_out]`;
+            }
+        } else {
+            // Silence
+            filterComplex += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration},${audioFmt}[a_out]`;
+        }
 
         args.push("-filter_complex", filterComplex, "-map", "[v_out]", "-map", "[a_out]", "-t", duration.toString(), ...getVideoArgs(), ...getAudioArgs(), outFile);
 
-        // DETAILED ERROR CATCHING FOR INDIVIDUAL CLIPS
         try {
             await runFFmpeg(args);
-            
-            // Verify output integrity immediately
             if (!fs.existsSync(outFile) || fs.statSync(outFile).size < 1000) {
                 throw new Error("Arquivo de saída vazio ou muito pequeno.");
             }
         } catch (e) {
-            const errorMsg = `ERRO FATAL NA CENA ${i + 1}: Falha ao processar este clipe. \nDetalhes: ${e}`;
-            console.error(errorMsg);
-            // Throwing specific error to interrupt the process and inform user exactly where it failed
-            throw new Error(errorMsg);
+            throw new Error(`ERRO FATAL NA CENA ${i + 1}: ${e}`);
         }
 
         jobs[jobId].progress = Math.floor((i / project.clips.length) * 45);
@@ -368,7 +389,9 @@ async function renderVideoProject(project, jobId) {
     let finalOutput = path.join(OUTPUT_DIR, `video_${jobId}.mp4`);
 
     if (bgm && fs.existsSync(bgm)) {
-        const mixGraph = `[1:a]aloop=loop=-1:size=2e+09,volume=${project.audio.bgmVolume ?? 0.2}[bgm];[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=0[a_final]`;
+        // Ensure bgmVolume is properly used. Default to 0.2 if undefined.
+        const vol = project.audio.bgmVolume !== undefined ? project.audio.bgmVolume : 0.2;
+        const mixGraph = `[1:a]aloop=loop=-1:size=2e+09,volume=${vol}[bgm];[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=0[a_final]`;
         await runFFmpeg(["-y", "-i", concatOut, "-i", bgm, "-filter_complex", mixGraph, "-map", "0:v", "-map", "[a_final]", ...getVideoArgs(), ...getAudioArgs(), finalOutput]);
     } else {
         fs.copyFileSync(concatOut, finalOutput);
@@ -390,7 +413,6 @@ function runFFmpeg(args) {
     });
 }
 
-// ... ROUTES ...
 app.post("/api/render/start", async (req, res) => {
     const contentType = req.headers['content-type'] || '';
     const jobId = Date.now().toString();
@@ -408,7 +430,11 @@ app.post("/api/render/start", async (req, res) => {
 
             const project = {
                 clips: [],
-                audio: { bgm: null, bgmVolume: config.musicVolume || 0.2, sfxVolume: config.sfxVolume || 0.5 },
+                audio: { 
+                    bgm: null, 
+                    bgmVolume: config.musicVolume, 
+                    sfxVolume: config.sfxVolume 
+                },
                 transition: config.transition || 'cut', 
                 transitionDuration: 1.0,
                 aspectRatio: config.aspectRatio || '16:9'
@@ -425,10 +451,14 @@ app.post("/api/render/start", async (req, res) => {
                 let audioFile = null;
                 if (s.audioUrl) audioFile = await saveBase64OrUrl(s.audioUrl, `scene_${i}_audio`, 'wav');
 
+                let sfxFile = null;
+                if (s.sfxUrl) sfxFile = await saveBase64OrUrl(s.sfxUrl, `scene_${i}_sfx`, 'mp3');
+
                 if (visualFile) {
                     project.clips.push({
                         file: visualFile,
                         audio: audioFile,
+                        sfx: sfxFile,
                         duration: parseFloat(s.duration || 5),
                         movement: s.effect || config.movement || 'kenburns',
                         mediaType: s.mediaType 
@@ -459,7 +489,11 @@ app.post("/api/render/start", async (req, res) => {
                 }
                 const project = {
                     clips: [],
-                    audio: { bgm: null, bgmVolume: config.musicVolume || 0.2, sfxVolume: config.sfxVolume || 0.5 },
+                    audio: { 
+                        bgm: null, 
+                        bgmVolume: config.musicVolume, 
+                        sfxVolume: config.sfxVolume 
+                    },
                     transition: config.transition || 'cut', 
                     transitionDuration: 1.0,
                     aspectRatio: config.aspectRatio || '16:9'
@@ -501,8 +535,6 @@ app.post("/api/render/start", async (req, res) => {
     }
 });
 
-// ... PROXY ROUTES ...
-// Rota de proxy genérica para chamadas de API externas
 app.post("/api/proxy", async (req, res) => {
     const { url, method, headers, body } = req.body;
     try {
@@ -531,7 +563,6 @@ app.post("/api/proxy", async (req, res) => {
     }
 });
 
-// Rota específica para o gerador Runway
 app.post("/api/runway/generate", async (req, res) => {
     const { prompt, aspectRatio, apiKey } = req.body;
     try {
@@ -555,7 +586,6 @@ app.post("/api/runway/generate", async (req, res) => {
     }
 });
 
-// ... OTHER ROUTES (upload, merge, etc) ...
 app.post("/api/upload", (req, res) => {
     uploadAny(req, res, (err) => {
         if (err) return res.status(500).json({ error: "Upload failed" });
