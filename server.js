@@ -17,9 +17,11 @@ const app = express();
 const PORT = process.env.PORT || 8080;
 const GEMINI_KEY = process.env.GEMINI_API_KEY || process.env.API_KEY || "";
 
+// ffprobe-static exporta um objeto { path: "..." }, enquanto ffmpeg-static exporta a string direta.
 const FFMPEG_BIN = typeof ffmpegPath === 'string' ? ffmpegPath : ffmpegPath.path;
 const FFPROBE_BIN = typeof ffprobePath === 'string' ? ffprobePath : ffprobePath.path;
 
+// ... DIR SETUP ...
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
 const OUTPUT_DIR = path.join(__dirname, 'outputs');
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -31,9 +33,16 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
 
+// ... HELPERS ...
 async function fileHasAudio(file) {
     return new Promise(resolve => {
-        execFile(FFPROBE_BIN, ["-v","error","-select_streams","a","-show_entries","stream=codec_type","-of","csv=p=0", file], (err, stdout) => {
+        execFile(FFPROBE_BIN, [
+            "-v","error",
+            "-select_streams","a",
+            "-show_entries","stream=codec_type",
+            "-of","csv=p=0",
+            file
+        ], (err, stdout) => {
             resolve(stdout && stdout.toString().trim().length > 0);
         });
     });
@@ -41,10 +50,22 @@ async function fileHasAudio(file) {
 
 async function isVideoFile(file) {
     return new Promise(resolve => {
-        execFile(FFPROBE_BIN, ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_type", "-of", "csv=p=0", file], (err, stdout) => {
+        execFile(FFPROBE_BIN, [
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=codec_type",
+            "-of", "csv=p=0",
+            file
+        ], (err, stdout) => {
             const output = stdout ? stdout.toString().trim() : "";
             if (output.includes('video')) {
-                execFile(FFPROBE_BIN, ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=nb_frames", "-of", "csv=p=0", file], (err2, stdout2) => {
+                execFile(FFPROBE_BIN, [
+                    "-v", "error",
+                    "-select_streams", "v:0",
+                    "-show_entries", "stream=nb_frames",
+                    "-of", "csv=p=0",
+                    file
+                ], (err2, stdout2) => {
                     const frames = parseInt(stdout2);
                     resolve(!isNaN(frames) && frames > 1);
                 });
@@ -57,7 +78,12 @@ async function isVideoFile(file) {
 
 function getExactDuration(filePath) {
     return new Promise(resolve => {
-        execFile(FFPROBE_BIN, ['-v','error','-show_entries','format=duration','-of','default=noprint_wrappers=1:nokey=1', filePath], (err, stdout) => {
+        execFile(FFPROBE_BIN, [
+            '-v','error',
+            '-show_entries','format=duration',
+            '-of','default=noprint_wrappers=1:nokey=1',
+            filePath
+        ], (err, stdout) => {
             const d = parseFloat(stdout);
             resolve(isNaN(d) ? 0 : d);
         });
@@ -68,11 +94,13 @@ const saveBase64OrUrl = async (input, prefix, ext) => {
     if (!input) return null;
     const filename = `${prefix}_${Date.now()}_${Math.random().toString(36).substr(2, 5)}.${ext}`;
     const filepath = path.join(UPLOAD_DIR, filename);
+    
     try {
         if (input.startsWith('data:')) {
             const commaIndex = input.indexOf(',');
             if (commaIndex === -1) return null;
-            const buffer = Buffer.from(input.substring(commaIndex + 1), 'base64');
+            const base64Data = input.substring(commaIndex + 1);
+            const buffer = Buffer.from(base64Data, 'base64');
             fs.writeFileSync(filepath, buffer);
             return filename;
         } else if (input.startsWith('http')) {
@@ -86,15 +114,17 @@ const saveBase64OrUrl = async (input, prefix, ext) => {
     return null;
 };
 
-// ... MOVEMENT (Same as before) ...
+// ... MOVEMENT ...
 function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 720) {
     const d = parseFloat(durationSec) || 5;
     const w = parseInt(targetW) || 1280;
     const h = parseInt(targetH) || 720;
     const fps = 24;
+    
     const zNorm = `(time/${d})`; 
     const rNorm = `(t/${d})`;
     const PI = 3.14159; 
+
     const zp = `zoompan=d=1:fps=${fps}:s=${w}x${h}`;
     const center = `:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
     const scaleFactor = 2.0; 
@@ -242,75 +272,79 @@ async function renderVideoProject(project, jobId) {
         const isVideo = clip.mediaType === 'video' || await isVideoFile(inputPath);
         const args = ["-y"];
 
-        // Input 0: Video
+        // 0: Video Input
         if (isVideo) {
             args.push("-stream_loop", "-1", "-i", inputPath);
         } else {
             args.push("-loop", "1", "-framerate", "24", "-i", inputPath);
         }
 
-        // Logic to build Audio Inputs
-        let audioFilterGraph = "";
-        let audioInputs = [];
         let inputIndex = 1;
-        let voiceStream = null;
-        let sfxStream = null;
+        let audioMixParts = [];
+        let filterComplex = "";
 
-        // Input 1: Voice (audioUrl)
+        // 1. Voice Track Handling (Internal or External)
         if (clip.audio) {
             const aPath = path.join(UPLOAD_DIR, clip.audio);
             if (fs.existsSync(aPath)) {
                 args.push("-i", aPath);
-                audioInputs.push(`[${inputIndex}:a]volume=${voiceVol}[voice_raw]`);
-                voiceStream = "[voice_raw]";
+                filterComplex += `[${inputIndex}:a]volume=${voiceVol}[voice_track];`;
+                audioMixParts.push("[voice_track]");
                 inputIndex++;
             }
         } else if (isVideo && await fileHasAudio(inputPath)) {
-            // If video has audio and no narration override, use video audio as voice track
-            audioInputs.push(`[0:a]volume=${voiceVol}[voice_raw]`);
-            voiceStream = "[voice_raw]";
+             filterComplex += `[0:a]volume=${voiceVol}[voice_track];`;
+             audioMixParts.push("[voice_track]");
         }
 
-        // Input 2: SFX (sfxUrl)
+        // 2. SFX Track Handling (New)
         if (clip.sfx) {
-            const sPath = path.join(UPLOAD_DIR, clip.sfx);
-            if (fs.existsSync(sPath)) {
-                args.push("-i", sPath);
-                audioInputs.push(`[${inputIndex}:a]volume=${sfxVol}[sfx_raw]`);
-                sfxStream = "[sfx_raw]";
+            const sfxPath = path.join(UPLOAD_DIR, clip.sfx);
+            if (fs.existsSync(sfxPath)) {
+                args.push("-i", sfxPath);
+                filterComplex += `[${inputIndex}:a]volume=${sfxVol}[sfx_track];`;
+                audioMixParts.push("[sfx_track]");
                 inputIndex++;
             }
         }
 
-        // --- FILTER COMPLEX CONSTRUCTION ---
+        // Video Movement Filter
         const movementFilter = getMovementFilter(clip.movement || "kenburns", duration, targetW, targetH);
-        let filterComplex = `[0:v]${movementFilter}[v_out];`;
+        filterComplex += `[0:v]${movementFilter}[v_out];`;
 
-        // Audio Mixing logic
-        const audioFormat = "aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp";
-        
-        if (voiceStream && sfxStream) {
-            // Mix Voice + SFX
-            // Use normalize=0 to prevent volume drop when mixing
-            filterComplex += `${audioInputs.join(';')};${voiceStream}${sfxStream}amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[mixed_pre];[mixed_pre]apad,atrim=0:${duration},${audioFormat}[a_out]`;
-        } else if (voiceStream) {
-            filterComplex += `${audioInputs[0]};${voiceStream}apad,atrim=0:${duration},${audioFormat}[a_out]`;
-        } else if (sfxStream) {
-            filterComplex += `${audioInputs[0]};${sfxStream}apad,atrim=0:${duration},${audioFormat}[a_out]`;
+        // Audio Mixing & Processing
+        const audioFmt = "aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp";
+        let clipAudioLabel = "";
+
+        if (audioMixParts.length > 0) {
+            if (audioMixParts.length > 1) {
+                // Mix Voice + SFX
+                // amix reduces volume by 1/n. We multiply back by n to keep levels consistent.
+                filterComplex += `${audioMixParts.join('')}amix=inputs=${audioMixParts.length}:duration=longest:dropout_transition=0,volume=${audioMixParts.length}[mixed_audio];`;
+                clipAudioLabel = "[mixed_audio]";
+            } else {
+                // Single track
+                clipAudioLabel = audioMixParts[0];
+            }
+            // Add asetpts=PTS-STARTPTS to fix synchronization issues
+            filterComplex += `${clipAudioLabel}apad,atrim=0:${duration},asetpts=PTS-STARTPTS,${audioFmt}[a_out]`;
         } else {
-            // Silence
-            filterComplex += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration},${audioFormat}[a_out]`;
+            // Generate Silence if no audio
+            filterComplex += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration},asetpts=PTS-STARTPTS,${audioFmt}[a_out]`;
         }
 
         args.push("-filter_complex", filterComplex, "-map", "[v_out]", "-map", "[a_out]", "-t", duration.toString(), ...getVideoArgs(), ...getAudioArgs(), outFile);
 
+        // DETAILED ERROR CATCHING FOR INDIVIDUAL CLIPS
         try {
             await runFFmpeg(args);
+            
+            // Verify output integrity immediately
             if (!fs.existsSync(outFile) || fs.statSync(outFile).size < 1000) {
                 throw new Error("Arquivo de saída vazio ou muito pequeno.");
             }
         } catch (e) {
-            const errorMsg = `ERRO NA CENA ${i + 1}: ${e}`;
+            const errorMsg = `ERRO FATAL NA CENA ${i + 1}: Falha ao processar este clipe. \nDetalhes: ${e}`;
             console.error(errorMsg);
             throw new Error(errorMsg);
         }
@@ -318,7 +352,6 @@ async function renderVideoProject(project, jobId) {
         jobs[jobId].progress = Math.floor((i / project.clips.length) * 45);
     }
 
-    // --- CONCATENATION & BGM MIX ---
     const concatOut = path.join(sessionDir, "video_final.mp4");
     const trType = getTransitionXfade(project.transition || "fade");
 
@@ -338,7 +371,9 @@ async function renderVideoProject(project, jobId) {
         
         const minDuration = Math.min(...durations);
         let trDur = project.transitionDuration || 1.0;
-        if (trDur * 2 > minDuration) { trDur = minDuration / 2.2; }
+        if (trDur * 2 > minDuration) {
+            trDur = minDuration / 2.2;
+        }
         
         let filterGraph = "";
         let prevLabelV = "[0:v]";
@@ -347,13 +382,11 @@ async function renderVideoProject(project, jobId) {
         let timeCursor = durations[0];
 
         for (let i = 1; i < tempClips.length; i++) {
-            // Exact offset calculation
             const offset = (timeCursor - trDur).toFixed(3); 
             const outLabelV = `[v${outIndex + 1}]`;
             const outLabelA = `[a${outIndex + 1}]`;
             
             filterGraph += `${prevLabelV}[${i}:v]xfade=transition=${trType}:duration=${trDur}:offset=${offset}${outLabelV};`;
-            // Use acrossfade with triangular curve for smoother audio transition without gaps
             filterGraph += `${prevLabelA}[${i}:a]acrossfade=d=${trDur}:c1=tri:c2=tri${outLabelA};`;
             
             prevLabelV = outLabelV;
@@ -362,10 +395,7 @@ async function renderVideoProject(project, jobId) {
             timeCursor += (durations[i] - trDur);
         }
         
-        // Final audio format
-        filterGraph += `${prevLabelA}aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp[a_final_mix]`;
-
-        await runFFmpeg(["-y", ...inputArgs, "-filter_complex", filterGraph, "-map", prevLabelV, "-map", "[a_final_mix]", ...getVideoArgs(), ...getAudioArgs(), concatOut]);
+        await runFFmpeg(["-y", ...inputArgs, "-filter_complex", filterGraph, "-map", prevLabelV, "-map", prevLabelA, ...getVideoArgs(), ...getAudioArgs(), concatOut]);
         jobs[jobId].progress = 70;
     }
 
@@ -373,8 +403,11 @@ async function renderVideoProject(project, jobId) {
     let finalOutput = path.join(OUTPUT_DIR, `video_${jobId}.mp4`);
 
     if (bgm && fs.existsSync(bgm)) {
-        // Use normalize=0 to prevent BGM from lowering voice volume
-        const mixGraph = `[1:a]aloop=loop=-1:size=2e+09,volume=${project.audio.bgmVolume ?? 0.2}[bgm];[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[a_final]`;
+        // Mix concatenated audio with BGM
+        // Use volume filter on BGM explicitly.
+        // Use amix with duration=first (so BGM stops when video stops)
+        // Ensure volume scaling to avoid drop.
+        const mixGraph = `[1:a]aloop=loop=-1:size=2e+09,volume=${project.audio.bgmVolume ?? 0.2}[bgm];[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=0,volume=2[a_final]`;
         await runFFmpeg(["-y", "-i", concatOut, "-i", bgm, "-filter_complex", mixGraph, "-map", "0:v", "-map", "[a_final]", ...getVideoArgs(), ...getAudioArgs(), finalOutput]);
     } else {
         fs.copyFileSync(concatOut, finalOutput);
@@ -416,9 +449,9 @@ app.post("/api/render/start", async (req, res) => {
                 clips: [],
                 audio: { 
                     bgm: null, 
-                    bgmVolume: config.musicVolume ?? 0.15, // Use nullish coalescing to allow 0
-                    sfxVolume: config.sfxVolume ?? 0.5,
-                    voiceVolume: config.voiceVolume ?? 1.0 
+                    bgmVolume: config.musicVolume || 0.2, 
+                    sfxVolume: config.sfxVolume || 0.5,
+                    voiceVolume: config.voiceVolume || 1.0 // Accept voice volume from config
                 },
                 transition: config.transition || 'cut', 
                 transitionDuration: 1.0,
@@ -466,13 +499,63 @@ app.post("/api/render/start", async (req, res) => {
         } catch (e) { return res.status(500).json({ error: e.message }); }
     } else {
         uploadAny(req, res, async (err) => {
-            // ... (Existing upload handler logic if needed for other parts of the app)
-            res.status(500).json({ error: "Upload render not fully implemented in this update." });
+            if (err) return res.status(500).json({ error: "Upload failed: " + err.message });
+            try {
+                let config = {};
+                if (req.body.config) {
+                    try { config = typeof req.body.config === 'string' ? JSON.parse(req.body.config) : req.body.config; } catch(e) {}
+                }
+                const project = {
+                    clips: [],
+                    audio: { 
+                        bgm: null, 
+                        bgmVolume: config.musicVolume || 0.2, 
+                        sfxVolume: config.sfxVolume || 0.5,
+                        voiceVolume: config.voiceVolume || 1.0 
+                    },
+                    transition: config.transition || 'cut', 
+                    transitionDuration: 1.0,
+                    aspectRatio: config.aspectRatio || '16:9'
+                };
+                const files = req.files || [];
+                const visuals = files.filter(f => f.fieldname === 'visualFiles');
+                const audios = files.filter(f => f.fieldname === 'audioFiles');
+                const extras = files.filter(f => f.fieldname === 'additionalFiles');
+                const bgmFile = extras.find(f => f.originalname.includes('background_music'));
+                if (bgmFile) project.audio.bgm = bgmFile.filename;
+
+                for (let i = 0; i < visuals.length; i++) {
+                    const vFile = visuals[i];
+                    const aFile = audios[i]; 
+                    const meta = config.sceneData ? config.sceneData[i] : {};
+                    project.clips.push({
+                        file: vFile.filename,
+                        audio: aFile ? aFile.filename : null,
+                        duration: parseFloat(meta?.duration || 5),
+                        movement: config.movement || 'kenburns',
+                        mediaType: vFile.mimetype.startsWith('video') ? 'video' : 'image'
+                    });
+                }
+                if (project.clips.length === 0) return res.status(400).json({ error: "No clips" });
+
+                renderVideoProject(project, jobId)
+                    .then(outputPath => {
+                        jobs[jobId].status = "completed";
+                        jobs[jobId].downloadUrl = `/outputs/${path.basename(outputPath)}`;
+                    })
+                    .catch(err => {
+                        console.error("Render error:", err);
+                        jobs[jobId].status = "failed";
+                        jobs[jobId].error = err.toString();
+                    });
+                res.json({ jobId });
+            } catch (err) { res.status(500).json({ error: "Start render error" }); }
         });
     }
 });
 
-// ... (Rest of existing routes unchanged) ...
+// ... PROXY ROUTES ...
+// Rota de proxy genérica para chamadas de API externas
 app.post("/api/proxy", async (req, res) => {
     const { url, method, headers, body } = req.body;
     try {
@@ -501,6 +584,7 @@ app.post("/api/proxy", async (req, res) => {
     }
 });
 
+// Rota específica para o gerador Runway
 app.post("/api/runway/generate", async (req, res) => {
     const { prompt, aspectRatio, apiKey } = req.body;
     try {
@@ -524,6 +608,7 @@ app.post("/api/runway/generate", async (req, res) => {
     }
 });
 
+// ... OTHER ROUTES (upload, merge, etc) ...
 app.post("/api/upload", (req, res) => {
     uploadAny(req, res, (err) => {
         if (err) return res.status(500).json({ error: "Upload failed" });
