@@ -199,9 +199,18 @@ async function buildFrontend() {
     try {
         const copySafe = (src, dest) => {
             if (fs.existsSync(src)) {
+                let content = fs.readFileSync(src, 'utf8');
+                // Modificação crucial: Se for index.html, remove o importmap e ajusta o script
+                if (src.endsWith('index.html')) {
+                    // Remove importmap block
+                    content = content.replace(/<script type="importmap">[\s\S]*?<\/script>/, '');
+                    // Substitui index.tsx por bundle.js
+                    content = content.replace('src="/index.tsx"', 'src="/bundle.js"');
+                }
+                
                 const destDir = path.dirname(dest);
                 if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
-                fs.copyFileSync(src, dest);
+                fs.writeFileSync(dest, content);
             }
         };
         copySafe('index.html', path.join(PUBLIC_DIR,'index.html'));
