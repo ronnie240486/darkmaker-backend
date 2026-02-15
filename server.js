@@ -106,7 +106,6 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
     const h = parseInt(targetH) || 720;
     const fps = 24;
     const zNorm = `(time/${d})`; 
-    // Important: zoompan coordinates must be integers. Use trunc() or floor() in FFmpeg expressions.
     const center = `:x='trunc(iw/2-(iw/zoom/2))':y='trunc(ih/2-(ih/zoom/2))'`;
     const zp = `zoompan=d=1:fps=${fps}:s=${w}x${h}`;
     const scaleFactor = 2.0; 
@@ -213,6 +212,7 @@ async function renderVideoProject(project, jobId) {
     const sfxVol = project.audio.sfxVolume ?? 0.5;
     const AUDIO_SPEC = "aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo";
 
+    // Pass 1: Prepare and normalize clips
     for (let i = 0; i < project.clips.length; i++) {
         const clip = project.clips[i];
         const inputPath = path.join(UPLOAD_DIR, clip.file);
@@ -267,7 +267,6 @@ async function renderVideoProject(project, jobId) {
                 filterComplex += `${audioMixLabels[0]}atrim=0:${duration},asetpts=PTS-STARTPTS,apad,${AUDIO_SPEC}[a_out]`;
             }
         } else {
-            // Updated anullsrc syntax for better compatibility and ensured it produces a stream for the duration
             filterComplex += `anullsrc=r=44100:cl=stereo,atrim=0:${duration},asetpts=PTS-STARTPTS,${AUDIO_SPEC}[a_out]`;
         }
 
@@ -280,6 +279,7 @@ async function renderVideoProject(project, jobId) {
     const concatOut = path.join(sessionDir, "video_final.mp4");
     const trType = getTransitionXfade(project.transition || "fade");
 
+    // Pass 2: Concatenate with Transitions
     if (tempClips.length === 1) {
         fs.copyFileSync(tempClips[0], concatOut);
     } else {
@@ -290,23 +290,33 @@ async function renderVideoProject(project, jobId) {
         let trDur = 0.5;
         if (trDur > minDur * 0.4) trDur = minDur * 0.4; 
 
+        // Important: xfade is very sensitive to EOF. 
+        // We use a safe offset that ensures we don't request frames past the actual file end.
         let filterGraph = "";
         let prevLabelV = "[0:v]";
         let prevLabelA = "[0:a]";
         let timeCursor = durations[0];
 
         for (let i = 1; i < tempClips.length; i++) {
-            const offset = (timeCursor - trDur).toFixed(3); 
+            // Subtract a tiny margin (0.05s) to avoid EOF issues in xfade
+            const safetyMargin = 0.05;
+            const offset = (timeCursor - trDur - safetyMargin).toFixed(3); 
+            
             filterGraph += `${prevLabelV}[${i}:v]xfade=transition=${trType}:duration=${trDur}:offset=${offset}[v_tmp${i}];`;
-            filterGraph += `${prevLabelA}[${i}:a]acrossfade=d=${trDur}:c1=tri:c2=tri,${AUDIO_SPEC}[a_tmp${i}];`;
+            filterGraph += `${prevLabelA}[${i}:a]acrossfade=d=${trDur}:c1=tri:c2=tri[a_tmp${i}];`;
+            
             prevLabelV = `[v_tmp${i}]`;
             prevLabelA = `[a_tmp${i}]`;
             timeCursor += (durations[i] - trDur);
         }
         
-        await runFFmpeg(["-y", ...inputArgs, "-filter_complex", filterGraph, "-map", prevLabelV, "-map", prevLabelA, ...getVideoArgs(), ...getAudioArgs(), concatOut]);
+        // Final normalization on the combined stream
+        filterGraph += `${prevLabelA}${AUDIO_SPEC}[a_final]`;
+        
+        await runFFmpeg(["-y", ...inputArgs, "-filter_complex", filterGraph, "-map", prevLabelV, "-map", "[a_final]", ...getVideoArgs(), ...getAudioArgs(), concatOut]);
     }
 
+    // Pass 3: Background Music
     const bgm = project.audio?.bgm ? path.join(UPLOAD_DIR, project.audio.bgm) : null;
     let finalOutput = path.join(OUTPUT_DIR, `video_${jobId}.mp4`);
 
