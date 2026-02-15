@@ -276,6 +276,7 @@ async function renderVideoProject(project, jobId) {
 
     const voiceVol = project.audio.voiceVolume ?? 1.0;
     const sfxVol = project.audio.sfxVolume ?? 0.5;
+    // Forçamos normalização absoluta de áudio para evitar o erro de packs vazios no encoder
     const audioFmt = "aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo";
 
     for (let i = 0; i < project.clips.length; i++) {
@@ -301,11 +302,13 @@ async function renderVideoProject(project, jobId) {
             const aPath = path.join(UPLOAD_DIR, clip.audio);
             if (fs.existsSync(aPath)) {
                 args.push("-i", aPath);
+                // Normaliza o áudio de entrada
                 filterComplex += `[${inputIndex}:a]${audioFmt},volume=${voiceVol}[v${i}];`;
                 audioMixParts.push(`[v${i}]`);
                 inputIndex++;
             }
         } else if (isVideo && await fileHasAudio(inputPath)) {
+             // Normaliza o áudio do vídeo original se houver
              filterComplex += `[0:a]${audioFmt},volume=${voiceVol}[v${i}];`;
              audioMixParts.push(`[v${i}]`);
         }
@@ -325,13 +328,14 @@ async function renderVideoProject(project, jobId) {
 
         if (audioMixParts.length > 0) {
             if (audioMixParts.length > 1) {
-                filterComplex += `${audioMixParts.join('')}amix=inputs=${audioMixParts.length}:duration=longest:dropout_transition=0,volume=${audioMixParts.length}[mixed_a];`;
+                filterComplex += `${audioMixParts.join('')}amix=inputs=${audioMixParts.length}:duration=longest:dropout_transition=0[mixed_a];`;
                 filterComplex += `[mixed_a]atrim=0:${duration},asetpts=PTS-STARTPTS,${audioFmt}[a_out]`;
             } else {
                 filterComplex += `${audioMixParts[0]}atrim=0:${duration},asetpts=PTS-STARTPTS,${audioFmt}[a_out]`;
             }
         } else {
-            filterComplex += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration}[a_out]`;
+            // Garante que SEMPRE exista um fluxo de áudio, mesmo que mudo, com o formato correto
+            filterComplex += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration},${audioFmt}[a_out]`;
         }
 
         args.push("-filter_complex", filterComplex, "-map", "[v_out]", "-map", "[a_out]", "-t", duration.toString(), ...getVideoArgs(), ...getAudioArgs(), outFile);
@@ -356,10 +360,11 @@ async function renderVideoProject(project, jobId) {
 
         for (let i = 1; i < tempClips.length; i++) {
             const offset = (timeCursor - trDur).toFixed(3); 
-            filterGraph += `${prevLabelV}[${i}:v]xfade=transition=${trType}:duration=${trDur}:offset=${offset}[v${i}];`;
-            filterGraph += `${prevLabelA}[${i}:a]acrossfade=d=${trDur}:c1=tri:c2=tri[a${i}];`;
-            prevLabelV = `[v${i}]`;
-            prevLabelA = `[a${i}]`;
+            filterGraph += `${prevLabelV}[${i}:v]xfade=transition=${trType}:duration=${trDur}:offset=${offset}[v_temp${i}];`;
+            // Garantir que o áudio tenha packs contínuos para o encoder AAC
+            filterGraph += `${prevLabelA}[${i}:a]acrossfade=d=${trDur}:c1=tri:c2=tri[a_temp${i}];`;
+            prevLabelV = `[v_temp${i}]`;
+            prevLabelA = `[a_temp${i}]`;
             timeCursor += (durations[i] - trDur);
         }
         
@@ -370,6 +375,7 @@ async function renderVideoProject(project, jobId) {
     let finalOutput = path.join(OUTPUT_DIR, `video_${jobId}.mp4`);
 
     if (bgm && fs.existsSync(bgm)) {
+        // Normalização do BGM antes da mixagem final
         const mixGraph = `[1:a]aloop=loop=-1:size=2e+09,${audioFmt},volume=${project.audio.bgmVolume ?? 0.2}[bgm_norm];[0:a][bgm_norm]amix=inputs=2:duration=first:dropout_transition=0[a_final]`;
         await runFFmpeg(["-y", "-i", concatOut, "-i", bgm, "-filter_complex", mixGraph, "-map", "0:v", "-map", "[a_final]", ...getVideoArgs(), ...getAudioArgs(), finalOutput]);
     } else {
