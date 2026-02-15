@@ -114,7 +114,6 @@ const saveBase64OrUrl = async (input, prefix, ext) => {
     return null;
 };
 
-// --- MOVEMENT FILTERS ---
 function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 720) {
     const d = parseFloat(durationSec) || 5;
     const w = parseInt(targetW) || 1280;
@@ -150,7 +149,6 @@ function getTransitionXfade(t) {
     return map[t] || 'fade';
 }
 
-// Configurações de Encoder AAC estritas para evitar "Invalid Argument"
 const getVideoArgs = () => ['-c:v','libx264','-preset','ultrafast','-pix_fmt','yuv420p','-movflags','+faststart','-r','24'];
 const getAudioArgs = () => ['-c:a','aac','-b:a','192k','-ar','44100','-ac','2', '-strict', 'experimental'];
 
@@ -196,10 +194,8 @@ const storage = multer.diskStorage({
 const uploadAny = multer({storage}).any();
 const jobs = {};
 
-// --- FFmpeg Runner ---
 function runFFmpeg(args) {
     return new Promise((resolve, reject) => {
-        console.log("Running FFmpeg:", args.join(" "));
         const ff = spawn(FFMPEG_BIN, args);
         let errData = "";
         ff.stderr.on('data', d => errData += d.toString());
@@ -208,59 +204,6 @@ function runFFmpeg(args) {
             else reject(`FFmpeg error ${code}: ${errData.slice(-500)}`);
         });
     });
-}
-
-// --- VIDEO PROCESSING ---
-async function processMedia(action, files, config, jobId) {
-    if (!files || files.length === 0) throw new Error("No files provided");
-    const inputPath = path.join(UPLOAD_DIR, files[0].filename);
-    const isAudio = files[0].mimetype.startsWith('audio');
-    
-    let ext = 'mp4';
-    if (isAudio || action === 'extract-audio') ext = 'mp3';
-    if (action === 'gif') ext = 'gif';
-    if (config.format) ext = config.format;
-
-    const outputPath = path.join(OUTPUT_DIR, `${action}_${jobId}.${ext}`);
-    let args = ['-y'];
-    
-    if (action === 'cut' && config.startTime) args.push('-ss', config.startTime);
-    args.push('-i', inputPath);
-    if (action === 'cut' && config.duration) args.push('-t', config.duration);
-
-    let filterV = [];
-    let filterA = [];
-
-    switch(action) {
-        case 'remove-audio': args.push('-c:v', 'copy', '-an'); break;
-        case 'extract-audio': args.push('-vn', '-q:a', '0', '-map', 'a'); break;
-        case 'resize':
-             if(config.aspectRatio === '9:16') filterV.push('scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2');
-             else if(config.aspectRatio === '16:9') filterV.push('scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2');
-             break;
-        case 'speed':
-             const s = parseFloat(config.speed) || 1.0;
-             filterV.push(`setpts=${1/s}*PTS`);
-             filterA.push(`atempo=${s}`);
-             break;
-        case 'reverse': filterV.push('reverse'); filterA.push('areverse'); break;
-        case 'compress': args.push('-c:v', 'libx264', '-crf', config.crf || '28'); break;
-        case 'gif': filterV.push('fps=10,scale=320:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse'); break;
-        case 'upscale': filterV.push(`scale=iw*${config.scale||2}:ih*${config.scale||2}:flags=lanczos`); break;
-        case 'normalize': filterA.push('loudnorm=I=-16:TP=-1.5:LRA=11'); break;
-    }
-
-    if (filterV.length > 0 && !isAudio && action !== 'extract-audio') args.push('-vf', filterV.join(','));
-    if (filterA.length > 0) args.push('-af', filterA.join(','));
-
-    if (action !== 'remove-audio' && action !== 'extract-audio' && action !== 'gif') {
-        if (!isAudio) args.push(...getVideoArgs());
-        if (!config.noAudio && action !== 'remove-audio') args.push(...getAudioArgs());
-    }
-
-    args.push(outputPath);
-    await runFFmpeg(args);
-    return outputPath;
 }
 
 async function renderVideoProject(project, jobId) {
@@ -277,14 +220,13 @@ async function renderVideoProject(project, jobId) {
 
     const voiceVol = project.audio.voiceVolume ?? 1.0;
     const sfxVol = project.audio.sfxVolume ?? 0.5;
-
-    // Constante de normalização de áudio aplicada em todos os estágios
-    const AUDIO_NORM_FILTER = "aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo";
+    const AUDIO_SPEC = "aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo";
 
     for (let i = 0; i < project.clips.length; i++) {
         const clip = project.clips[i];
         const inputPath = path.join(UPLOAD_DIR, clip.file);
-        let duration = clip.duration || 5;
+        let duration = parseFloat(clip.duration || 5);
+        if (duration <= 0) duration = 5;
         durations.push(duration);
 
         const outFile = path.join(sessionDir, `clip_${i}.mp4`);
@@ -297,48 +239,44 @@ async function renderVideoProject(project, jobId) {
         else args.push("-loop", "1", "-framerate", "24", "-i", inputPath);
 
         let inputIndex = 1;
-        let audioMixParts = [];
+        let audioMixLabels = [];
         let filterComplex = "";
 
-        // Trilha de Voz/Narração
         if (clip.audio) {
             const aPath = path.join(UPLOAD_DIR, clip.audio);
             if (fs.existsSync(aPath)) {
                 args.push("-i", aPath);
-                filterComplex += `[${inputIndex}:a]${AUDIO_NORM_FILTER},volume=${voiceVol}[voice${i}];`;
-                audioMixParts.push(`[voice${i}]`);
+                filterComplex += `[${inputIndex}:a]${AUDIO_SPEC},volume=${voiceVol}[voice${i}];`;
+                audioMixLabels.push(`[voice${i}]`);
                 inputIndex++;
             }
         } else if (isVideo && await fileHasAudio(inputPath)) {
-             filterComplex += `[0:a]${AUDIO_NORM_FILTER},volume=${voiceVol}[voice${i}];`;
-             audioMixParts.push(`[voice${i}]`);
+             filterComplex += `[0:a]${AUDIO_SPEC},volume=${voiceVol}[voice${i}];`;
+             audioMixLabels.push(`[voice${i}]`);
         }
 
-        // Trilha de SFX
         if (clip.sfx) {
             const sfxPath = path.join(UPLOAD_DIR, clip.sfx);
             if (fs.existsSync(sfxPath)) {
                 args.push("-i", sfxPath);
-                filterComplex += `[${inputIndex}:a]${AUDIO_NORM_FILTER},volume=${sfxVol}[sfx${i}];`;
-                audioMixParts.push(`[sfx${i}]`);
+                filterComplex += `[${inputIndex}:a]${AUDIO_SPEC},volume=${sfxVol}[sfx${i}];`;
+                audioMixLabels.push(`[sfx${i}]`);
                 inputIndex++;
             }
         }
 
-        // Filtro de Movimento Visual
-        const movementFilter = getMovementFilter(clip.movement || "kenburns", duration, targetW, targetH);
-        filterComplex += `[0:v]${movementFilter}[v_out];`;
+        const moveF = getMovementFilter(clip.movement || "kenburns", duration, targetW, targetH);
+        filterComplex += `[0:v]${moveF}[v_out];`;
 
-        // Mixagem do Áudio do Clipe com Normalização Estrita
-        if (audioMixParts.length > 0) {
-            if (audioMixParts.length > 1) {
-                filterComplex += `${audioMixParts.join('')}amix=inputs=${audioMixParts.length}:duration=longest:dropout_transition=0[mixed_pre];`;
-                filterComplex += `[mixed_pre]atrim=0:${duration},asetpts=PTS-STARTPTS,${AUDIO_NORM_FILTER}[a_out]`;
+        if (audioMixLabels.length > 0) {
+            if (audioMixLabels.length > 1) {
+                filterComplex += `${audioMixLabels.join('')}amix=inputs=${audioMixLabels.length}:duration=longest:dropout_transition=0[a_mix];`;
+                filterComplex += `[a_mix]atrim=0:${duration},asetpts=PTS-STARTPTS,apad,${AUDIO_SPEC}[a_out]`;
             } else {
-                filterComplex += `${audioMixParts[0]}atrim=0:${duration},asetpts=PTS-STARTPTS,${AUDIO_NORM_FILTER}[a_out]`;
+                filterComplex += `${audioMixLabels[0]}atrim=0:${duration},asetpts=PTS-STARTPTS,apad,${AUDIO_SPEC}[a_out]`;
             }
         } else {
-            filterComplex += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration},${AUDIO_NORM_FILTER}[a_out]`;
+            filterComplex += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration},${AUDIO_SPEC}[a_out]`;
         }
 
         args.push("-filter_complex", filterComplex, "-map", "[v_out]", "-map", "[a_out]", "-t", duration.toString(), ...getVideoArgs(), ...getAudioArgs(), outFile);
@@ -356,7 +294,10 @@ async function renderVideoProject(project, jobId) {
         const inputArgs = [];
         tempClips.forEach(p => inputArgs.push("-i", p));
         
+        const minDur = Math.min(...durations);
         let trDur = 0.5;
+        if (trDur > minDur * 0.4) trDur = minDur * 0.4; // Segurança de offset
+
         let filterGraph = "";
         let prevLabelV = "[0:v]";
         let prevLabelA = "[0:a]";
@@ -365,8 +306,7 @@ async function renderVideoProject(project, jobId) {
         for (let i = 1; i < tempClips.length; i++) {
             const offset = (timeCursor - trDur).toFixed(3); 
             filterGraph += `${prevLabelV}[${i}:v]xfade=transition=${trType}:duration=${trDur}:offset=${offset}[v_tmp${i}];`;
-            // Normalização extra no acrossfade para garantir packs de áudio válidos
-            filterGraph += `${prevLabelA}[${i}:a]acrossfade=d=${trDur}:c1=tri:c2=tri,${AUDIO_NORM_FILTER}[a_tmp${i}];`;
+            filterGraph += `${prevLabelA}[${i}:a]acrossfade=d=${trDur}:c1=tri:c2=tri,${AUDIO_SPEC}[a_tmp${i}];`;
             prevLabelV = `[v_tmp${i}]`;
             prevLabelA = `[a_tmp${i}]`;
             timeCursor += (durations[i] - trDur);
@@ -379,8 +319,7 @@ async function renderVideoProject(project, jobId) {
     let finalOutput = path.join(OUTPUT_DIR, `video_${jobId}.mp4`);
 
     if (bgm && fs.existsSync(bgm)) {
-        // Normalização forçada no BGM antes de mixar
-        const mixGraph = `[1:a]aloop=loop=-1:size=2e+09,${AUDIO_NORM_FILTER},volume=${project.audio.bgmVolume ?? 0.2}[bgm_n];[0:a][bgm_n]amix=inputs=2:duration=first:dropout_transition=0,${AUDIO_NORM_FILTER}[a_final]`;
+        const mixGraph = `[1:a]aloop=loop=-1:size=2e+09,${AUDIO_SPEC},volume=${project.audio.bgmVolume ?? 0.2}[bgm_n];[0:a][bgm_n]amix=inputs=2:duration=first:dropout_transition=0,${AUDIO_SPEC}[a_final]`;
         await runFFmpeg(["-y", "-i", concatOut, "-i", bgm, "-filter_complex", mixGraph, "-map", "0:v", "-map", "[a_final]", ...getVideoArgs(), ...getAudioArgs(), finalOutput]);
     } else {
         fs.copyFileSync(concatOut, finalOutput);
@@ -393,17 +332,8 @@ async function renderVideoProject(project, jobId) {
 app.post("/api/process/start/:action", (req, res) => {
     uploadAny(req, res, async (err) => {
         if (err) return res.status(500).json({ error: err.message });
-        const action = req.params.action;
         const jobId = Date.now().toString();
         jobs[jobId] = { progress: 0, status: "processing" };
-        processMedia(action, req.files, JSON.parse(req.body.config || '{}'), jobId).then(output => {
-            jobs[jobId].status = "completed";
-            jobs[jobId].downloadUrl = `/outputs/${path.basename(output)}`;
-            jobs[jobId].progress = 100;
-        }).catch(err => {
-            jobs[jobId].status = "failed";
-            jobs[jobId].error = err.message;
-        });
         res.json({ jobId });
     });
 });
@@ -435,11 +365,10 @@ app.post("/api/render/start", async (req, res) => {
             }
         }
         renderVideoProject(project, jobId).then(out => {
-            jobs[jobId].status = "completed";
-            jobs[jobId].downloadUrl = `/outputs/${path.basename(out)}`;
-        }).catch(err => {
-            jobs[jobId].status = "failed";
-            jobs[jobId].error = err.toString();
+            jobs[jobId].status = "completed"; jobs[jobId].downloadUrl = `/outputs/${path.basename(out)}`;
+        }).catch(err => { 
+            console.error(err);
+            jobs[jobId].status = "failed"; jobs[jobId].error = err.toString(); 
         });
         res.json({ jobId });
     } catch (e) { res.status(500).json({ error: e.message }); }
