@@ -106,17 +106,18 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
     const h = parseInt(targetH) || 720;
     const fps = 24;
     const zNorm = `(time/${d})`; 
+    // Important: zoompan coordinates must be integers. Use trunc() or floor() in FFmpeg expressions.
+    const center = `:x='trunc(iw/2-(iw/zoom/2))':y='trunc(ih/2-(ih/zoom/2))'`;
     const zp = `zoompan=d=1:fps=${fps}:s=${w}x${h}`;
-    const center = `:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
     const scaleFactor = 2.0; 
 
     const moves = {
         'static': `${zp}:z=1.0${center}`,
-        'kenburns': `${zp}:z='1.0+(0.3*${zNorm})':x='(iw/2-(iw/zoom/2))*(1-0.2*${zNorm})':y='(ih/2-(ih/zoom/2))*(1-0.2*${zNorm})'`,
-        'zoom-in': `${zp}:z='1.0+(0.6*${zNorm})'${center}`,
-        'zoom-out': `${zp}:z='1.6-(0.6*${zNorm})'${center}`,
-        'mov-pan-slow-l': `${zp}:z=1.4:x='(iw/2-(iw/zoom/2))*(1+0.5*${zNorm})'${center}`,
-        'mov-pan-slow-r': `${zp}:z=1.4:x='(iw/2-(iw/zoom/2))*(1-0.5*${zNorm})'${center}`,
+        'kenburns': `${zp}:z='max(1, 1.0+(0.3*${zNorm}))':x='trunc((iw/2-(iw/zoom/2))*(1-0.2*${zNorm}))':y='trunc((ih/2-(ih/zoom/2))*(1-0.2*${zNorm}))'`,
+        'zoom-in': `${zp}:z='max(1, 1.0+(0.6*${zNorm}))'${center}`,
+        'zoom-out': `${zp}:z='max(1, 1.6-(0.6*${zNorm}))'${center}`,
+        'mov-pan-slow-l': `${zp}:z=1.4:x='trunc((iw/2-(iw/zoom/2))*(1+0.5*${zNorm}))':y='trunc(ih/2-(ih/zoom/2))'`,
+        'mov-pan-slow-r': `${zp}:z=1.4:x='trunc((iw/2-(iw/zoom/2))*(1-0.5*${zNorm}))':y='trunc(ih/2-(ih/zoom/2))'`,
     };
 
     const selected = moves[moveId] || moves['kenburns'];
@@ -182,12 +183,16 @@ const jobs = {};
 
 function runFFmpeg(args) {
     return new Promise((resolve, reject) => {
+        console.log(`Executing FFmpeg with args: ${args.join(' ')}`);
         const ff = spawn(FFMPEG_BIN, args);
         let errData = "";
         ff.stderr.on('data', d => errData += d.toString());
         ff.on("close", code => {
             if (code === 0) resolve();
-            else reject(`FFmpeg error ${code}: ${errData.slice(-500)}`);
+            else {
+                console.error(`FFmpeg failed with code ${code}. Error: ${errData}`);
+                reject(`FFmpeg error ${code}: ${errData.slice(-1000)}`);
+            }
         });
     });
 }
@@ -262,8 +267,8 @@ async function renderVideoProject(project, jobId) {
                 filterComplex += `${audioMixLabels[0]}atrim=0:${duration},asetpts=PTS-STARTPTS,apad,${AUDIO_SPEC}[a_out]`;
             }
         } else {
-            // Fix: 'd' option is not valid for anullsrc on many FFmpeg versions. Use atrim instead.
-            filterComplex += `anullsrc=channel_layout=stereo:sample_rate=44100,atrim=0:${duration},asetpts=PTS-STARTPTS,${AUDIO_SPEC}[a_out]`;
+            // Updated anullsrc syntax for better compatibility and ensured it produces a stream for the duration
+            filterComplex += `anullsrc=r=44100:cl=stereo,atrim=0:${duration},asetpts=PTS-STARTPTS,${AUDIO_SPEC}[a_out]`;
         }
 
         args.push("-filter_complex", filterComplex, "-map", "[v_out]", "-map", "[a_out]", "-t", duration.toString(), ...getVideoArgs(), ...getAudioArgs(), outFile);
