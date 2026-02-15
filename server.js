@@ -150,6 +150,7 @@ function getTransitionXfade(t) {
     return map[t] || 'fade';
 }
 
+// Configurações de Encoder AAC estritas para evitar "Invalid Argument"
 const getVideoArgs = () => ['-c:v','libx264','-preset','ultrafast','-pix_fmt','yuv420p','-movflags','+faststart','-r','24'];
 const getAudioArgs = () => ['-c:a','aac','-b:a','192k','-ar','44100','-ac','2', '-strict', 'experimental'];
 
@@ -276,8 +277,9 @@ async function renderVideoProject(project, jobId) {
 
     const voiceVol = project.audio.voiceVolume ?? 1.0;
     const sfxVol = project.audio.sfxVolume ?? 0.5;
-    // Forçamos normalização absoluta de áudio para evitar o erro de packs vazios no encoder
-    const audioFmt = "aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo";
+
+    // Constante de normalização de áudio aplicada em todos os estágios
+    const AUDIO_NORM_FILTER = "aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo";
 
     for (let i = 0; i < project.clips.length; i++) {
         const clip = project.clips[i];
@@ -298,47 +300,49 @@ async function renderVideoProject(project, jobId) {
         let audioMixParts = [];
         let filterComplex = "";
 
+        // Trilha de Voz/Narração
         if (clip.audio) {
             const aPath = path.join(UPLOAD_DIR, clip.audio);
             if (fs.existsSync(aPath)) {
                 args.push("-i", aPath);
-                // Normaliza o áudio de entrada
-                filterComplex += `[${inputIndex}:a]${audioFmt},volume=${voiceVol}[v${i}];`;
-                audioMixParts.push(`[v${i}]`);
+                filterComplex += `[${inputIndex}:a]${AUDIO_NORM_FILTER},volume=${voiceVol}[voice${i}];`;
+                audioMixParts.push(`[voice${i}]`);
                 inputIndex++;
             }
         } else if (isVideo && await fileHasAudio(inputPath)) {
-             // Normaliza o áudio do vídeo original se houver
-             filterComplex += `[0:a]${audioFmt},volume=${voiceVol}[v${i}];`;
-             audioMixParts.push(`[v${i}]`);
+             filterComplex += `[0:a]${AUDIO_NORM_FILTER},volume=${voiceVol}[voice${i}];`;
+             audioMixParts.push(`[voice${i}]`);
         }
 
+        // Trilha de SFX
         if (clip.sfx) {
             const sfxPath = path.join(UPLOAD_DIR, clip.sfx);
             if (fs.existsSync(sfxPath)) {
                 args.push("-i", sfxPath);
-                filterComplex += `[${inputIndex}:a]${audioFmt},volume=${sfxVol}[s${i}];`;
-                audioMixParts.push(`[s${i}]`);
+                filterComplex += `[${inputIndex}:a]${AUDIO_NORM_FILTER},volume=${sfxVol}[sfx${i}];`;
+                audioMixParts.push(`[sfx${i}]`);
                 inputIndex++;
             }
         }
 
+        // Filtro de Movimento Visual
         const movementFilter = getMovementFilter(clip.movement || "kenburns", duration, targetW, targetH);
         filterComplex += `[0:v]${movementFilter}[v_out];`;
 
+        // Mixagem do Áudio do Clipe com Normalização Estrita
         if (audioMixParts.length > 0) {
             if (audioMixParts.length > 1) {
-                filterComplex += `${audioMixParts.join('')}amix=inputs=${audioMixParts.length}:duration=longest:dropout_transition=0[mixed_a];`;
-                filterComplex += `[mixed_a]atrim=0:${duration},asetpts=PTS-STARTPTS,${audioFmt}[a_out]`;
+                filterComplex += `${audioMixParts.join('')}amix=inputs=${audioMixParts.length}:duration=longest:dropout_transition=0[mixed_pre];`;
+                filterComplex += `[mixed_pre]atrim=0:${duration},asetpts=PTS-STARTPTS,${AUDIO_NORM_FILTER}[a_out]`;
             } else {
-                filterComplex += `${audioMixParts[0]}atrim=0:${duration},asetpts=PTS-STARTPTS,${audioFmt}[a_out]`;
+                filterComplex += `${audioMixParts[0]}atrim=0:${duration},asetpts=PTS-STARTPTS,${AUDIO_NORM_FILTER}[a_out]`;
             }
         } else {
-            // Garante que SEMPRE exista um fluxo de áudio, mesmo que mudo, com o formato correto
-            filterComplex += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration},${audioFmt}[a_out]`;
+            filterComplex += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration},${AUDIO_NORM_FILTER}[a_out]`;
         }
 
         args.push("-filter_complex", filterComplex, "-map", "[v_out]", "-map", "[a_out]", "-t", duration.toString(), ...getVideoArgs(), ...getAudioArgs(), outFile);
+
         await runFFmpeg(args);
         jobs[jobId].progress = Math.floor((i / project.clips.length) * 45);
     }
@@ -360,11 +364,11 @@ async function renderVideoProject(project, jobId) {
 
         for (let i = 1; i < tempClips.length; i++) {
             const offset = (timeCursor - trDur).toFixed(3); 
-            filterGraph += `${prevLabelV}[${i}:v]xfade=transition=${trType}:duration=${trDur}:offset=${offset}[v_temp${i}];`;
-            // Garantir que o áudio tenha packs contínuos para o encoder AAC
-            filterGraph += `${prevLabelA}[${i}:a]acrossfade=d=${trDur}:c1=tri:c2=tri[a_temp${i}];`;
-            prevLabelV = `[v_temp${i}]`;
-            prevLabelA = `[a_temp${i}]`;
+            filterGraph += `${prevLabelV}[${i}:v]xfade=transition=${trType}:duration=${trDur}:offset=${offset}[v_tmp${i}];`;
+            // Normalização extra no acrossfade para garantir packs de áudio válidos
+            filterGraph += `${prevLabelA}[${i}:a]acrossfade=d=${trDur}:c1=tri:c2=tri,${AUDIO_NORM_FILTER}[a_tmp${i}];`;
+            prevLabelV = `[v_tmp${i}]`;
+            prevLabelA = `[a_tmp${i}]`;
             timeCursor += (durations[i] - trDur);
         }
         
@@ -375,8 +379,8 @@ async function renderVideoProject(project, jobId) {
     let finalOutput = path.join(OUTPUT_DIR, `video_${jobId}.mp4`);
 
     if (bgm && fs.existsSync(bgm)) {
-        // Normalização do BGM antes da mixagem final
-        const mixGraph = `[1:a]aloop=loop=-1:size=2e+09,${audioFmt},volume=${project.audio.bgmVolume ?? 0.2}[bgm_norm];[0:a][bgm_norm]amix=inputs=2:duration=first:dropout_transition=0[a_final]`;
+        // Normalização forçada no BGM antes de mixar
+        const mixGraph = `[1:a]aloop=loop=-1:size=2e+09,${AUDIO_NORM_FILTER},volume=${project.audio.bgmVolume ?? 0.2}[bgm_n];[0:a][bgm_n]amix=inputs=2:duration=first:dropout_transition=0,${AUDIO_NORM_FILTER}[a_final]`;
         await runFFmpeg(["-y", "-i", concatOut, "-i", bgm, "-filter_complex", mixGraph, "-map", "0:v", "-map", "[a_final]", ...getVideoArgs(), ...getAudioArgs(), finalOutput]);
     } else {
         fs.copyFileSync(concatOut, finalOutput);
@@ -389,11 +393,17 @@ async function renderVideoProject(project, jobId) {
 app.post("/api/process/start/:action", (req, res) => {
     uploadAny(req, res, async (err) => {
         if (err) return res.status(500).json({ error: err.message });
+        const action = req.params.action;
         const jobId = Date.now().toString();
         jobs[jobId] = { progress: 0, status: "processing" };
-        processMedia(req.params.action, req.files, JSON.parse(req.body.config || '{}'), jobId).then(output => {
-            jobs[jobId].status = "completed"; jobs[jobId].downloadUrl = `/outputs/${path.basename(output)}`;
-        }).catch(err => { jobs[jobId].status = "failed"; jobs[jobId].error = err.message; });
+        processMedia(action, req.files, JSON.parse(req.body.config || '{}'), jobId).then(output => {
+            jobs[jobId].status = "completed";
+            jobs[jobId].downloadUrl = `/outputs/${path.basename(output)}`;
+            jobs[jobId].progress = 100;
+        }).catch(err => {
+            jobs[jobId].status = "failed";
+            jobs[jobId].error = err.message;
+        });
         res.json({ jobId });
     });
 });
@@ -425,8 +435,12 @@ app.post("/api/render/start", async (req, res) => {
             }
         }
         renderVideoProject(project, jobId).then(out => {
-            jobs[jobId].status = "completed"; jobs[jobId].downloadUrl = `/outputs/${path.basename(out)}`;
-        }).catch(err => { jobs[jobId].status = "failed"; jobs[jobId].error = err.toString(); });
+            jobs[jobId].status = "completed";
+            jobs[jobId].downloadUrl = `/outputs/${path.basename(out)}`;
+        }).catch(err => {
+            jobs[jobId].status = "failed";
+            jobs[jobId].error = err.toString();
+        });
         res.json({ jobId });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
