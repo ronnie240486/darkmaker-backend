@@ -76,20 +76,6 @@ async function isVideoFile(file) {
     });
 }
 
-function getExactDuration(filePath) {
-    return new Promise(resolve => {
-        execFile(FFPROBE_BIN, [
-            '-v','error',
-            '-show_entries','format=duration',
-            '-of','default=noprint_wrappers=1:nokey=1',
-            filePath
-        ], (err, stdout) => {
-            const d = parseFloat(stdout);
-            resolve(isNaN(d) ? 0 : d);
-        });
-    });
-}
-
 const saveBase64OrUrl = async (input, prefix, ext) => {
     if (!input) return null;
     const filename = `${prefix}_${Date.now()}_${Math.random().toString(36).substr(2, 5)}.${ext}`;
@@ -150,7 +136,7 @@ function getTransitionXfade(t) {
 }
 
 const getVideoArgs = () => ['-c:v','libx264','-preset','ultrafast','-pix_fmt','yuv420p','-movflags','+faststart','-r','24'];
-const getAudioArgs = () => ['-c:a','aac','-b:a','192k','-ar','44100','-ac','2', '-strict', 'experimental'];
+const getAudioArgs = () => ['-c:a','aac','-b:a','192k','-ar','44100','-ac','2'];
 
 // --- BUILD FRONTEND ---
 async function buildFrontend() {
@@ -270,13 +256,14 @@ async function renderVideoProject(project, jobId) {
 
         if (audioMixLabels.length > 0) {
             if (audioMixLabels.length > 1) {
-                filterComplex += `${audioMixLabels.join('')}amix=inputs=${audioMixLabels.length}:duration=longest:dropout_transition=0[a_mix];`;
+                filterComplex += `${audioMixLabels.join('')}amix=inputs=${audioMixLabels.length}:duration=longest:dropout_transition=1[a_mix];`;
                 filterComplex += `[a_mix]atrim=0:${duration},asetpts=PTS-STARTPTS,apad,${AUDIO_SPEC}[a_out]`;
             } else {
                 filterComplex += `${audioMixLabels[0]}atrim=0:${duration},asetpts=PTS-STARTPTS,apad,${AUDIO_SPEC}[a_out]`;
             }
         } else {
-            filterComplex += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration},${AUDIO_SPEC}[a_out]`;
+            // Fix: 'd' option is not valid for anullsrc on many FFmpeg versions. Use atrim instead.
+            filterComplex += `anullsrc=channel_layout=stereo:sample_rate=44100,atrim=0:${duration},asetpts=PTS-STARTPTS,${AUDIO_SPEC}[a_out]`;
         }
 
         args.push("-filter_complex", filterComplex, "-map", "[v_out]", "-map", "[a_out]", "-t", duration.toString(), ...getVideoArgs(), ...getAudioArgs(), outFile);
@@ -296,7 +283,7 @@ async function renderVideoProject(project, jobId) {
         
         const minDur = Math.min(...durations);
         let trDur = 0.5;
-        if (trDur > minDur * 0.4) trDur = minDur * 0.4; // Segurança de offset
+        if (trDur > minDur * 0.4) trDur = minDur * 0.4; 
 
         let filterGraph = "";
         let prevLabelV = "[0:v]";
@@ -319,7 +306,7 @@ async function renderVideoProject(project, jobId) {
     let finalOutput = path.join(OUTPUT_DIR, `video_${jobId}.mp4`);
 
     if (bgm && fs.existsSync(bgm)) {
-        const mixGraph = `[1:a]aloop=loop=-1:size=2e+09,${AUDIO_SPEC},volume=${project.audio.bgmVolume ?? 0.2}[bgm_n];[0:a][bgm_n]amix=inputs=2:duration=first:dropout_transition=0,${AUDIO_SPEC}[a_final]`;
+        const mixGraph = `[1:a]aloop=loop=-1:size=2e+09,${AUDIO_SPEC},volume=${project.audio.bgmVolume ?? 0.2}[bgm_n];[0:a][bgm_n]amix=inputs=2:duration=first:dropout_transition=1,${AUDIO_SPEC}[a_final]`;
         await runFFmpeg(["-y", "-i", concatOut, "-i", bgm, "-filter_complex", mixGraph, "-map", "0:v", "-map", "[a_final]", ...getVideoArgs(), ...getAudioArgs(), finalOutput]);
     } else {
         fs.copyFileSync(concatOut, finalOutput);
