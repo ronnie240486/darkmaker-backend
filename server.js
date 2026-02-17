@@ -214,114 +214,108 @@ function runFFmpeg(args) {
 // --- IMAGE PROCESSING ---
 async function processImage(action, files, config, jobId) {
     if (!files || files.length === 0) throw new Error("No files provided");
+
     const inputPath = path.join(UPLOAD_DIR, files[0].filename);
-    
-    // Determine input format based on mimetype or name
+
     const isPng = files[0].mimetype === 'image/png' || files[0].originalname.toLowerCase().endsWith('.png');
     const isWebp = files[0].mimetype === 'image/webp' || files[0].originalname.toLowerCase().endsWith('.webp');
 
-    // Default output extension
-    let ext = 'jpg';
-    if (isPng) ext = 'png';
-    if (isWebp) ext = 'webp';
+    // --------- CORREÇÃO IMPORTANTE ----------
+    // Para compressão: sempre gerar WEBP (redução real garantida)
+    let ext = 'webp';
 
-    // Override if convert action or specific requirements
-    if (action === 'convert' && config.format) {
-        ext = config.format.toLowerCase().replace('.', '');
+    if (action !== "compress") {
+        // comportamento normal
+        if (isPng) ext = "png";
+        if (isWebp) ext = "webp";
+        if (!isPng && !isWebp) ext = "jpg";
     }
-    
+
+    // se convert: sobrescreve formato
+    if (action === "convert" && config.format) {
+        ext = config.format.toLowerCase().replace(".", "");
+    }
+
     const outputPath = path.join(OUTPUT_DIR, `${action}_${jobId}.${ext}`);
     
     let args = ['-y', '-i', inputPath];
 
     switch(action) {
+        // ==================== COMPRESSÃO REAL =====================
         case 'compress':
-            // Removed -bn, -sn, -dn which causes errors with some ffmpeg versions
-            // -map_metadata -1 is the standard way to strip metadata
-            args.push('-map_metadata', '-1');
+            args.push("-map_metadata", "-1");
 
-            // Parse aggression level (0 to 100)
-            let aggression = 60; // Default to 60%
-            if (config.aggression !== undefined) {
-                aggression = parseInt(config.aggression);
-            }
+            let aggression = parseInt(config.aggression ?? 60);
             aggression = Math.max(0, Math.min(100, aggression));
 
-            if (ext === 'jpg' || ext === 'jpeg') {
-                // JPEG: qscale:v range is 2-31.
-                // Adjusted Curve for GUARANTEED reduction:
-                // Start range at 10 (good web quality) to 31 (lowest).
-                // Avoids 2-9 range which often bloats already compressed files.
-                // 0% aggression -> q:10
-                // 50% aggression -> q:20
-                // 100% aggression -> q:31
-                const qVal = Math.floor(10 + (aggression / 100) * 21);
-                
-                // Force standard pixel format to save space compared to 4:4:4
-                args.push('-q:v', qVal.toString(), '-pix_fmt', 'yuv420p'); 
-            } else if (ext === 'webp') {
-                // WebP: q:v range is 0-100 (100 best).
-                const quality = Math.max(1, 100 - aggression);
-                args.push('-q:v', quality.toString());
-            } else if (ext === 'png') {
-                // PNG is lossless
-                args.push('-compression_level', '9', '-pred', 'mixed');
+            // Conversão SEMPRE para WebP (redução garantida)
+            const quality = Math.max(10, 100 - aggression); 
+
+            args.push(
+                "-c:v", "libwebp",
+                "-qscale", quality.toString(),
+                "-compression_level", "6",
+                "-preset", "picture"
+            );
+            break;
+
+        // ==================== RESIZE =====================
+        case 'resize':
+            let w = parseInt(config.width ?? -1);
+            let h = parseInt(config.height ?? -1);
+            if (w === -1 && h === -1) args.push('-vf', 'scale=iw/2:ih/2');
+            else args.push('-vf', `scale=${w}:${h}`);
+            break;
+
+        // ==================== CONVERSÃO =====================
+        case 'convert':
+            if (ext === "jpg") args.push('-q:v', '10', '-pix_fmt', 'yuv420p');
+            if (ext === "webp") args.push('-qscale', '80');
+            break;
+
+        // ==================== GRAYSCALE =====================
+        case 'grayscale':
+            args.push("-vf", "hue=s=0");
+            break;
+
+        // ==================== WATERMARK =====================
+        case 'watermark':
+            if (config.text) {
+                args.push("-vf", `drawtext=text='${config.text}':x=10:y=10:fontsize=24:fontcolor=white`);
             }
             break;
-        case 'resize':
-             let w = -1;
-             let h = -1;
-             if (config.width) w = parseInt(config.width);
-             if (config.height) h = parseInt(config.height);
-             
-             if (w === -1 && h === -1) {
-                 args.push('-vf', 'scale=iw/2:ih/2');
-             } else {
-                 args.push('-vf', `scale=${w}:${h}`);
-             }
-             break;
-        case 'convert':
-             if (ext === 'jpg') args.push('-q:v', '10', '-pix_fmt', 'yuv420p');
-             if (ext === 'webp') args.push('-q:v', '75');
-             break;
-        case 'grayscale':
-             args.push('-vf', 'hue=s=0');
-             break;
-        case 'watermark':
-             if (config.text) {
-                 args.push('-vf', `drawtext=text='${config.text}':x=10:y=10:fontsize=24:fontcolor=white`);
-             }
-             break;
     }
 
     args.push(outputPath);
+
     await runFFmpeg(args);
 
-    // SAFETY CHECK: If compress mode, ensure output is actually smaller.
-    if (action === 'compress') {
-        try {
-            const inputStats = fs.statSync(inputPath);
-            const outputStats = fs.statSync(outputPath);
-            
-            // If output is larger than input (happens with optimized inputs), try extreme compression
-            if (outputStats.size >= inputStats.size) {
-                console.log("Compression Warning: Output larger than input. Forcing extreme compression.");
-                if (ext === 'jpg' || ext === 'jpeg') {
-                    // Try re-encoding with max compression (q=31)
-                    const retryArgs = ['-y', '-i', inputPath, '-map_metadata', '-1', '-q:v', '31', '-pix_fmt', 'yuv420p', outputPath];
-                    await runFFmpeg(retryArgs);
-                } else if (ext === 'webp') {
-                    const retryArgs = ['-y', '-i', inputPath, '-map_metadata', '-1', '-q:v', '10', outputPath];
-                    await runFFmpeg(retryArgs);
-                }
-            }
-        } catch(e) {
-            console.warn("Safety check error:", e);
+    // --------- DUPLA SEGURANÇA: GARANTIR TAMANHO MENOR ----------
+    if (action === "compress") {
+        const inputStats = fs.statSync(inputPath);
+        const outputStats = fs.statSync(outputPath);
+
+        if (outputStats.size >= inputStats.size) {
+            console.log("Output ainda maior → aplicando compressão extrema");
+
+            const retry = [
+                "-y",
+                "-i", inputPath,
+                "-map_metadata", "-1",
+                "-c:v", "libwebp",
+                "-qscale", "5",
+                "-compression_level", "6",
+                "-preset", "picture",
+                outputPath
+            ];
+
+            await runFFmpeg(retry);
         }
     }
 
     return outputPath;
 }
+
 
 // --- VIDEO PROCESSING ---
 async function processMedia(action, files, config, jobId) {
