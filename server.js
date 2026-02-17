@@ -236,8 +236,9 @@ async function processImage(action, files, config, jobId) {
 
     switch(action) {
         case 'compress':
-            // CRITICAL: Strip ALL metadata to ensure size reduction on thumbnails
-            args.push('-map_metadata', '-1', '-bn', '-sn', '-dn');
+            // Removed -bn, -sn, -dn which can cause errors with some image formats in ffmpeg
+            // -map_metadata -1 is sufficient to strip metadata
+            args.push('-map_metadata', '-1');
 
             // Parse aggression level (0 to 100)
             let aggression = 50;
@@ -295,19 +296,24 @@ async function processImage(action, files, config, jobId) {
 
     // SAFETY CHECK: If compress mode, ensure output is actually smaller.
     if (action === 'compress') {
-        const inputStats = fs.statSync(inputPath);
-        const outputStats = fs.statSync(outputPath);
-        
-        // If output is larger than input (happens with optimized inputs), try extreme compression
-        if (outputStats.size >= inputStats.size) {
-            console.log("Compression Warning: Output larger than input. Forcing extreme compression.");
-            if (ext === 'jpg' || ext === 'jpeg') {
-                const retryArgs = ['-y', '-i', inputPath, '-map_metadata', '-1', '-q:v', '31', outputPath];
-                await runFFmpeg(retryArgs);
-            } else if (ext === 'webp') {
-                const retryArgs = ['-y', '-i', inputPath, '-map_metadata', '-1', '-q:v', '10', outputPath];
-                await runFFmpeg(retryArgs);
+        try {
+            const inputStats = fs.statSync(inputPath);
+            const outputStats = fs.statSync(outputPath);
+            
+            // If output is larger than input (happens with optimized inputs), try extreme compression
+            if (outputStats.size >= inputStats.size) {
+                console.log("Compression Warning: Output larger than input. Forcing extreme compression.");
+                if (ext === 'jpg' || ext === 'jpeg') {
+                    // Try re-encoding with max compression (q=31)
+                    const retryArgs = ['-y', '-i', inputPath, '-map_metadata', '-1', '-q:v', '31', outputPath];
+                    await runFFmpeg(retryArgs);
+                } else if (ext === 'webp') {
+                    const retryArgs = ['-y', '-i', inputPath, '-map_metadata', '-1', '-q:v', '5', outputPath];
+                    await runFFmpeg(retryArgs);
+                }
             }
+        } catch(e) {
+            console.warn("Safety check error:", e);
         }
     }
 
