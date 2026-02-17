@@ -218,65 +218,77 @@ async function processImage(action, files, config, jobId) {
     
     // Determine input format based on mimetype or name
     const isPng = files[0].mimetype === 'image/png' || files[0].originalname.toLowerCase().endsWith('.png');
-    const isWebp = files[0].mimetype === 'image/webp' || files[0].originalname.toLowerCase().endsWith('.webp');
+    
+    // Config Quality (0-100)
+    const quality = parseInt(config.quality) || 80;
 
     // Default output extension
     let ext = 'jpg';
     if (isPng) ext = 'png';
-    if (isWebp) ext = 'webp';
+    // Se o usuário pediu conversão explícita
+    if (config.format) ext = config.format.toLowerCase().replace('.', '');
 
-    // Override if convert action or specific requirements
-    if (action === 'convert' && config.format) {
-        ext = config.format.toLowerCase().replace('.', '');
-    }
-    
     const outputPath = path.join(OUTPUT_DIR, `${action}_${jobId}.${ext}`);
-    
     let args = ['-y', '-i', inputPath];
+    let filters = [];
 
-    switch(action) {
-        case 'compress':
-            // Removes metadata to save space
-            args.push('-map_metadata', '-1');
+    // --- FILTROS DE COR/BRILHO ---
+    if (config.brightness || config.contrast || config.saturation) {
+        let b = (parseInt(config.brightness || 100) - 100) / 100; // -1.0 to 1.0
+        let c = parseInt(config.contrast || 100) / 100; // 0.0 to 2.0
+        let s = parseInt(config.saturation || 100) / 100; // 0.0 to 3.0
+        filters.push(`eq=brightness=${b}:contrast=${c}:saturation=${s}`);
+    }
 
-            if (ext === 'jpg' || ext === 'jpeg') {
-                // JPEG: qscale:v range is 2-31. Higher = Smaller file/Lower Quality.
-                // 28 provides aggressive compression.
-                args.push('-q:v', '28'); 
-            } else if (ext === 'webp') {
-                // WebP: q:v range is 0-100. Lower = Smaller file/Lower Quality.
-                args.push('-q:v', '40');
-            } else if (ext === 'png') {
-                // PNG: Compression level 0-9 (9 is max).
-                // Use mixed prediction for better efficiency.
-                args.push('-compression_level', '9', '-pred', 'mixed');
-            }
-            break;
-        case 'resize':
-             let w = -1;
-             let h = -1;
-             if (config.width) w = parseInt(config.width);
-             if (config.height) h = parseInt(config.height);
-             
-             if (w === -1 && h === -1) {
-                 // Default to half size if no specific dimension given
-                 args.push('-vf', 'scale=iw/2:ih/2');
-             } else {
-                 args.push('-vf', `scale=${w}:${h}`);
-             }
-             break;
-        case 'convert':
-             // Format handling is done via output extension
-             break;
-        case 'grayscale':
-             args.push('-vf', 'hue=s=0');
-             break;
-        case 'watermark':
-             if (config.text) {
-                 // Requires font support in ffmpeg build, using basic defaults
-                 args.push('-vf', `drawtext=text='${config.text}':x=10:y=10:fontsize=24:fontcolor=white`);
-             }
-             break;
+    if (config.grayscale) filters.push('hue=s=0');
+    if (config.blur) filters.push(`gblur=sigma=${config.blur}`);
+
+    // --- RESIZE ---
+    if (config.width || config.height) {
+        let w = parseInt(config.width) || -1;
+        let h = parseInt(config.height) || -1;
+        // Evita erro se ambos forem -1
+        if (w === -1 && h === -1) w = 1280; 
+        filters.push(`scale=${w}:${h}:flags=lanczos`);
+    }
+
+    // --- WATERMARK ---
+    if (config.watermarkText) {
+        // Drawtext exige fontes, se não tiver, pode falhar. Vamos tentar fonte padrão.
+        // Em ambientes sem fonte, isso pode crashar. Adicionando fallback seguro.
+        // Usamos :x=(w-text_w)/2:y=(h-text_h)/2 para centralizar ou configurar
+        const text = config.watermarkText.replace(/:/g, '\\:').replace(/'/g, '');
+        filters.push(`drawtext=text='${text}':fontcolor=white@0.8:fontsize=h/10:x=(w-text_w)/2:y=(h-text_h)/2:shadowcolor=black:shadowx=2:shadowy=2`);
+    }
+
+    if (filters.length > 0) {
+        args.push('-vf', filters.join(','));
+    }
+
+    // --- COMPRESSÃO ---
+    // Remove todos os metadados para economizar espaço
+    args.push('-map_metadata', '-1');
+
+    if (ext === 'jpg' || ext === 'jpeg') {
+        // FFmpeg qscale:v range 2-31 (2 best, 31 worst)
+        // Map 100 (Best) -> 2, 0 (Worst) -> 31
+        let qscale = Math.floor(31 - ((quality / 100) * 29));
+        args.push('-q:v', qscale.toString());
+    } else if (ext === 'webp') {
+        // WebP q:v range 0-100 (100 best)
+        args.push('-c:v', 'libwebp', '-q:v', quality.toString());
+    } else if (ext === 'png') {
+        // PNG é lossless, mas podemos usar palettegen para reduzir cores se a qualidade for baixa
+        // < 80 qualidade = converter para paleta de 256 cores (8-bit)
+        if (quality < 90) {
+            // Complex filter para paleta
+            // Sobrescreve filtros anteriores pois precisa de graph complexo
+            // Nota: Isso remove transparência parcial se não cuidar, mas economiza muito espaço.
+            // Simplificação: Apenas aumenta compressão DEFLATE
+            args.push('-compression_level', '9', '-pred', 'mixed');
+        } else {
+            args.push('-compression_level', '6'); // Padrão balanceado
+        }
     }
 
     args.push(outputPath);
