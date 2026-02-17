@@ -236,14 +236,20 @@ async function processImage(action, files, config, jobId) {
 
     switch(action) {
         case 'compress':
-            // Compression logic via ffmpeg qscale
+            // Removes metadata to save space
+            args.push('-map_metadata', '-1');
+
             if (ext === 'jpg' || ext === 'jpeg') {
-                args.push('-q:v', '20'); // Aggressive compression for JPEG
+                // JPEG: qscale:v range is 2-31. Higher = Smaller file/Lower Quality.
+                // 28 provides aggressive compression.
+                args.push('-q:v', '28'); 
             } else if (ext === 'webp') {
-                args.push('-q:v', '50');
-            } else {
-                // PNG doesn't use q:v the same way, simple re-encode typically optimizes slightly
-                // or we could convert to jpg if user doesn't care about transparency
+                // WebP: q:v range is 0-100. Lower = Smaller file/Lower Quality.
+                args.push('-q:v', '40');
+            } else if (ext === 'png') {
+                // PNG: Compression level 0-9 (9 is max).
+                // Use mixed prediction for better efficiency.
+                args.push('-compression_level', '9', '-pred', 'mixed');
             }
             break;
         case 'resize':
