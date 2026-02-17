@@ -236,38 +236,32 @@ async function processImage(action, files, config, jobId) {
 
     switch(action) {
         case 'compress':
-            // Removes metadata (EXIF, etc) to save space immediately
-            args.push('-map_metadata', '-1');
+            // CRITICAL: Strip ALL metadata to ensure size reduction on thumbnails
+            args.push('-map_metadata', '-1', '-bn', '-sn', '-dn');
 
             // Parse aggression level (0 to 100)
             let aggression = 50;
             if (config.aggression !== undefined) {
                 aggression = parseInt(config.aggression);
             }
-            // Clamp
             aggression = Math.max(0, Math.min(100, aggression));
 
             if (ext === 'jpg' || ext === 'jpeg') {
-                // JPEG: qscale:v range is 2 (best) to 31 (worst).
-                // We map aggression 0 -> 2 (best quality)
-                // We map aggression 100 -> 31 (max compression, smallest size)
-                // If user selects 70% aggression, result is ~22 (High compression).
+                // JPEG: qscale:v range is 2 (best) to 31 (worst/smallest).
+                // Logic: 
+                // Aggression 0 -> q=2
+                // Aggression 50 -> q=17
+                // Aggression 100 -> q=31
                 const qVal = Math.floor(2 + (aggression / 100) * 29);
                 args.push('-q:v', qVal.toString()); 
             } else if (ext === 'webp') {
-                // WebP: q:v range is 0-100. (100 is best quality, 0 is worst).
-                // We map aggression 0 -> 100 quality
-                // We map aggression 100 -> 0 quality
-                const quality = 100 - aggression;
+                // WebP: q:v range is 0-100 (100 best).
+                const quality = Math.max(1, 100 - aggression);
                 args.push('-q:v', quality.toString());
             } else if (ext === 'png') {
-                // PNG: Compression level 0-9. (9 is max compression/slowest).
-                // Since PNG is lossless, increasing compression level reduces size without losing quality, 
-                // but usually the gains are small.
-                // If aggression is high, we use max compression.
-                const compressionLevel = Math.floor((aggression / 100) * 9);
-                args.push('-compression_level', compressionLevel.toString(), '-pred', 'mixed');
-                // If extremely aggressive, we might want to quantize (palette), but ffmpeg basic png encoder is limited.
+                // PNG is lossless, hard to compress aggressively without changing format
+                // Use max compression effort
+                args.push('-compression_level', '9', '-pred', 'mixed');
             }
             break;
         case 'resize':
@@ -277,15 +271,12 @@ async function processImage(action, files, config, jobId) {
              if (config.height) h = parseInt(config.height);
              
              if (w === -1 && h === -1) {
-                 // Default to half size if no specific dimension given
                  args.push('-vf', 'scale=iw/2:ih/2');
              } else {
                  args.push('-vf', `scale=${w}:${h}`);
              }
              break;
         case 'convert':
-             // Format handling is done via output extension
-             // Apply reasonable quality defaults for conversion
              if (ext === 'jpg') args.push('-q:v', '5');
              if (ext === 'webp') args.push('-q:v', '75');
              break;
@@ -301,6 +292,25 @@ async function processImage(action, files, config, jobId) {
 
     args.push(outputPath);
     await runFFmpeg(args);
+
+    // SAFETY CHECK: If compress mode, ensure output is actually smaller.
+    if (action === 'compress') {
+        const inputStats = fs.statSync(inputPath);
+        const outputStats = fs.statSync(outputPath);
+        
+        // If output is larger than input (happens with optimized inputs), try extreme compression
+        if (outputStats.size >= inputStats.size) {
+            console.log("Compression Warning: Output larger than input. Forcing extreme compression.");
+            if (ext === 'jpg' || ext === 'jpeg') {
+                const retryArgs = ['-y', '-i', inputPath, '-map_metadata', '-1', '-q:v', '31', outputPath];
+                await runFFmpeg(retryArgs);
+            } else if (ext === 'webp') {
+                const retryArgs = ['-y', '-i', inputPath, '-map_metadata', '-1', '-q:v', '10', outputPath];
+                await runFFmpeg(retryArgs);
+            }
+        }
+    }
+
     return outputPath;
 }
 
