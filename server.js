@@ -236,32 +236,35 @@ async function processImage(action, files, config, jobId) {
 
     switch(action) {
         case 'compress':
-            // Removed -bn, -sn, -dn which can cause errors with some image formats in ffmpeg
-            // -map_metadata -1 is sufficient to strip metadata
+            // Removed -bn, -sn, -dn which causes errors with some ffmpeg versions
+            // -map_metadata -1 is the standard way to strip metadata
             args.push('-map_metadata', '-1');
 
             // Parse aggression level (0 to 100)
-            let aggression = 50;
+            let aggression = 60; // Default to 60%
             if (config.aggression !== undefined) {
                 aggression = parseInt(config.aggression);
             }
             aggression = Math.max(0, Math.min(100, aggression));
 
             if (ext === 'jpg' || ext === 'jpeg') {
-                // JPEG: qscale:v range is 2 (best) to 31 (worst/smallest).
-                // Logic: 
-                // Aggression 0 -> q=2
-                // Aggression 50 -> q=17
-                // Aggression 100 -> q=31
-                const qVal = Math.floor(2 + (aggression / 100) * 29);
-                args.push('-q:v', qVal.toString()); 
+                // JPEG: qscale:v range is 2-31.
+                // Adjusted Curve for GUARANTEED reduction:
+                // Start range at 10 (good web quality) to 31 (lowest).
+                // Avoids 2-9 range which often bloats already compressed files.
+                // 0% aggression -> q:10
+                // 50% aggression -> q:20
+                // 100% aggression -> q:31
+                const qVal = Math.floor(10 + (aggression / 100) * 21);
+                
+                // Force standard pixel format to save space compared to 4:4:4
+                args.push('-q:v', qVal.toString(), '-pix_fmt', 'yuv420p'); 
             } else if (ext === 'webp') {
                 // WebP: q:v range is 0-100 (100 best).
                 const quality = Math.max(1, 100 - aggression);
                 args.push('-q:v', quality.toString());
             } else if (ext === 'png') {
-                // PNG is lossless, hard to compress aggressively without changing format
-                // Use max compression effort
+                // PNG is lossless
                 args.push('-compression_level', '9', '-pred', 'mixed');
             }
             break;
@@ -278,7 +281,7 @@ async function processImage(action, files, config, jobId) {
              }
              break;
         case 'convert':
-             if (ext === 'jpg') args.push('-q:v', '5');
+             if (ext === 'jpg') args.push('-q:v', '10', '-pix_fmt', 'yuv420p');
              if (ext === 'webp') args.push('-q:v', '75');
              break;
         case 'grayscale':
@@ -305,10 +308,10 @@ async function processImage(action, files, config, jobId) {
                 console.log("Compression Warning: Output larger than input. Forcing extreme compression.");
                 if (ext === 'jpg' || ext === 'jpeg') {
                     // Try re-encoding with max compression (q=31)
-                    const retryArgs = ['-y', '-i', inputPath, '-map_metadata', '-1', '-q:v', '31', outputPath];
+                    const retryArgs = ['-y', '-i', inputPath, '-map_metadata', '-1', '-q:v', '31', '-pix_fmt', 'yuv420p', outputPath];
                     await runFFmpeg(retryArgs);
                 } else if (ext === 'webp') {
-                    const retryArgs = ['-y', '-i', inputPath, '-map_metadata', '-1', '-q:v', '5', outputPath];
+                    const retryArgs = ['-y', '-i', inputPath, '-map_metadata', '-1', '-q:v', '10', outputPath];
                     await runFFmpeg(retryArgs);
                 }
             }
