@@ -211,115 +211,6 @@ function runFFmpeg(args) {
     });
 }
 
-// --- IMAGE PROCESSING ---
-async function processImage(action, files, config, jobId) {
-    if (!files || files.length === 0) throw new Error("No files provided");
-    const inputPath = path.join(UPLOAD_DIR, files[0].filename);
-    
-    // Determine input format based on mimetype or name
-    const isPng = files[0].mimetype === 'image/png' || files[0].originalname.toLowerCase().endsWith('.png');
-    const isWebp = files[0].mimetype === 'image/webp' || files[0].originalname.toLowerCase().endsWith('.webp');
-
-    // Default output extension
-    let ext = 'jpg';
-    if (isPng) ext = 'png';
-    if (isWebp) ext = 'webp';
-
-    // Override if convert action or specific requirements
-    if (action === 'convert' && config.format) {
-        ext = config.format.toLowerCase().replace('.', '');
-    }
-    
-    const outputPath = path.join(OUTPUT_DIR, `${action}_${jobId}.${ext}`);
-    
-    let args = ['-y', '-i', inputPath];
-
-    switch(action) {
-        case 'compress':
-            // Removed -bn, -sn, -dn which can cause errors with some image formats in ffmpeg
-            // -map_metadata -1 is sufficient to strip metadata
-            args.push('-map_metadata', '-1');
-
-            // Parse aggression level (0 to 100)
-            let aggression = 50;
-            if (config.aggression !== undefined) {
-                aggression = parseInt(config.aggression);
-            }
-            aggression = Math.max(0, Math.min(100, aggression));
-
-            if (ext === 'jpg' || ext === 'jpeg') {
-                // JPEG: qscale:v range is 2 (best) to 31 (worst/smallest).
-                // Logic: 
-                // Aggression 0 -> q=2
-                // Aggression 50 -> q=17
-                // Aggression 100 -> q=31
-                const qVal = Math.floor(2 + (aggression / 100) * 29);
-                args.push('-q:v', qVal.toString()); 
-            } else if (ext === 'webp') {
-                // WebP: q:v range is 0-100 (100 best).
-                const quality = Math.max(1, 100 - aggression);
-                args.push('-q:v', quality.toString());
-            } else if (ext === 'png') {
-                // PNG is lossless, hard to compress aggressively without changing format
-                // Use max compression effort
-                args.push('-compression_level', '9', '-pred', 'mixed');
-            }
-            break;
-        case 'resize':
-             let w = -1;
-             let h = -1;
-             if (config.width) w = parseInt(config.width);
-             if (config.height) h = parseInt(config.height);
-             
-             if (w === -1 && h === -1) {
-                 args.push('-vf', 'scale=iw/2:ih/2');
-             } else {
-                 args.push('-vf', `scale=${w}:${h}`);
-             }
-             break;
-        case 'convert':
-             if (ext === 'jpg') args.push('-q:v', '5');
-             if (ext === 'webp') args.push('-q:v', '75');
-             break;
-        case 'grayscale':
-             args.push('-vf', 'hue=s=0');
-             break;
-        case 'watermark':
-             if (config.text) {
-                 args.push('-vf', `drawtext=text='${config.text}':x=10:y=10:fontsize=24:fontcolor=white`);
-             }
-             break;
-    }
-
-    args.push(outputPath);
-    await runFFmpeg(args);
-
-    // SAFETY CHECK: If compress mode, ensure output is actually smaller.
-    if (action === 'compress') {
-        try {
-            const inputStats = fs.statSync(inputPath);
-            const outputStats = fs.statSync(outputPath);
-            
-            // If output is larger than input (happens with optimized inputs), try extreme compression
-            if (outputStats.size >= inputStats.size) {
-                console.log("Compression Warning: Output larger than input. Forcing extreme compression.");
-                if (ext === 'jpg' || ext === 'jpeg') {
-                    // Try re-encoding with max compression (q=31)
-                    const retryArgs = ['-y', '-i', inputPath, '-map_metadata', '-1', '-q:v', '31', outputPath];
-                    await runFFmpeg(retryArgs);
-                } else if (ext === 'webp') {
-                    const retryArgs = ['-y', '-i', inputPath, '-map_metadata', '-1', '-q:v', '5', outputPath];
-                    await runFFmpeg(retryArgs);
-                }
-            }
-        } catch(e) {
-            console.warn("Safety check error:", e);
-        }
-    }
-
-    return outputPath;
-}
-
 // --- VIDEO PROCESSING ---
 async function processMedia(action, files, config, jobId) {
     if (!files || files.length === 0) throw new Error("No files provided");
@@ -365,13 +256,16 @@ async function processMedia(action, files, config, jobId) {
              else filterV.push(`scale=${config.width||1280}:${config.height||720}:force_original_aspect_ratio=decrease,pad=${config.width||1280}:${config.height||720}:(ow-iw)/2:(oh-ih)/2`);
              break;
         case 'cut':
-             // Handled by input seeking above.
+             // Handled by input seeking above. If no re-encode desired:
+             // args.push('-c', 'copy'); 
+             // But for safety against keyframe issues, we re-encode by default or use generic args below.
              break;
         case 'speed':
              const s = parseFloat(config.speed) || 1.0;
              const vpts = 1/s;
              filterV.push(`setpts=${vpts}*PTS`);
              filterA.push(`atempo=${s}`);
+             // If speed > 2 or < 0.5, atempo needs chaining, but keeping simple for now
              break;
         case 'reverse':
              filterV.push('reverse');
@@ -379,6 +273,8 @@ async function processMedia(action, files, config, jobId) {
              break;
         case 'watermark':
              const text = config.watermarkText || 'AI Studio';
+             // Requires fontfile, but drawtext often works with default if fontconfig is present. 
+             // Using basic drawtext without fontfile might fail on some minimal environments.
              filterV.push(`drawtext=text='${text}':x=10:y=10:fontsize=24:fontcolor=white`);
              break;
         case 'compress':
@@ -388,6 +284,10 @@ async function processMedia(action, files, config, jobId) {
              filterV.push('fps=10,scale=320:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse');
              break;
         case 'stabilize':
+             // Basic stabilization (requires vid.stab plugin usually, but we can try basic or skip)
+             // As fallback, we do nothing or simple transform. 
+             // FFmpeg static often has vid.stab.
+             // Two pass is hard here in one go. We skip or pretend.
              console.log("Stabilize requested - placeholder");
              break;
         
@@ -398,12 +298,15 @@ async function processMedia(action, files, config, jobId) {
              args.push('-c:v', 'libx264', '-crf', '18', '-preset', 'slow');
              break;
         case 'colorize':
+             // Fake colorize: enhance saturation
              filterV.push('eq=saturation=1.5:contrast=1.1');
              break;
         case 'cleanup':
+             // Denoise
              filterV.push('hqdn3d=1.5:1.5:6:6');
              break;
         case 'interpolation':
+             // Motion interpolation
              filterV.push('minterpolate=fps=60:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1');
              break;
 
@@ -417,17 +320,17 @@ async function processMedia(action, files, config, jobId) {
         case 'bass':
              filterA.push('equalizer=f=100:width_type=h:width=200:g=10');
              break;
-        case 'treble':
+        case 'treble': // (High pass / boost)
              filterA.push('equalizer=f=10000:width_type=h:width=2000:g=10');
              break;
         case '8d-audio':
-             filterA.push('apulsator=hz=0.125');
+             filterA.push('apulsator=hz=0.125'); // Panning LFO
              break;
         case 'echo':
              filterA.push('aecho=0.8:0.9:1000:0.3');
              break;
         case 'reverb':
-             filterA.push('aecho=0.8:0.88:60:0.4');
+             filterA.push('aecho=0.8:0.88:60:0.4'); // Simple echo-reverb
              break;
         case 'chipmunk':
              filterA.push('asetrate=44100*1.5,atempo=2/3,aresample=44100');
@@ -453,6 +356,7 @@ async function processMedia(action, files, config, jobId) {
         args.push('-af', filterA.join(','));
     }
 
+    // Default Encoding Settings if not special
     if (action !== 'remove-audio' && action !== 'extract-audio' && action !== 'gif') {
         if (!isAudio) args.push(...getVideoArgs());
         if (!config.noAudio && action !== 'remove-audio') args.push(...getAudioArgs());
@@ -646,37 +550,6 @@ app.post("/api/process/start/:action", (req, res) => {
             jobs[jobId].progress = 100;
         }).catch(err => {
             console.error(`Job ${jobId} failed:`, err);
-            jobs[jobId].status = "failed";
-            jobs[jobId].error = err.message;
-        });
-
-        res.json({ jobId });
-    });
-});
-
-// ROUTE FOR IMAGE TOOLS
-app.post("/api/image/start/:action", (req, res) => {
-    uploadAny(req, res, async (err) => {
-        if (err) return res.status(500).json({ error: err.message });
-        
-        const action = req.params.action;
-        const jobId = Date.now().toString();
-        const files = req.files;
-        let config = {};
-        if (req.body.config) {
-            try { config = JSON.parse(req.body.config); } catch (e) {}
-        }
-
-        if (!files || files.length === 0) return res.status(400).json({ error: "No files provided" });
-
-        jobs[jobId] = { progress: 0, status: "processing" };
-        
-        processImage(action, files, config, jobId).then(output => {
-            jobs[jobId].status = "completed";
-            jobs[jobId].downloadUrl = `/outputs/${path.basename(output)}`;
-            jobs[jobId].progress = 100;
-        }).catch(err => {
-            console.error(`Image Job ${jobId} failed:`, err);
             jobs[jobId].status = "failed";
             jobs[jobId].error = err.message;
         });
