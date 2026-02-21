@@ -241,8 +241,6 @@ async function processImage(action, files, config, jobId) {
 
     switch(action) {
         case 'compress':
-            // Removed -bn, -sn, -dn which causes errors with some ffmpeg versions
-            // -map_metadata -1 is the standard way to strip metadata
             args.push('-map_metadata', '-1');
 
             // Parse aggression level (0 to 100)
@@ -253,24 +251,27 @@ async function processImage(action, files, config, jobId) {
             aggression = Math.max(0, Math.min(100, aggression));
 
             if (ext === 'jpg' || ext === 'jpeg') {
-                // JPEG: qscale:v range is 2-31.
-                // Adjusted Curve for GUARANTEED reduction:
-                // Start range at 10 (good web quality) to 31 (lowest).
-                // Avoids 2-9 range which often bloats already compressed files.
-                // 0% aggression -> q:10
-                // 50% aggression -> q:20
-                // 100% aggression -> q:31
-                const qVal = Math.floor(10 + (aggression / 100) * 21);
-                
-                // Force standard pixel format to save space compared to 4:4:4
+                // JPEG: qscale:v range is 2-31 (lower is better quality).
+                // We map aggression 0-100 to q 2-31.
+                // 0% aggression -> q:2 (Best quality)
+                // 50% aggression -> q:16
+                // 100% aggression -> q:31 (Worst quality)
+                const qVal = Math.floor(2 + (aggression / 100) * 29);
                 args.push('-q:v', qVal.toString(), '-pix_fmt', 'yuv420p'); 
             } else if (ext === 'webp') {
-                // WebP: q:v range is 0-100 (100 best).
+                // WebP: q:v range is 0-100 (higher is better quality).
                 const quality = Math.max(1, 100 - aggression);
                 args.push('-q:v', quality.toString());
             } else if (ext === 'png') {
-                // PNG is lossless
-                args.push('-compression_level', '9', '-pred', 'mixed');
+                // PNG Compression Strategy
+                if (aggression > 30) {
+                    // Lossy compression for PNG (reduce colors to 256 palette) if aggression is high
+                    // This significantly reduces size for photos while keeping PNG format
+                    args.push('-vf', 'palettegen=max_colors=256:stats_mode=diff[p];[0:v][p]paletteuse=dither=bayer:bayer_scale=5');
+                } else {
+                    // Lossless optimization
+                    args.push('-compression_level', '9', '-pred', 'mixed');
+                }
             }
             break;
         case 'resize':
@@ -302,21 +303,29 @@ async function processImage(action, files, config, jobId) {
     args.push(outputPath);
     await runFFmpeg(args);
 
-    // SAFETY CHECK: If compress mode, ensure output is actually smaller.
+    // SAFETY CHECK & RETRY
     if (action === 'compress') {
         try {
             const inputStats = fs.statSync(inputPath);
             const outputStats = fs.statSync(outputPath);
             
-            // If output is larger than input (happens with optimized inputs), try extreme compression
-            if (outputStats.size >= inputStats.size) {
-                console.log("Compression Warning: Output larger than input. Forcing extreme compression.");
+            // If output is larger or not significantly smaller (when high aggression requested)
+            // If aggression > 50 and reduction is less than 10%, force harder compression
+            const reductionRatio = 1 - (outputStats.size / inputStats.size);
+            
+            if (outputStats.size >= inputStats.size || (aggression > 50 && reductionRatio < 0.1)) {
+                console.log(`Compression Warning: Output size (${outputStats.size}) not satisfactory compared to input (${inputStats.size}). Retrying with extreme settings.`);
+                
                 if (ext === 'jpg' || ext === 'jpeg') {
-                    // Try re-encoding with max compression (q=31)
+                    // Force q=31 (max compression)
                     const retryArgs = ['-y', '-i', inputPath, '-map_metadata', '-1', '-q:v', '31', '-pix_fmt', 'yuv420p', outputPath];
                     await runFFmpeg(retryArgs);
                 } else if (ext === 'webp') {
                     const retryArgs = ['-y', '-i', inputPath, '-map_metadata', '-1', '-q:v', '10', outputPath];
+                    await runFFmpeg(retryArgs);
+                } else if (ext === 'png') {
+                    // If PNG didn't compress enough, try reducing palette further or just re-run with palette if not done
+                    const retryArgs = ['-y', '-i', inputPath, '-map_metadata', '-1', '-vf', 'palettegen=max_colors=128[p];[0:v][p]paletteuse', outputPath];
                     await runFFmpeg(retryArgs);
                 }
             }
