@@ -165,7 +165,12 @@ async function buildFrontend() {
                 fs.copyFileSync(src, dest);
             }
         };
-        copySafe('index.html', path.join(PUBLIC_DIR,'index.html'));
+        // copySafe('index.html', path.join(PUBLIC_DIR,'index.html'));
+        if (fs.existsSync('index.html')) {
+            let html = fs.readFileSync('index.html', 'utf8');
+            html = html.replace('src="/index.tsx"', 'src="/bundle.js"');
+            fs.writeFileSync(path.join(PUBLIC_DIR, 'index.html'), html);
+        }
         copySafe('index.css', path.join(PUBLIC_DIR,'index.css'));
         await esbuild.build({
             entryPoints:['index.tsx'],
@@ -173,7 +178,7 @@ async function buildFrontend() {
             bundle:true,
             format:'esm',
             minify:true,
-            external: ['fs', 'path', 'child_process', 'url', 'https', 'ffmpeg-static', 'ffprobe-static'],
+            external: ['fs', 'path', 'child_process', 'url', 'https', 'ffmpeg-static', 'ffprobe-static', 'react', 'react-dom', 'react-dom/client', 'lucide-react'],
             define: { 'process.env.API_KEY': JSON.stringify(GEMINI_KEY), 'global': 'window' },
             loader: { '.tsx': 'tsx', '.ts': 'ts', '.css': 'css' },
         });
