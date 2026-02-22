@@ -16,7 +16,6 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 8080;
 const GEMINI_KEY = process.env.GEMINI_API_KEY || process.env.API_KEY || "";
-console.log("DEBUG: GEMINI_KEY =", GEMINI_KEY);
 
 // FFmpeg setup
 const FFMPEG_BIN = typeof ffmpegPath === 'string' ? ffmpegPath : ffmpegPath.path;
@@ -120,37 +119,176 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
     const d = parseFloat(durationSec) || 5;
     const w = parseInt(targetW) || 1280;
     const h = parseInt(targetH) || 720;
-    const fps = 24;
-    const zNorm = `(time/${d})`; 
-    const rNorm = `(t/${d})`;
-    const PI = 3.14159; 
-    const zp = `zoompan=d=1:fps=${fps}:s=${w}x${h}`;
-    const center = `:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
-    const scaleFactor = 2.0; 
+    const fps = 24; 
+    
+    // Total frames for the clip
+    const totalFrames = Math.ceil(d * fps);
 
+    // Normalize time variables for zoompan (time is in seconds)
+    const zNorm = `(time/${d})`; 
+    const rNorm = `(time/${d})`;
+
+    // IMPORTANT: zoompan 'd' is the duration of the zoom in FRAMES for a single input image.
+    // We must set d to totalFrames + extra buffer to prevent it from freezing or resetting too early.
+    const zpDuration = totalFrames + 25; 
+
+    const zp = `zoompan=d=${zpDuration}:fps=${fps}:s=${w}x${h}`;
+    const center = `:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
+    
     const moves = {
         'static': `${zp}:z=1.0${center}`,
         'kenburns': `${zp}:z='1.0+(0.3*${zNorm})':x='(iw/2-(iw/zoom/2))*(1-0.2*${zNorm})':y='(ih/2-(ih/zoom/2))*(1-0.2*${zNorm})'`,
-        'zoom-in': `${zp}:z='1.0+(0.6*${zNorm})'${center}`,
-        'zoom-out': `${zp}:z='1.6-(0.6*${zNorm})'${center}`,
+        'mov-3d-float': `${zp}:z='1.1+0.05*sin(time*2)':x='iw/2-(iw/zoom/2)+iw*0.03*sin(time)':y='ih/2-(ih/zoom/2)+ih*0.03*cos(time)'`,
+        'mov-tilt-up-slow': `${zp}:z=1.2:x='iw/2-(iw/zoom/2)':y='(ih/2-(ih/zoom/2))+(ih/4*${zNorm})'`,
+        'mov-tilt-down-slow': `${zp}:z=1.2:x='iw/2-(iw/zoom/2)':y='(ih/2-(ih/zoom/2))-(ih/4*${zNorm})'`,
+
+        'zoom-in': `${zp}:z='1.0+(0.5*${zNorm})'${center}`,
+        'zoom-out': `${zp}:z='1.5-(0.5*${zNorm})'${center}`,
+        'mov-zoom-crash-in': `${zp}:z='1.0+3*${zNorm}*${zNorm}*${zNorm}'${center}`,
+        'mov-zoom-crash-out': `${zp}:z='4-3*${zNorm}'${center}`,
+        'mov-zoom-bounce-in': `${zp}:z='if(lt(${zNorm},0.8), 1.0+0.5*${zNorm}, 1.5-0.1*sin((${zNorm}-0.8)*20))'${center}`,
+        'mov-zoom-pulse-slow': `${zp}:z='1.1+0.1*sin(time*2)'${center}`,
+        'mov-dolly-vertigo': `${zp}:z='1.0+(1.0*${zNorm})'${center}`,
+        
+        'mov-zoom-twist-in': `rotate=angle='(PI/12)*${rNorm}':fillcolor=black,${zp}:z='1.0+(0.5*${zNorm})'${center}`,
+        'mov-zoom-wobble': `${zp}:z='1.1':x='iw/2-(iw/zoom/2)+20*sin(time*2)':y='ih/2-(ih/zoom/2)+20*cos(time*2)'`,
+        'mov-scale-pulse': `${zp}:z='1.0+0.2*sin(time*3)'${center}`,
+
         'mov-pan-slow-l': `${zp}:z=1.4:x='(iw/2-(iw/zoom/2))*(1+0.5*${zNorm})'${center}`,
         'mov-pan-slow-r': `${zp}:z=1.4:x='(iw/2-(iw/zoom/2))*(1-0.5*${zNorm})'${center}`,
+        'mov-pan-slow-u': `${zp}:z=1.4:x='iw/2-(iw/zoom/2)':y='(ih/2-(ih/zoom/2))*(1+0.5*${zNorm})'`,
+        'mov-pan-slow-d': `${zp}:z=1.4:x='iw/2-(iw/zoom/2)':y='(ih/2-(ih/zoom/2))*(1-0.5*${zNorm})'`,
+        'mov-pan-fast-l': `${zp}:z=1.4:x='(iw/2-(iw/zoom/2))*(1+1.0*${zNorm})'${center}`,
+        'mov-pan-fast-r': `${zp}:z=1.4:x='(iw/2-(iw/zoom/2))*(1-1.0*${zNorm})'${center}`,
+        'mov-pan-diag-tl': `${zp}:z=1.4:x='(iw/2-(iw/zoom/2))*(1+0.5*${zNorm})':y='(ih/2-(ih/zoom/2))*(1+0.5*${zNorm})'`,
+        'mov-pan-diag-br': `${zp}:z=1.4:x='(iw/2-(iw/zoom/2))*(1-0.5*${zNorm})':y='(ih/2-(ih/zoom/2))*(1-0.5*${zNorm})'`,
+
+        'handheld-1': `${zp}:z=1.1:x='iw/2-(iw/zoom/2)+10*sin(time*2)':y='ih/2-(ih/zoom/2)+10*cos(time*3)'`,
+        'handheld-2': `${zp}:z=1.1:x='iw/2-(iw/zoom/2)+20*sin(time)':y='ih/2-(ih/zoom/2)+20*cos(time*1.5)'`,
+        'earthquake': `${zp}:z=1.1:x='iw/2-(iw/zoom/2)+40*(random(1)-0.5)':y='ih/2-(ih/zoom/2)+40*(random(1)-0.5)'`,
+        'mov-jitter-x': `${zp}:z=1.05:x='iw/2-(iw/zoom/2)+10*sin(time*20)'${center}`,
+        'mov-walk': `${zp}:z=1.1:x='iw/2-(iw/zoom/2)+15*sin(time*3)':y='ih/2-(ih/zoom/2)+10*abs(sin(time*1.5))'`,
+
+        'mov-3d-spin-axis': `rotate=angle='2*PI*${rNorm}':fillcolor=black,${zp}:z=1.2${center}`,
+        'mov-3d-flip-x': `${zp}:z='1.0+0.4*abs(sin(time*3))':x='iw/2-(iw/zoom/2)+(iw/4)*sin(time*5)'${center}`, 
+        'mov-3d-flip-y': `${zp}:z='1.0+0.4*abs(cos(time*3))':y='ih/2-(iw/zoom/2)+(ih/4)*cos(time*5)'${center}`,
+        'mov-3d-swing-l': `rotate=angle='(PI/8)*sin(time)':fillcolor=black,${zp}:z=1.2${center}`,
+        'mov-3d-roll': `rotate=angle='2*PI*${rNorm}':fillcolor=black,${zp}:z=1.5${center}`,
+
+        'mov-glitch-snap': `${zp}:z='if(lt(mod(time,1.0),0.1), 1.3, 1.0)':x='iw/2-(iw/zoom/2)+if(lt(mod(time,1.0),0.1), iw*0.1, 0)'${center},noise=alls=20:allf=t`,
+        'mov-glitch-skid': `${zp}:z=1.0:x='iw/2-(iw/zoom/2)+if(lt(mod(time,0.5),0.1), iw*0.2, 0)'${center}`,
+        'mov-shake-violent': `${zp}:z=1.2:x='iw/2-(iw/zoom/2)+60*(random(1)-0.5)':y='ih/2-(ih/zoom/2)+60*(random(1)-0.5)'`,
+        'mov-rgb-shift-move': `rgbashift=rh=20:bv=20,${zp}:z=1.05${center}`,
+        'mov-vibrate': `${zp}:z=1.02:x='iw/2-(iw/zoom/2)+5*sin(time*50)':y='ih/2-(ih/zoom/2)+5*cos(time*50)'`,
+
+        'mov-blur-in': `gblur=sigma='20*max(0,1-${rNorm})':steps=2,${zp}:z=1${center}`,
+        'mov-blur-out': `gblur=sigma='min(20,20*${rNorm})':steps=2,${zp}:z=1${center}`,
+        'mov-blur-pulse': `gblur=sigma='10*abs(sin(t*2))':steps=1,${zp}:z=1${center}`,
+        'mov-tilt-shift': `eq=saturation=1.4:contrast=1.1,${zp}:z=1.1${center}`,
+
+        'mov-rubber-band': `${zp}:z='1.0+0.3*abs(sin(time*2))'${center}`,
+        'mov-jelly-wobble': `${zp}:z='1.0+0.1*sin(time)':x='iw/2-(iw/zoom/2)+10*sin(time*4)':y='ih/2-(ih/zoom/2)+10*cos(time*4)'`,
+        'mov-pop-up': `${zp}:z='min(1.0 + ${zNorm}*5, 1.0)'${center}`,
+        'mov-bounce-drop': `${zp}:z='1.0':y='(ih/2-(ih/zoom/2)) + (ih/2 * abs(cos(${zNorm}*5*PI)) * (1-${zNorm}))'`
     };
 
     const selected = moves[moveId] || moves['kenburns'];
+    const scaleFactor = 2.0; 
     const pre = `scale=${Math.ceil(w*scaleFactor)}:${Math.ceil(h*scaleFactor)}:force_original_aspect_ratio=increase,crop=${Math.ceil(w*scaleFactor)}:${Math.ceil(h*scaleFactor)},setsar=1`;
     const post = `scale=${w}:${h}:flags=lanczos,pad=ceil(iw/2)*2:ceil(ih/2)*2,fps=${fps},format=yuv420p`;
     return `${pre},${selected},${post}`;
 }
 
 function getTransitionXfade(t) {
+    const id = t?.toLowerCase() || 'fade';
     const map = {
-        'cut': 'cut', 'fade':'fade', 'mix':'dissolve', 'black':'fadeblack', 'white':'fadewhite',
-        'slide-left':'slideleft', 'slide-right':'slideright',
-        'wipe-left': 'wipeleft', 'wipe-right': 'wiperight', 'wipe-up': 'wipeup', 'wipe-down': 'wipedown',
-        'circle-open': 'circleopen', 'circle-close': 'circleclose'
+        // === BÁSICOS ===
+        'cut': 'fade',
+        'fade': 'fade',
+        'mix': 'dissolve',
+        'black': 'fadeblack',
+        'white': 'fadewhite',
+
+        // === GEOMÉTRICOS ===
+        'circle-open': 'circleopen',
+        'circle-close': 'circleclose',
+        'door-open': 'horzopen',
+        'door-close': 'horzclose',
+        'vert-open': 'vertopen',
+        'clock-wipe': 'radial',
+        'spiral-wipe': 'spiral',
+        'diamond-zoom': 'diagdist',
+        'checker-wipe': 'checkerboard',
+        'blind-h': 'horzclose',
+        'blind-v': 'vertclose',
+        'triangle-wipe': 'dissolve',
+        'star-zoom': 'circleopen',
+
+        // === MOVIMENTO ===
+        'slide-left': 'slideleft',
+        'slide-right': 'slideright',
+        'slide-up': 'slideup',
+        'slide-down': 'slidedown',
+        'push-left': 'pushleft',
+        'push-right': 'pushright',
+        'whip-left': 'slideleft',
+        'whip-right': 'slideright',
+        'whip-up': 'slideup',
+        'whip-down': 'slidedown',
+        'elastic-left': 'slideleft',
+
+        // === WIPES ===
+        'wipe-left': 'wipeleft',
+        'wipe-right': 'wiperight',
+        'wipe-up': 'wipeup',
+        'wipe-down': 'wipedown',
+
+        // === ZOOM & WARP ===
+        'zoom-in': 'zoomin',
+        'zoom-out': 'zoomout',
+        'zoom-spin-fast': 'zoomin',
+        'blur-warp': 'dissolve',
+        'cyber-zoom': 'zoomin',
+
+        // === EFEITOS ARTÍSTICOS ===
+        'smoke-reveal': 'dissolve',
+        'paper-rip': 'hlslice',
+        'water-ripple': 'circleopen',
+        'flash-bang': 'fadewhite',
+        'burn': 'fadewhite',
+        'god-rays': 'fadewhite',
+        'lens-flare': 'circleopen',
+        'light-leak-tr': 'fadewhite',
+        'glow-intense': 'fadewhite',
+        'flash-black': 'fadeblack',
+        'oil-paint': 'dissolve',
+        'ink-splash': 'dissolve',
+        'page-turn': 'slideleft',
+        'sketch-reveal': 'dissolve',
+        'liquid-melt': 'dissolve',
+
+        // === GLITCH ===
+        'glitch': 'pixelize',
+        'color-glitch': 'pixelize',
+        'pixelize': 'pixelize',
+        'datamosh': 'hblur',
+        'hologram': 'dissolve',
+        'digital-noise': 'pixelize',
+        'rgb-split': 'dissolve',
+        'scan-line-v': 'dissolve',
+        'block-glitch': 'pixelize',
+
+        // === 3D & PERSPECTIVA ===
+        'cube-rotate-l': 'slideleft',
+        'cube-rotate-r': 'slideright',
+        'flip-card': 'slideleft',
+        'room-fly': 'zoomin',
+        'film-roll': 'slidedown',
+
+        // === OUTROS ===
+        'rect-crop': 'rectcrop'
     };
-    return map[t] || 'fade';
+    return map[id] || 'fade';
 }
 
 const getVideoArgs = () => ['-c:v','libx264','-preset','ultrafast','-pix_fmt','yuv420p','-movflags','+faststart','-r','24'];
@@ -179,12 +317,8 @@ async function buildFrontend() {
             bundle:true,
             format:'esm',
             minify:true,
-            external: ['fs', 'path', 'child_process', 'url', 'https', 'ffmpeg-static', 'ffprobe-static'],
-            define: { 
-                'process.env.API_KEY': JSON.stringify(GEMINI_KEY), 
-                'process.env.NODE_ENV': '"production"',
-                'global': 'window' 
-            },
+            external: ['fs', 'path', 'child_process', 'url', 'https', 'ffmpeg-static', 'ffprobe-static', 'react', 'react-dom', 'react-dom/client', 'lucide-react'],
+            define: { 'process.env.API_KEY': JSON.stringify(GEMINI_KEY), 'global': 'window' },
             loader: { '.tsx': 'tsx', '.ts': 'ts', '.css': 'css' },
         });
     } catch(e) { console.error("Frontend error:", e); }
@@ -226,13 +360,6 @@ async function processImage(action, files, config, jobId) {
     if (!files || files.length === 0) throw new Error("No files provided");
     const inputPath = path.join(UPLOAD_DIR, files[0].filename);
     
-    // Parse aggression level (0 to 100)
-    let aggression = 60; // Default to 60%
-    if (config.aggression !== undefined) {
-        aggression = parseInt(config.aggression);
-    }
-    aggression = Math.max(0, Math.min(100, aggression));
-
     // Determine input format based on mimetype or name
     const isPng = files[0].mimetype === 'image/png' || files[0].originalname.toLowerCase().endsWith('.png');
     const isWebp = files[0].mimetype === 'image/webp' || files[0].originalname.toLowerCase().endsWith('.webp');
@@ -255,6 +382,13 @@ async function processImage(action, files, config, jobId) {
         case 'compress':
             args.push('-map_metadata', '-1');
 
+            // Parse aggression level (0 to 100)
+            let aggression = 60; // Default to 60%
+            if (config.aggression !== undefined) {
+                aggression = parseInt(config.aggression);
+            }
+            aggression = Math.max(0, Math.min(100, aggression));
+
             if (ext === 'jpg' || ext === 'jpeg') {
                 // JPEG: qscale:v range is 2-31 (lower is better quality).
                 // We map aggression 0-100 to q 2-31.
@@ -272,7 +406,7 @@ async function processImage(action, files, config, jobId) {
                 if (aggression > 30) {
                     // Lossy compression for PNG (reduce colors to 256 palette) if aggression is high
                     // This significantly reduces size for photos while keeping PNG format
-                    args.push('-vf', 'split[s0][s1];[s0]palettegen=max_colors=256:stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=5');
+                    args.push('-vf', 'palettegen=max_colors=256:stats_mode=diff[p];[0:v][p]paletteuse=dither=bayer:bayer_scale=5');
                 } else {
                     // Lossless optimization
                     args.push('-compression_level', '9', '-pred', 'mixed');
@@ -330,7 +464,7 @@ async function processImage(action, files, config, jobId) {
                     await runFFmpeg(retryArgs);
                 } else if (ext === 'png') {
                     // If PNG didn't compress enough, try reducing palette further or just re-run with palette if not done
-                    const retryArgs = ['-y', '-i', inputPath, '-map_metadata', '-1', '-vf', 'split[s0][s1];[s0]palettegen=max_colors=128[p];[s1][p]paletteuse', outputPath];
+                    const retryArgs = ['-y', '-i', inputPath, '-map_metadata', '-1', '-vf', 'palettegen=max_colors=128[p];[0:v][p]paletteuse', outputPath];
                     await runFFmpeg(retryArgs);
                 }
             }
