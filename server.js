@@ -206,8 +206,8 @@ function getTransitionXfade(t) {
         'cut': 'fade',
         'fade': 'fade',
         'mix': 'dissolve',
-        'black': 'fadeblack',
-        'white': 'fadewhite',
+        'black': 'fade',
+        'white': 'fade',
 
         // === GEOMÉTRICOS ===
         'circle-open': 'circleopen',
@@ -221,7 +221,7 @@ function getTransitionXfade(t) {
         'checker-wipe': 'checkerboard',
         'blind-h': 'horzclose',
         'blind-v': 'vertclose',
-        'triangle-wipe': 'dissolve',
+        'triangle-wipe': 'slidediff',
         'star-zoom': 'circleopen',
 
         // === MOVIMENTO ===
@@ -235,7 +235,7 @@ function getTransitionXfade(t) {
         'whip-right': 'slideright',
         'whip-up': 'slideup',
         'whip-down': 'slidedown',
-        'elastic-left': 'slideleft',
+        'elastic-left': 'wavy',
 
         // === WIPES ===
         'wipe-left': 'wipeleft',
@@ -247,35 +247,35 @@ function getTransitionXfade(t) {
         'zoom-in': 'zoomin',
         'zoom-out': 'zoomout',
         'zoom-spin-fast': 'zoomin',
-        'blur-warp': 'dissolve',
+        'blur-warp': 'hblur',
         'cyber-zoom': 'zoomin',
 
         // === EFEITOS ARTÍSTICOS ===
         'smoke-reveal': 'dissolve',
         'paper-rip': 'hlslice',
-        'water-ripple': 'circleopen',
-        'flash-bang': 'fadewhite',
-        'burn': 'fadewhite',
-        'god-rays': 'fadewhite',
+        'water-ripple': 'wavy',
+        'flash-bang': 'fade',
+        'burn': 'fade',
+        'god-rays': 'fade',
         'lens-flare': 'circleopen',
-        'light-leak-tr': 'fadewhite',
-        'glow-intense': 'fadewhite',
-        'flash-black': 'fadeblack',
+        'light-leak-tr': 'dissolve',
+        'glow-intense': 'dissolve',
+        'flash-black': 'fade',
         'oil-paint': 'dissolve',
         'ink-splash': 'dissolve',
         'page-turn': 'slideleft',
         'sketch-reveal': 'dissolve',
-        'liquid-melt': 'dissolve',
+        'liquid-melt': 'wavy',
 
         // === GLITCH ===
-        'glitch': 'pixelize',
-        'color-glitch': 'pixelize',
+        'glitch': 'noise',
+        'color-glitch': 'hsv',
         'pixelize': 'pixelize',
         'datamosh': 'hblur',
         'hologram': 'dissolve',
-        'digital-noise': 'pixelize',
-        'rgb-split': 'dissolve',
-        'scan-line-v': 'dissolve',
+        'digital-noise': 'noise',
+        'rgb-split': 'hsv',
+        'scan-line-v': 'vuslice',
         'block-glitch': 'pixelize',
 
         // === 3D & PERSPECTIVA ===
