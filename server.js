@@ -182,9 +182,9 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
         'mov-rgb-shift-move': `${zp}:z=1.05${center},rgbashift=rh=60:bv=60:gh=30,hue=h='t*360/${d}':s=2`,
         'mov-vibrate': `${zp}:z=1.02:x='iw/2-(iw/zoom/2)+5*sin(time*50)':y='ih/2-(ih/zoom/2)+5*cos(time*50)'`,
 
-        'mov-blur-in': `${zp}:z=1.1${center},split[v1][v2];[v2]boxblur=20:5[v2b];[v2b][v1]overlay=alpha='t/${d}'`,
-        'mov-blur-out': `${zp}:z=1.1${center},split[v1][v2];[v2]boxblur=20:5[v2b];[v2b][v1]overlay=alpha='1-t/${d}'`,
-        'mov-blur-pulse': `boxblur=10:2,${zp}:z=1${center}`,
+        'mov-blur-in': `${zp}:z=1.1${center},split[v1][v2];[v2]boxblur=20:1[v2b];[v1][v2b]blend=all_expr='A*(T/${d})+B*(1-T/${d})'`,
+        'mov-blur-out': `${zp}:z=1.1${center},split[v1][v2];[v2]boxblur=20:1[v2b];[v1][v2b]blend=all_expr='A*(1-T/${d})+B*(T/${d})'`,
+        'mov-blur-pulse': `boxblur=10:1,${zp}:z=1${center}`,
         'mov-tilt-shift': `eq=saturation=1.4:contrast=1.1,${zp}:z=1.1${center}`,
 
         'mov-rubber-band': `${zp}:z='1.0+0.3*abs(sin(time*2))'${center}`,
