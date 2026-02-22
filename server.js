@@ -16,6 +16,7 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 8080;
 const GEMINI_KEY = process.env.GEMINI_API_KEY || process.env.API_KEY || "";
+console.log("DEBUG: GEMINI_KEY =", GEMINI_KEY);
 
 // FFmpeg setup
 const FFMPEG_BIN = typeof ffmpegPath === 'string' ? ffmpegPath : ffmpegPath.path;
@@ -178,8 +179,12 @@ async function buildFrontend() {
             bundle:true,
             format:'esm',
             minify:true,
-            external: ['fs', 'path', 'child_process', 'url', 'https', 'ffmpeg-static', 'ffprobe-static', 'react', 'react-dom', 'react-dom/client', 'lucide-react'],
-            define: { 'process.env.API_KEY': JSON.stringify(GEMINI_KEY), 'global': 'window' },
+            external: ['fs', 'path', 'child_process', 'url', 'https', 'ffmpeg-static', 'ffprobe-static'],
+            define: { 
+                'process.env.API_KEY': JSON.stringify(GEMINI_KEY), 
+                'process.env.NODE_ENV': '"production"',
+                'global': 'window' 
+            },
             loader: { '.tsx': 'tsx', '.ts': 'ts', '.css': 'css' },
         });
     } catch(e) { console.error("Frontend error:", e); }
