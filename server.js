@@ -176,10 +176,10 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
         'mov-3d-swing-l': `rotate=angle='(PI/8)*sin(t)':fillcolor=black,${zp}:z=1.2${center}`,
         'mov-3d-roll': `rotate=angle='2*PI*${tNorm}':fillcolor=black,${zp}:z=1.5${center}`,
 
-        'mov-glitch-snap': `${zp}:z='if(lt(mod(time,1.0),0.1), 1.3, 1.0)':x='iw/2-(iw/zoom/2)+if(lt(mod(time,1.0),0.1), iw*0.1, 0)'${center},noise=alls=20:allf=t`,
-        'mov-glitch-skid': `${zp}:z=1.0:x='iw/2-(iw/zoom/2)+if(lt(mod(time,0.5),0.1), iw*0.2, 0)'${center}`,
+        'mov-glitch-snap': `${zp}:z=1.1${center},noise=alls=30:allf=t,scale=iw/4:ih/4,scale=iw*4:ih*4:flags=neighbor`,
+        'mov-glitch-skid': `${zp}:z=1.0:x='iw/2-(iw/zoom/2)+if(lt(mod(time,0.5),0.1), iw*0.2, 0)'${center},rgbashift=rh=40:bv=-40`,
         'mov-shake-violent': `${zp}:z=1.2:x='iw/2-(iw/zoom/2)+60*(random(1)-0.5)':y='ih/2-(ih/zoom/2)+60*(random(1)-0.5)'`,
-        'mov-rgb-shift-move': `${zp}:z=1.05${center},rgbashift=rh=60:bv=60:gh=30,hue=h='t*360/${d}':s=2`,
+        'mov-rgb-shift-move': `${zp}:z=1.05${center},hue=h='t*2000/${d}':s=3,rgbashift=rh=100:bv=-100:gh=50,noise=alls=15:allf=t`,
         'mov-vibrate': `${zp}:z=1.02:x='iw/2-(iw/zoom/2)+5*sin(time*50)':y='ih/2-(ih/zoom/2)+5*cos(time*50)'`,
 
         'mov-blur-in': `${zp}:z=1.1${center},split[v1][v2];[v2]boxblur=20:1[v2b];[v1][v2b]blend=all_expr='A*(T/${d})+B*(1-T/${d})'`,
@@ -196,7 +196,7 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
     const selected = moves[moveId] || moves['kenburns'];
     const scaleFactor = 2.0; 
     const pre = `scale=${Math.ceil(w*scaleFactor)}:${Math.ceil(h*scaleFactor)}:force_original_aspect_ratio=increase,crop=${Math.ceil(w*scaleFactor)}:${Math.ceil(h*scaleFactor)},setsar=1`;
-    const post = `scale=${w}:${h}:flags=lanczos,pad=ceil(iw/2)*2:ceil(ih/2)*2,fps=${fps},format=yuv420p`;
+    const post = `scale=${w}:${h}:flags=lanczos,pad=w=ceil(iw/2)*2:h=ceil(ih/2)*2,fps=${fps},format=yuv420p`;
     return `${pre},${selected},${post}`;
 }
 
@@ -270,12 +270,12 @@ function getTransitionXfade(t) {
 
         // === GLITCH ===
         'glitch': 'pixelize',
-        'color-glitch': 'radial',
+        'color-glitch': 'pixelize',
         'pixelize': 'pixelize',
         'datamosh': 'hblur',
         'hologram': 'dissolve',
         'digital-noise': 'pixelize',
-        'rgb-split': 'radial',
+        'rgb-split': 'pixelize',
         'scan-line-v': 'vuslice',
         'block-glitch': 'pixelize',
 
@@ -287,7 +287,8 @@ function getTransitionXfade(t) {
         'film-roll': 'slidedown',
 
         // === OUTROS ===
-        'rect-crop': 'rectcrop'
+        'rect-crop': 'rectcrop',
+        'circle-crop': 'circleclose'
     };
     return map[id] || 'fade';
 }
