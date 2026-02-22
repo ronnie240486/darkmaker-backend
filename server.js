@@ -179,12 +179,12 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
         'mov-glitch-snap': `${zp}:z='if(lt(mod(time,1.0),0.1), 1.3, 1.0)':x='iw/2-(iw/zoom/2)+if(lt(mod(time,1.0),0.1), iw*0.1, 0)'${center},noise=alls=20:allf=t`,
         'mov-glitch-skid': `${zp}:z=1.0:x='iw/2-(iw/zoom/2)+if(lt(mod(time,0.5),0.1), iw*0.2, 0)'${center}`,
         'mov-shake-violent': `${zp}:z=1.2:x='iw/2-(iw/zoom/2)+60*(random(1)-0.5)':y='ih/2-(ih/zoom/2)+60*(random(1)-0.5)'`,
-        'mov-rgb-shift-move': `rgbashift=rh=20:bv=20,${zp}:z=1.05${center}`,
+        'mov-rgb-shift-move': `rgbashift=rh=40:bv=40,${zp}:z=1.05${center}`,
         'mov-vibrate': `${zp}:z=1.02:x='iw/2-(iw/zoom/2)+5*sin(time*50)':y='ih/2-(ih/zoom/2)+5*cos(time*50)'`,
 
-        'mov-blur-in': `boxblur=10:1,${zp}:z=1${center}`,
-        'mov-blur-out': `boxblur=10:1,${zp}:z=1${center}`,
-        'mov-blur-pulse': `boxblur=5:1,${zp}:z=1${center}`,
+        'mov-blur-in': `boxblur=20:5,${zp}:z=1${center}`,
+        'mov-blur-out': `boxblur=20:5,${zp}:z=1${center}`,
+        'mov-blur-pulse': `boxblur=10:2,${zp}:z=1${center}`,
         'mov-tilt-shift': `eq=saturation=1.4:contrast=1.1,${zp}:z=1.1${center}`,
 
         'mov-rubber-band': `${zp}:z='1.0+0.3*abs(sin(time*2))'${center}`,
@@ -196,7 +196,7 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
     const selected = moves[moveId] || moves['kenburns'];
     const scaleFactor = 2.0; 
     const pre = `scale=${Math.ceil(w*scaleFactor)}:${Math.ceil(h*scaleFactor)}:force_original_aspect_ratio=increase,crop=${Math.ceil(w*scaleFactor)}:${Math.ceil(h*scaleFactor)},setsar=1`;
-    const post = `scale=w=${w}:h=${h}:flags=lanczos,pad=w=ceil(iw/2)*2:h=ceil(ih/2)*2,fps=${fps},format=yuv420p`;
+    const post = `scale=${w}:${h}:flags=lanczos,pad=ceil(iw/2)*2:ceil(ih/2)*2,fps=${fps},format=yuv420p`;
     return `${pre},${selected},${post}`;
 }
 
@@ -270,12 +270,12 @@ function getTransitionXfade(t) {
 
         // === GLITCH ===
         'glitch': 'pixelize',
-        'color-glitch': 'pixelize',
+        'color-glitch': 'radial',
         'pixelize': 'pixelize',
         'datamosh': 'hblur',
         'hologram': 'dissolve',
         'digital-noise': 'pixelize',
-        'rgb-split': 'pixelize',
+        'rgb-split': 'radial',
         'scan-line-v': 'vuslice',
         'block-glitch': 'pixelize',
 
