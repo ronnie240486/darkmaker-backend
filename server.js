@@ -222,7 +222,7 @@ function getTransitionXfade(t) {
         'checker-wipe': 'checkerboard',
         'blind-h': 'horzclose',
         'blind-v': 'vertclose',
-        'triangle-wipe': 'slidediff',
+        'triangle-wipe': 'dissolve',
         'star-zoom': 'circleopen',
 
         // === MOVIMENTO ===
@@ -236,7 +236,7 @@ function getTransitionXfade(t) {
         'whip-right': 'slideright',
         'whip-up': 'slideup',
         'whip-down': 'slidedown',
-        'elastic-left': 'wavy',
+        'elastic-left': 'slideleft',
 
         // === WIPES ===
         'wipe-left': 'wipeleft',
@@ -254,7 +254,7 @@ function getTransitionXfade(t) {
         // === EFEITOS ARTÍSTICOS ===
         'smoke-reveal': 'dissolve',
         'paper-rip': 'hlslice',
-        'water-ripple': 'wavy',
+        'water-ripple': 'dissolve',
         'flash-bang': 'fadewhite',
         'burn': 'fadewhite',
         'god-rays': 'fadewhite',
@@ -266,16 +266,16 @@ function getTransitionXfade(t) {
         'ink-splash': 'dissolve',
         'page-turn': 'slideleft',
         'sketch-reveal': 'dissolve',
-        'liquid-melt': 'wavy',
+        'liquid-melt': 'dissolve',
 
         // === GLITCH ===
         'glitch': 'pixelize',
-        'color-glitch': 'hsv',
+        'color-glitch': 'pixelize',
         'pixelize': 'pixelize',
         'datamosh': 'hblur',
         'hologram': 'dissolve',
         'digital-noise': 'pixelize',
-        'rgb-split': 'hsv',
+        'rgb-split': 'pixelize',
         'scan-line-v': 'vuslice',
         'block-glitch': 'pixelize',
 
