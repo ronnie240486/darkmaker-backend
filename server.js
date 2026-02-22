@@ -124,9 +124,10 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
     // Total frames for the clip
     const totalFrames = Math.ceil(d * fps);
 
-    // Normalize time variables for zoompan (time is in seconds)
+    // Normalize time variables
+    // zoompan uses 'time', rotate uses 't'
     const zNorm = `(time/${d})`; 
-    const rNorm = `(time/${d})`;
+    const tNorm = `(t/${d})`;
 
     // IMPORTANT: zoompan 'd' is the duration of the zoom in FRAMES for a single input image.
     // We must set d to totalFrames + extra buffer to prevent it from freezing or resetting too early.
@@ -150,7 +151,7 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
         'mov-zoom-pulse-slow': `${zp}:z='1.1+0.1*sin(time*2)'${center}`,
         'mov-dolly-vertigo': `${zp}:z='1.0+(1.0*${zNorm})'${center}`,
         
-        'mov-zoom-twist-in': `rotate=angle='(PI/12)*${rNorm}':fillcolor=black,${zp}:z='1.0+(0.5*${zNorm})'${center}`,
+        'mov-zoom-twist-in': `rotate=angle='(PI/12)*${tNorm}':fillcolor=black,${zp}:z='1.0+(0.5*${zNorm})'${center}`,
         'mov-zoom-wobble': `${zp}:z='1.1':x='iw/2-(iw/zoom/2)+20*sin(time*2)':y='ih/2-(ih/zoom/2)+20*cos(time*2)'`,
         'mov-scale-pulse': `${zp}:z='1.0+0.2*sin(time*3)'${center}`,
 
@@ -169,11 +170,11 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
         'mov-jitter-x': `${zp}:z=1.05:x='iw/2-(iw/zoom/2)+10*sin(time*20)'${center}`,
         'mov-walk': `${zp}:z=1.1:x='iw/2-(iw/zoom/2)+15*sin(time*3)':y='ih/2-(ih/zoom/2)+10*abs(sin(time*1.5))'`,
 
-        'mov-3d-spin-axis': `rotate=angle='2*PI*${rNorm}':fillcolor=black,${zp}:z=1.2${center}`,
+        'mov-3d-spin-axis': `rotate=angle='2*PI*${tNorm}':fillcolor=black,${zp}:z=1.2${center}`,
         'mov-3d-flip-x': `${zp}:z='1.0+0.4*abs(sin(time*3))':x='iw/2-(iw/zoom/2)+(iw/4)*sin(time*5)'${center}`, 
         'mov-3d-flip-y': `${zp}:z='1.0+0.4*abs(cos(time*3))':y='ih/2-(iw/zoom/2)+(ih/4)*cos(time*5)'${center}`,
-        'mov-3d-swing-l': `rotate=angle='(PI/8)*sin(time)':fillcolor=black,${zp}:z=1.2${center}`,
-        'mov-3d-roll': `rotate=angle='2*PI*${rNorm}':fillcolor=black,${zp}:z=1.5${center}`,
+        'mov-3d-swing-l': `rotate=angle='(PI/8)*sin(t)':fillcolor=black,${zp}:z=1.2${center}`,
+        'mov-3d-roll': `rotate=angle='2*PI*${tNorm}':fillcolor=black,${zp}:z=1.5${center}`,
 
         'mov-glitch-snap': `${zp}:z='if(lt(mod(time,1.0),0.1), 1.3, 1.0)':x='iw/2-(iw/zoom/2)+if(lt(mod(time,1.0),0.1), iw*0.1, 0)'${center},noise=alls=20:allf=t`,
         'mov-glitch-skid': `${zp}:z=1.0:x='iw/2-(iw/zoom/2)+if(lt(mod(time,0.5),0.1), iw*0.2, 0)'${center}`,
@@ -181,9 +182,9 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
         'mov-rgb-shift-move': `rgbashift=rh=20:bv=20,${zp}:z=1.05${center}`,
         'mov-vibrate': `${zp}:z=1.02:x='iw/2-(iw/zoom/2)+5*sin(time*50)':y='ih/2-(ih/zoom/2)+5*cos(time*50)'`,
 
-        'mov-blur-in': `gblur=sigma='20*max(0,1-${rNorm})':steps=2,${zp}:z=1${center}`,
-        'mov-blur-out': `gblur=sigma='min(20,20*${rNorm})':steps=2,${zp}:z=1${center}`,
-        'mov-blur-pulse': `gblur=sigma='10*abs(sin(t*2))':steps=1,${zp}:z=1${center}`,
+        'mov-blur-in': `boxblur=10:1,${zp}:z=1${center}`,
+        'mov-blur-out': `boxblur=10:1,${zp}:z=1${center}`,
+        'mov-blur-pulse': `boxblur=5:1,${zp}:z=1${center}`,
         'mov-tilt-shift': `eq=saturation=1.4:contrast=1.1,${zp}:z=1.1${center}`,
 
         'mov-rubber-band': `${zp}:z='1.0+0.3*abs(sin(time*2))'${center}`,
@@ -195,7 +196,7 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
     const selected = moves[moveId] || moves['kenburns'];
     const scaleFactor = 2.0; 
     const pre = `scale=${Math.ceil(w*scaleFactor)}:${Math.ceil(h*scaleFactor)}:force_original_aspect_ratio=increase,crop=${Math.ceil(w*scaleFactor)}:${Math.ceil(h*scaleFactor)},setsar=1`;
-    const post = `scale=${w}:${h}:flags=lanczos,pad=ceil(iw/2)*2:ceil(ih/2)*2,fps=${fps},format=yuv420p`;
+    const post = `scale=w=${w}:h=${h}:flags=lanczos,pad=w=ceil(iw/2)*2:h=ceil(ih/2)*2,fps=${fps},format=yuv420p`;
     return `${pre},${selected},${post}`;
 }
 
@@ -206,8 +207,8 @@ function getTransitionXfade(t) {
         'cut': 'fade',
         'fade': 'fade',
         'mix': 'dissolve',
-        'black': 'fade',
-        'white': 'fade',
+        'black': 'fadeblack',
+        'white': 'fadewhite',
 
         // === GEOMÉTRICOS ===
         'circle-open': 'circleopen',
@@ -254,13 +255,13 @@ function getTransitionXfade(t) {
         'smoke-reveal': 'dissolve',
         'paper-rip': 'hlslice',
         'water-ripple': 'wavy',
-        'flash-bang': 'fade',
-        'burn': 'fade',
-        'god-rays': 'fade',
+        'flash-bang': 'fadewhite',
+        'burn': 'fadewhite',
+        'god-rays': 'fadewhite',
         'lens-flare': 'circleopen',
         'light-leak-tr': 'dissolve',
         'glow-intense': 'dissolve',
-        'flash-black': 'fade',
+        'flash-black': 'fadeblack',
         'oil-paint': 'dissolve',
         'ink-splash': 'dissolve',
         'page-turn': 'slideleft',
@@ -268,12 +269,12 @@ function getTransitionXfade(t) {
         'liquid-melt': 'wavy',
 
         // === GLITCH ===
-        'glitch': 'noise',
+        'glitch': 'pixelize',
         'color-glitch': 'hsv',
         'pixelize': 'pixelize',
         'datamosh': 'hblur',
         'hologram': 'dissolve',
-        'digital-noise': 'noise',
+        'digital-noise': 'pixelize',
         'rgb-split': 'hsv',
         'scan-line-v': 'vuslice',
         'block-glitch': 'pixelize',
