@@ -221,6 +221,13 @@ async function processImage(action, files, config, jobId) {
     if (!files || files.length === 0) throw new Error("No files provided");
     const inputPath = path.join(UPLOAD_DIR, files[0].filename);
     
+    // Parse aggression level (0 to 100)
+    let aggression = 60; // Default to 60%
+    if (config.aggression !== undefined) {
+        aggression = parseInt(config.aggression);
+    }
+    aggression = Math.max(0, Math.min(100, aggression));
+
     // Determine input format based on mimetype or name
     const isPng = files[0].mimetype === 'image/png' || files[0].originalname.toLowerCase().endsWith('.png');
     const isWebp = files[0].mimetype === 'image/webp' || files[0].originalname.toLowerCase().endsWith('.webp');
@@ -243,13 +250,6 @@ async function processImage(action, files, config, jobId) {
         case 'compress':
             args.push('-map_metadata', '-1');
 
-            // Parse aggression level (0 to 100)
-            let aggression = 60; // Default to 60%
-            if (config.aggression !== undefined) {
-                aggression = parseInt(config.aggression);
-            }
-            aggression = Math.max(0, Math.min(100, aggression));
-
             if (ext === 'jpg' || ext === 'jpeg') {
                 // JPEG: qscale:v range is 2-31 (lower is better quality).
                 // We map aggression 0-100 to q 2-31.
@@ -267,7 +267,7 @@ async function processImage(action, files, config, jobId) {
                 if (aggression > 30) {
                     // Lossy compression for PNG (reduce colors to 256 palette) if aggression is high
                     // This significantly reduces size for photos while keeping PNG format
-                    args.push('-vf', 'palettegen=max_colors=256:stats_mode=diff[p];[0:v][p]paletteuse=dither=bayer:bayer_scale=5');
+                    args.push('-vf', 'split[s0][s1];[s0]palettegen=max_colors=256:stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=5');
                 } else {
                     // Lossless optimization
                     args.push('-compression_level', '9', '-pred', 'mixed');
@@ -325,7 +325,7 @@ async function processImage(action, files, config, jobId) {
                     await runFFmpeg(retryArgs);
                 } else if (ext === 'png') {
                     // If PNG didn't compress enough, try reducing palette further or just re-run with palette if not done
-                    const retryArgs = ['-y', '-i', inputPath, '-map_metadata', '-1', '-vf', 'palettegen=max_colors=128[p];[0:v][p]paletteuse', outputPath];
+                    const retryArgs = ['-y', '-i', inputPath, '-map_metadata', '-1', '-vf', 'split[s0][s1];[s0]palettegen=max_colors=128[p];[s1][p]paletteuse', outputPath];
                     await runFFmpeg(retryArgs);
                 }
             }
