@@ -179,11 +179,11 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
         'mov-glitch-snap': `${zp}:z='if(lt(mod(time,1.0),0.1), 1.3, 1.0)':x='iw/2-(iw/zoom/2)+if(lt(mod(time,1.0),0.1), iw*0.1, 0)'${center},noise=alls=20:allf=t`,
         'mov-glitch-skid': `${zp}:z=1.0:x='iw/2-(iw/zoom/2)+if(lt(mod(time,0.5),0.1), iw*0.2, 0)'${center}`,
         'mov-shake-violent': `${zp}:z=1.2:x='iw/2-(iw/zoom/2)+60*(random(1)-0.5)':y='ih/2-(ih/zoom/2)+60*(random(1)-0.5)'`,
-        'mov-rgb-shift-move': `rgbashift=rh=40:bv=40,${zp}:z=1.05${center}`,
+        'mov-rgb-shift-move': `hue=h='t*360/${d}',rgbashift=rh=40:bv=40,${zp}:z=1.05${center}`,
         'mov-vibrate': `${zp}:z=1.02:x='iw/2-(iw/zoom/2)+5*sin(time*50)':y='ih/2-(ih/zoom/2)+5*cos(time*50)'`,
 
-        'mov-blur-in': `boxblur=20:5,${zp}:z=1${center}`,
-        'mov-blur-out': `boxblur=20:5,${zp}:z=1${center}`,
+        'mov-blur-in': `${zp}:z=1.1${center},split[c][b];[b]boxblur=20:5[bb];[bb][c]blend=all_expr='A*(1-min(t/${d},1))+B*min(t/${d},1)'`,
+        'mov-blur-out': `${zp}:z=1.1${center},split[c][b];[b]boxblur=20:5[bb];[c][bb]blend=all_expr='A*(1-min(t/${d},1))+B*min(t/${d},1)'`,
         'mov-blur-pulse': `boxblur=10:2,${zp}:z=1${center}`,
         'mov-tilt-shift': `eq=saturation=1.4:contrast=1.1,${zp}:z=1.1${center}`,
 
