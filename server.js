@@ -119,182 +119,41 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
     const d = parseFloat(durationSec) || 5;
     const w = parseInt(targetW) || 1280;
     const h = parseInt(targetH) || 720;
-    const fps = 24; 
-    
-    // Total frames for the clip
-    const totalFrames = Math.ceil(d * fps);
-
-    // Normalize time variables
-    // zoompan uses 'time', rotate uses 't'
+    const fps = 24;
     const zNorm = `(time/${d})`; 
-    const tNorm = `(t/${d})`;
-
-    // IMPORTANT: zoompan 'd' is the duration of the zoom in FRAMES for a single input image.
-    // We must set d to totalFrames + extra buffer to prevent it from freezing or resetting too early.
-    const zpDuration = totalFrames + 25; 
-
-    const zp = `zoompan=d=${zpDuration}:fps=${fps}:s=${w}x${h}`;
+    const rNorm = `(t/${d})`;
+    const PI = 3.14159; 
+    const zp = `zoompan=d=1:fps=${fps}:s=${w}x${h}`;
     const center = `:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
-    
+    const scaleFactor = 2.0; 
+
     const moves = {
         'static': `${zp}:z=1.0${center}`,
         'kenburns': `${zp}:z='1.0+(0.3*${zNorm})':x='(iw/2-(iw/zoom/2))*(1-0.2*${zNorm})':y='(ih/2-(ih/zoom/2))*(1-0.2*${zNorm})'`,
-        'mov-3d-float': `${zp}:z='1.1+0.05*sin(time*2)':x='iw/2-(iw/zoom/2)+iw*0.03*sin(time)':y='ih/2-(ih/zoom/2)+ih*0.03*cos(time)'`,
-        'mov-tilt-up-slow': `${zp}:z=1.2:x='iw/2-(iw/zoom/2)':y='(ih/2-(ih/zoom/2))+(ih/4*${zNorm})'`,
-        'mov-tilt-down-slow': `${zp}:z=1.2:x='iw/2-(iw/zoom/2)':y='(ih/2-(ih/zoom/2))-(ih/4*${zNorm})'`,
-
-        'zoom-in': `${zp}:z='1.0+(0.5*${zNorm})'${center}`,
-        'zoom-out': `${zp}:z='1.5-(0.5*${zNorm})'${center}`,
-        'mov-zoom-crash-in': `${zp}:z='1.0+3*${zNorm}*${zNorm}*${zNorm}'${center}`,
-        'mov-zoom-crash-out': `${zp}:z='4-3*${zNorm}'${center}`,
-        'mov-zoom-bounce-in': `${zp}:z='if(lt(${zNorm},0.8), 1.0+0.5*${zNorm}, 1.5-0.1*sin((${zNorm}-0.8)*20))'${center}`,
-        'mov-zoom-pulse-slow': `${zp}:z='1.1+0.1*sin(time*2)'${center}`,
-        'mov-dolly-vertigo': `${zp}:z='1.0+(1.0*${zNorm})'${center}`,
-        
-        'mov-zoom-twist-in': `rotate=angle='(PI/12)*${tNorm}':fillcolor=black,${zp}:z='1.0+(0.5*${zNorm})'${center}`,
-        'mov-zoom-wobble': `${zp}:z='1.1':x='iw/2-(iw/zoom/2)+20*sin(time*2)':y='ih/2-(ih/zoom/2)+20*cos(time*2)'`,
-        'mov-scale-pulse': `${zp}:z='1.0+0.2*sin(time*3)'${center}`,
-
+        'zoom-in': `${zp}:z='1.0+(0.6*${zNorm})'${center}`,
+        'zoom-out': `${zp}:z='1.6-(0.6*${zNorm})'${center}`,
         'mov-pan-slow-l': `${zp}:z=1.4:x='(iw/2-(iw/zoom/2))*(1+0.5*${zNorm})'${center}`,
         'mov-pan-slow-r': `${zp}:z=1.4:x='(iw/2-(iw/zoom/2))*(1-0.5*${zNorm})'${center}`,
-        'mov-pan-slow-u': `${zp}:z=1.4:x='iw/2-(iw/zoom/2)':y='(ih/2-(ih/zoom/2))*(1+0.5*${zNorm})'`,
-        'mov-pan-slow-d': `${zp}:z=1.4:x='iw/2-(iw/zoom/2)':y='(ih/2-(ih/zoom/2))*(1-0.5*${zNorm})'`,
-        'mov-pan-fast-l': `${zp}:z=1.4:x='(iw/2-(iw/zoom/2))*(1+1.0*${zNorm})'${center}`,
-        'mov-pan-fast-r': `${zp}:z=1.4:x='(iw/2-(iw/zoom/2))*(1-1.0*${zNorm})'${center}`,
-        'mov-pan-diag-tl': `${zp}:z=1.4:x='(iw/2-(iw/zoom/2))*(1+0.5*${zNorm})':y='(ih/2-(ih/zoom/2))*(1+0.5*${zNorm})'`,
-        'mov-pan-diag-br': `${zp}:z=1.4:x='(iw/2-(iw/zoom/2))*(1-0.5*${zNorm})':y='(ih/2-(ih/zoom/2))*(1-0.5*${zNorm})'`,
-
-        'handheld-1': `${zp}:z=1.1:x='iw/2-(iw/zoom/2)+10*sin(time*2)':y='ih/2-(ih/zoom/2)+10*cos(time*3)'`,
-        'handheld-2': `${zp}:z=1.1:x='iw/2-(iw/zoom/2)+20*sin(time)':y='ih/2-(ih/zoom/2)+20*cos(time*1.5)'`,
-        'earthquake': `${zp}:z=1.1:x='iw/2-(iw/zoom/2)+40*(random(1)-0.5)':y='ih/2-(ih/zoom/2)+40*(random(1)-0.5)'`,
-        'mov-jitter-x': `${zp}:z=1.05:x='iw/2-(iw/zoom/2)+10*sin(time*20)'${center}`,
-        'mov-walk': `${zp}:z=1.1:x='iw/2-(iw/zoom/2)+15*sin(time*3)':y='ih/2-(ih/zoom/2)+10*abs(sin(time*1.5))'`,
-
-        'mov-3d-spin-axis': `rotate=angle='2*PI*${tNorm}':fillcolor=black,${zp}:z=1.2${center}`,
-        'mov-3d-flip-x': `${zp}:z='1.0+0.4*abs(sin(time*3))':x='iw/2-(iw/zoom/2)+(iw/4)*sin(time*5)'${center}`, 
-        'mov-3d-flip-y': `${zp}:z='1.0+0.4*abs(cos(time*3))':y='ih/2-(iw/zoom/2)+(ih/4)*cos(time*5)'${center}`,
-        'mov-3d-swing-l': `rotate=angle='(PI/8)*sin(t)':fillcolor=black,${zp}:z=1.2${center}`,
-        'mov-3d-roll': `rotate=angle='2*PI*${tNorm}':fillcolor=black,${zp}:z=1.5${center}`,
-
-        'mov-glitch-snap': `${zp}:z=1.1${center},noise=alls=30:allf=t,scale=iw/4:ih/4,scale=iw*4:ih*4:flags=neighbor,hue=h='t*720':s=2,negate=enable='between(mod(t,0.2),0,0.05)'`,
-        'mov-glitch-skid': `${zp}:z=1.0:x='iw/2-(iw/zoom/2)+if(lt(mod(time,0.5),0.1), iw*0.2, 0)'${center},rgbashift=rh=60:bv=-60,noise=alls=40:allf=t,hue=h='t*360':s=2`,
-        'mov-shake-violent': `${zp}:z=1.2:x='iw/2-(iw/zoom/2)+60*(random(1)-0.5)':y='ih/2-(ih/zoom/2)+60*(random(1)-0.5)'`,
-        'mov-rgb-shift-move': `${zp}:z=1.05${center},rgbashift=rh=100:bv=-100:gh=50,hue=h='t*3600/${d}':s=3,noise=alls=20:allf=t,negate=enable='between(mod(t,0.4),0,0.1)'`,
-        'mov-vibrate': `${zp}:z=1.02:x='iw/2-(iw/zoom/2)+5*sin(time*50)':y='ih/2-(ih/zoom/2)+5*cos(time*50)'`,
-
-        'mov-blur-in': `${zp}:z=1.1${center},split[v1][v2];[v2]boxblur=20:1[v2b];[v1][v2b]blend=all_expr='A*(T/${d})+B*(1-T/${d})'`,
-        'mov-blur-out': `${zp}:z=1.1${center},split[v1][v2];[v2]boxblur=20:1[v2b];[v1][v2b]blend=all_expr='A*(1-T/${d})+B*(T/${d})'`,
-        'mov-blur-pulse': `boxblur=10:1,${zp}:z=1${center}`,
-        'mov-tilt-shift': `eq=saturation=1.4:contrast=1.1,${zp}:z=1.1${center}`,
-
-        'mov-rubber-band': `${zp}:z='1.0+0.3*abs(sin(time*2))'${center}`,
-        'mov-jelly-wobble': `${zp}:z='1.0+0.1*sin(time)':x='iw/2-(iw/zoom/2)+10*sin(time*4)':y='ih/2-(ih/zoom/2)+10*cos(time*4)'`,
-        'mov-pop-up': `${zp}:z='min(1.0 + ${zNorm}*5, 1.0)'${center}`,
-        'mov-bounce-drop': `${zp}:z='1.0':y='(ih/2-(ih/zoom/2)) + (ih/2 * abs(cos(${zNorm}*5*PI)) * (1-${zNorm}))'`
     };
 
     const selected = moves[moveId] || moves['kenburns'];
-    const scaleFactor = 2.0; 
     const pre = `scale=${Math.ceil(w*scaleFactor)}:${Math.ceil(h*scaleFactor)}:force_original_aspect_ratio=increase,crop=${Math.ceil(w*scaleFactor)}:${Math.ceil(h*scaleFactor)},setsar=1`;
     const post = `scale=${w}:${h}:flags=lanczos,pad=ceil(iw/2)*2:ceil(ih/2)*2,fps=${fps},format=yuv420p`;
     return `${pre},${selected},${post}`;
 }
 
 function getTransitionXfade(t) {
-    const id = t?.toLowerCase() || 'fade';
     const map = {
-        // === BÁSICOS ===
-        'cut': 'fade',
-        'fade': 'fade',
-        'mix': 'dissolve',
-        'black': 'fadeblack',
-        'white': 'fadewhite',
-
-        // === GEOMÉTRICOS ===
-        'circle-open': 'circleopen',
-        'circle-close': 'circleclose',
-        'door-open': 'horzopen',
-        'door-close': 'horzclose',
-        'vert-open': 'vertopen',
-        'clock-wipe': 'radial',
-        'spiral-wipe': 'spiral',
-        'diamond-zoom': 'diagdist',
-        'checker-wipe': 'checkerboard',
-        'blind-h': 'horzclose',
-        'blind-v': 'vertclose',
-        'triangle-wipe': 'dissolve',
-        'star-zoom': 'circleopen',
-
-        // === MOVIMENTO ===
-        'slide-left': 'slideleft',
-        'slide-right': 'slideright',
-        'slide-up': 'slideup',
-        'slide-down': 'slidedown',
-        'push-left': 'pushleft',
-        'push-right': 'pushright',
-        'whip-left': 'slideleft',
-        'whip-right': 'slideright',
-        'whip-up': 'slideup',
-        'whip-down': 'slidedown',
-        'elastic-left': 'slideleft',
-
-        // === WIPES ===
-        'wipe-left': 'wipeleft',
-        'wipe-right': 'wiperight',
-        'wipe-up': 'wipeup',
-        'wipe-down': 'wipedown',
-
-        // === ZOOM & WARP ===
-        'zoom-in': 'zoomin',
-        'zoom-out': 'zoomout',
-        'zoom-spin-fast': 'zoomin',
-        'blur-warp': 'hblur',
-        'cyber-zoom': 'zoomin',
-
-        // === EFEITOS ARTÍSTICOS ===
-        'smoke-reveal': 'dissolve',
-        'paper-rip': 'hlslice',
-        'water-ripple': 'dissolve',
-        'flash-bang': 'fadewhite',
-        'burn': 'fadewhite',
-        'god-rays': 'fadewhite',
-        'lens-flare': 'circleopen',
-        'light-leak-tr': 'dissolve',
-        'glow-intense': 'dissolve',
-        'flash-black': 'fadeblack',
-        'oil-paint': 'dissolve',
-        'ink-splash': 'dissolve',
-        'page-turn': 'slideleft',
-        'sketch-reveal': 'dissolve',
-        'liquid-melt': 'dissolve',
-
-        // === GLITCH ===
-        'glitch': 'pixelize',
-        'color-glitch': 'radial',
-        'pixelize': 'pixelize',
-        'datamosh': 'hblur',
-        'hologram': 'dissolve',
-        'digital-noise': 'pixelize',
-        'rgb-split': 'radial',
-        'scan-line-v': 'vuslice',
-        'block-glitch': 'pixelize',
-
-        // === 3D & PERSPECTIVA ===
-        'cube-rotate-l': 'slideleft',
-        'cube-rotate-r': 'slideright',
-        'flip-card': 'slideleft',
-        'room-fly': 'zoomin',
-        'film-roll': 'slidedown',
-
-        // === OUTROS ===
-        'rect-crop': 'rectcrop',
-        'circle-crop': 'circleclose'
+        'cut': 'cut', 'fade':'fade', 'mix':'dissolve', 'black':'fadeblack', 'white':'fadewhite',
+        'slide-left':'slideleft', 'slide-right':'slideright',
+        'wipe-left': 'wipeleft', 'wipe-right': 'wiperight', 'wipe-up': 'wipeup', 'wipe-down': 'wipedown',
+        'circle-open': 'circleopen', 'circle-close': 'circleclose'
     };
-    return map[id] || 'fade';
+    return map[t] || 'fade';
 }
 
 const getVideoArgs = () => ['-c:v','libx264','-preset','ultrafast','-pix_fmt','yuv420p','-movflags','+faststart','-r','24'];
-const getAudioArgs = () => ['-c:a','aac','-b:a','192k','-ar','44100','-ac','2', '-strict', 'experimental'];
+const getAudioArgs = () => ['-c:a','aac','-b:a','192k','-ar','44100','-ac','2'];
 
 // --- BUILD FRONTEND ---
 async function buildFrontend() {
@@ -380,16 +239,16 @@ async function processImage(action, files, config, jobId) {
     
     let args = ['-y', '-i', inputPath];
 
+    // Parse aggression level (0 to 100) - Defined here for scope access
+    let aggression = 60; // Default to 60%
+    if (config.aggression !== undefined) {
+        aggression = parseInt(config.aggression);
+    }
+    aggression = Math.max(0, Math.min(100, aggression));
+
     switch(action) {
         case 'compress':
             args.push('-map_metadata', '-1');
-
-            // Parse aggression level (0 to 100)
-            let aggression = 60; // Default to 60%
-            if (config.aggression !== undefined) {
-                aggression = parseInt(config.aggression);
-            }
-            aggression = Math.max(0, Math.min(100, aggression));
 
             if (ext === 'jpg' || ext === 'jpeg') {
                 // JPEG: qscale:v range is 2-31 (lower is better quality).
@@ -408,7 +267,8 @@ async function processImage(action, files, config, jobId) {
                 if (aggression > 30) {
                     // Lossy compression for PNG (reduce colors to 256 palette) if aggression is high
                     // This significantly reduces size for photos while keeping PNG format
-                    args.push('-vf', 'palettegen=max_colors=256:stats_mode=diff[p];[0:v][p]paletteuse=dither=bayer:bayer_scale=5');
+                    // MUST USE -filter_complex because paletteuse requires 2 inputs (original + palette)
+                    args.push('-filter_complex', 'palettegen=max_colors=256:stats_mode=diff[p];[0:v][p]paletteuse=dither=bayer:bayer_scale=5');
                 } else {
                     // Lossless optimization
                     args.push('-compression_level', '9', '-pred', 'mixed');
@@ -465,8 +325,8 @@ async function processImage(action, files, config, jobId) {
                     const retryArgs = ['-y', '-i', inputPath, '-map_metadata', '-1', '-q:v', '10', outputPath];
                     await runFFmpeg(retryArgs);
                 } else if (ext === 'png') {
-                    // If PNG didn't compress enough, try reducing palette further or just re-run with palette if not done
-                    const retryArgs = ['-y', '-i', inputPath, '-map_metadata', '-1', '-vf', 'palettegen=max_colors=128[p];[0:v][p]paletteuse', outputPath];
+                    // If PNG didn't compress enough, try reducing palette further
+                    const retryArgs = ['-y', '-i', inputPath, '-map_metadata', '-1', '-filter_complex', 'palettegen=max_colors=128[p];[0:v][p]paletteuse', outputPath];
                     await runFFmpeg(retryArgs);
                 }
             }
@@ -608,7 +468,10 @@ async function processMedia(action, files, config, jobId) {
         args.push('-vf', filterV.join(','));
     }
     if (filterA.length > 0) {
-        args.push('-af', filterA.join(','));
+        args.push('-af', 'aresample=async=1,' + filterA.join(','));
+    } else if (action !== 'remove-audio' && action !== 'extract-audio' && !isAudio && !config.noAudio) {
+        // Even if no specific audio filter is requested, add aresample to ensure sync
+        args.push('-af', 'aresample=async=1');
     }
 
     if (action !== 'remove-audio' && action !== 'extract-audio' && action !== 'gif') {
@@ -689,7 +552,7 @@ async function renderVideoProject(project, jobId) {
         const movementFilter = getMovementFilter(clip.movement || "kenburns", duration, targetW, targetH);
         filterComplex += `[0:v]${movementFilter}[v_out];`;
 
-        const audioFmt = "aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp";
+        const audioFmt = "aresample=async=1,aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp";
         let clipAudioLabel = "";
 
         if (audioMixParts.length > 0) {
@@ -701,7 +564,7 @@ async function renderVideoProject(project, jobId) {
             }
             filterComplex += `${clipAudioLabel}apad,atrim=0:${duration},asetpts=PTS-STARTPTS,${audioFmt}[a_out]`;
         } else {
-            filterComplex += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration},asetpts=PTS-STARTPTS,${audioFmt}[a_out]`;
+            filterComplex += `anullsrc=cl=stereo:sr=44100:d=${duration},${audioFmt}[a_out]`;
         }
 
         args.push("-filter_complex", filterComplex, "-map", "[v_out]", "-map", "[a_out]", "-t", duration.toString(), ...getVideoArgs(), ...getAudioArgs(), outFile);
@@ -753,7 +616,8 @@ async function renderVideoProject(project, jobId) {
             const outLabelA = `[a${outIndex + 1}]`;
             
             filterGraph += `${prevLabelV}[${i}:v]xfade=transition=${trType}:duration=${trDur}:offset=${offset}${outLabelV};`;
-            filterGraph += `${prevLabelA}[${i}:a]acrossfade=d=${trDur}:c1=tri:c2=tri${outLabelA};`;
+            // Audio crossfade: using acrossfade with explicit overlap and curve
+            filterGraph += `${prevLabelA}[${i}:a]acrossfade=d=${trDur}:overlap=1:curve1=tri:curve2=tri${outLabelA};`;
             
             prevLabelV = outLabelV;
             prevLabelA = outLabelA;
