@@ -564,7 +564,7 @@ async function renderVideoProject(project, jobId) {
             }
             filterComplex += `${clipAudioLabel}apad,atrim=0:${duration},asetpts=PTS-STARTPTS,${audioFmt}[a_out]`;
         } else {
-            filterComplex += `anullsrc=cl=stereo:sr=44100:d=${duration},${audioFmt}[a_out]`;
+            filterComplex += `anullsrc=channel_layout=stereo:sample_rate=44100:duration=${duration},${audioFmt}[a_out]`;
         }
 
         args.push("-filter_complex", filterComplex, "-map", "[v_out]", "-map", "[a_out]", "-t", duration.toString(), ...getVideoArgs(), ...getAudioArgs(), outFile);
@@ -616,8 +616,8 @@ async function renderVideoProject(project, jobId) {
             const outLabelA = `[a${outIndex + 1}]`;
             
             filterGraph += `${prevLabelV}[${i}:v]xfade=transition=${trType}:duration=${trDur}:offset=${offset}${outLabelV};`;
-            // Audio crossfade: using acrossfade with explicit overlap and curve
-            filterGraph += `${prevLabelA}[${i}:a]acrossfade=d=${trDur}:overlap=1:curve1=tri:curve2=tri${outLabelA};`;
+            // Audio crossfade: using acrossfade with explicit curve
+            filterGraph += `${prevLabelA}[${i}:a]acrossfade=d=${trDur}:curve1=tri:curve2=tri${outLabelA};`;
             
             prevLabelV = outLabelV;
             prevLabelA = outLabelA;
