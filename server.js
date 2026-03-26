@@ -139,7 +139,7 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
 
     const selected = moves[moveId] || moves['kenburns'];
     const pre = `scale=${Math.ceil(w*scaleFactor)}:${Math.ceil(h*scaleFactor)}:force_original_aspect_ratio=increase,crop=${Math.ceil(w*scaleFactor)}:${Math.ceil(h*scaleFactor)},setsar=1`;
-    const post = `scale=${w}:${h}:flags=lanczos,pad=ceil(iw/2)*2:ceil(ih/2)*2,fps=${fps},format=yuv420p`;
+    const post = `scale=${w}:${h}:flags=lanczos,pad=ceil(iw/2)*2:ceil(ih/2)*2,setsar=1,fps=${fps},format=yuv420p`;
     return `${pre},${selected},${post}`;
 }
 
@@ -784,16 +784,16 @@ app.post("/api/render/start", async (req, res) => {
                 return res.status(400).json({ error: "Nenhuma cena válida pôde ser processada. Verifique se os arquivos foram gerados corretamente." });
             }
 
-            renderVideoProject(project, jobId)
-                .then(outputPath => {
-                    jobs[jobId].status = "completed";
-                    jobs[jobId].downloadUrl = `/outputs/${path.basename(outputPath)}`;
-                })
-                .catch(err => {
-                    console.error("Render error:", err);
-                    jobs[jobId].status = "failed";
-                    jobs[jobId].error = "Erro no render: " + (err.message || err.toString());
-                });
+        renderVideoProject(project, jobId)
+            .then(outputPath => {
+                jobs[jobId].status = "completed";
+                jobs[jobId].downloadUrl = `/outputs/${path.basename(outputPath)}`;
+            })
+            .catch(err => {
+                const errorMsg = err instanceof Error ? err.message : String(err);
+                console.error(`Render job ${jobId} failed:`, errorMsg);
+                jobs[jobId] = { status: 'failed', error: `Erro no render: ${errorMsg}` };
+            });
 
             return res.json({ jobId });
         } catch (e) { return res.status(500).json({ error: e.message }); }
