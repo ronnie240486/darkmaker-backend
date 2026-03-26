@@ -153,7 +153,7 @@ function getTransitionXfade(t) {
     return map[t] || 'fade';
 }
 
-const getVideoArgs = () => ['-c:v','libx264','-preset','ultrafast','-pix_fmt','yuv420p','-movflags','+faststart'];
+const getVideoArgs = (w = 1280, h = 720) => ['-c:v','libx264','-preset','ultrafast','-pix_fmt','yuv420p','-r','24','-s',`${w}x${h}`,'-movflags','+faststart'];
 const getAudioArgs = () => ['-c:a','aac','-b:a','192k','-ar','44100','-ac','2'];
 
 // --- BUILD FRONTEND ---
@@ -212,7 +212,10 @@ function runFFmpeg(args) {
         ff.stderr.on('data', d => errData += d.toString());
         ff.on("close", code => {
             if (code === 0) resolve();
-            else reject(`FFmpeg error ${code}: ${errData.slice(-300)}`);
+            else {
+                console.error("FFmpeg full error:", errData);
+                reject(`FFmpeg error ${code}: ${errData.slice(-500)}`);
+            }
         });
     });
 }
@@ -570,7 +573,7 @@ async function renderVideoProject(project, jobId) {
             filterComplex += `anullsrc=cl=stereo:r=44100:d=${duration},${audioFmt}[a_out]`;
         }
 
-        args.push("-filter_complex", filterComplex, "-map", "[v_out]", "-map", "[a_out]", "-t", duration.toString(), ...getVideoArgs(), ...getAudioArgs(), outFile);
+        args.push("-filter_complex", filterComplex, "-map", "[v_out]", "-map", "[a_out]", "-t", duration.toString(), ...getVideoArgs(targetW, targetH), ...getAudioArgs(), outFile);
 
         try {
             await runFFmpeg(args);
@@ -635,7 +638,7 @@ async function renderVideoProject(project, jobId) {
         filterGraph += `${prevLabelA}aresample=async=1[a_sync]`;
         prevLabelA = "[a_sync]";
         
-        await runFFmpeg(["-y", ...inputArgs, "-filter_complex", filterGraph, "-map", prevLabelV, "-map", prevLabelA, ...getVideoArgs(), ...getAudioArgs(), concatOut]);
+        await runFFmpeg(["-y", ...inputArgs, "-filter_complex", filterGraph, "-map", prevLabelV, "-map", "[a_sync]", ...getVideoArgs(targetW, targetH), ...getAudioArgs(), concatOut]);
         jobs[jobId].progress = 70;
     }
 
@@ -644,7 +647,7 @@ async function renderVideoProject(project, jobId) {
 
     if (bgm && fs.existsSync(bgm)) {
         const mixGraph = `[1:a]aloop=loop=-1:size=2e+09,volume=${project.audio.bgmVolume ?? 0.2}[bgm];[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=0,volume=2,aresample=async=1[a_final]`;
-        await runFFmpeg(["-y", "-i", concatOut, "-i", bgm, "-filter_complex", mixGraph, "-map", "0:v", "-map", "[a_final]", ...getVideoArgs(), ...getAudioArgs(), finalOutput]);
+        await runFFmpeg(["-y", "-i", concatOut, "-i", bgm, "-filter_complex", mixGraph, "-map", "0:v", "-map", "[a_final]", ...getVideoArgs(targetW, targetH), ...getAudioArgs(), finalOutput]);
     } else {
         fs.copyFileSync(concatOut, finalOutput);
     }
@@ -789,7 +792,7 @@ app.post("/api/render/start", async (req, res) => {
                 .catch(err => {
                     console.error("Render error:", err);
                     jobs[jobId].status = "failed";
-                    jobs[jobId].error = err.toString();
+                    jobs[jobId].error = "Erro no render: " + (err.message || err.toString());
                 });
 
             return res.json({ jobId });
