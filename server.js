@@ -591,7 +591,10 @@ async function renderVideoProject(project, jobId) {
     if (tempClips.length === 1) {
         fs.copyFileSync(tempClips[0], concatOut);
         jobs[jobId].progress = 70;
-    } else if (trType === 'cut') {
+    } else if (trType === 'cut' || tempClips.length > 25) {
+        if (tempClips.length > 25 && trType !== 'cut') {
+            console.warn(`Too many clips (${tempClips.length}), forcing 'cut' transition for stability.`);
+        }
         const listPath = path.join(sessionDir, "concat_list.txt");
         const listContent = tempClips.map(p => `file '${p.replace(/\\/g, '/')}'`).join('\n');
         fs.writeFileSync(listPath, listContent);
@@ -747,14 +750,20 @@ app.post("/api/render/start", async (req, res) => {
             for (let i = 0; i < scenes.length; i++) {
                 const s = scenes[i];
                 let visualFile = null;
-                if (s.videoUrl) visualFile = await saveBase64OrUrl(s.videoUrl, `scene_${i}_vid`, 'mp4');
-                else if (s.imageUrl) visualFile = await saveBase64OrUrl(s.imageUrl, `scene_${i}_img`, 'png');
+                try {
+                    if (s.videoUrl) visualFile = await saveBase64OrUrl(s.videoUrl, `scene_${i}_vid`, 'mp4');
+                    else if (s.imageUrl) visualFile = await saveBase64OrUrl(s.imageUrl, `scene_${i}_img`, 'png');
+                } catch (e) { console.error(`Failed to save visual for scene ${i}:`, e); }
 
                 let audioFile = null;
-                if (s.audioUrl) audioFile = await saveBase64OrUrl(s.audioUrl, `scene_${i}_audio`, 'wav');
+                try {
+                    if (s.audioUrl) audioFile = await saveBase64OrUrl(s.audioUrl, `scene_${i}_audio`, 'wav');
+                } catch (e) { console.error(`Failed to save audio for scene ${i}:`, e); }
 
                 let sfxFile = null;
-                if (s.sfxUrl) sfxFile = await saveBase64OrUrl(s.sfxUrl, `scene_${i}_sfx`, 'mp3');
+                try {
+                    if (s.sfxUrl) sfxFile = await saveBase64OrUrl(s.sfxUrl, `scene_${i}_sfx`, 'mp3');
+                } catch (e) { console.error(`Failed to save sfx for scene ${i}:`, e); }
 
                 if (visualFile) {
                     project.clips.push({
@@ -766,6 +775,10 @@ app.post("/api/render/start", async (req, res) => {
                         mediaType: s.mediaType 
                     });
                 }
+            }
+
+            if (project.clips.length === 0) {
+                return res.status(400).json({ error: "Nenhuma cena válida pôde ser processada. Verifique se os arquivos foram gerados corretamente." });
             }
 
             renderVideoProject(project, jobId)
