@@ -14,7 +14,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = process.env.PORT || 8080;
+const PORT = 3000;
 const GEMINI_KEY = process.env.GEMINI_API_KEY || process.env.API_KEY || "";
 
 // FFmpeg setup
@@ -53,23 +53,24 @@ async function isVideoFile(file) {
         execFile(FFPROBE_BIN, [
             "-v", "error",
             "-select_streams", "v:0",
-            "-show_entries", "stream=codec_type",
-            "-of", "csv=p=0",
+            "-show_entries", "stream=codec_type,duration,nb_frames",
+            "-of", "json",
             file
         ], (err, stdout) => {
-            const output = stdout ? stdout.toString().trim() : "";
-            if (output.includes('video')) {
-                execFile(FFPROBE_BIN, [
-                    "-v", "error",
-                    "-select_streams", "v:0",
-                    "-show_entries", "stream=nb_frames",
-                    "-of", "csv=p=0",
-                    file
-                ], (err2, stdout2) => {
-                    const frames = parseInt(stdout2);
-                    resolve(!isNaN(frames) && frames > 1);
-                });
-            } else {
+            try {
+                const data = JSON.parse(stdout);
+                const stream = data.streams && data.streams[0];
+                if (!stream) return resolve(false);
+                
+                const frames = parseInt(stream.nb_frames);
+                const duration = parseFloat(stream.duration);
+                
+                // If it has more than 1 frame OR a duration > 0, it's likely a video
+                const isVid = (stream.codec_type === 'video') && 
+                              ((!isNaN(frames) && frames > 1) || (!isNaN(duration) && duration > 0.1));
+                
+                resolve(isVid);
+            } catch (e) {
                 resolve(false);
             }
         });
@@ -152,7 +153,7 @@ function getTransitionXfade(t) {
     return map[t] || 'fade';
 }
 
-const getVideoArgs = () => ['-c:v','libx264','-preset','ultrafast','-pix_fmt','yuv420p','-movflags','+faststart','-r','24'];
+const getVideoArgs = () => ['-c:v','libx264','-preset','ultrafast','-pix_fmt','yuv420p','-movflags','+faststart'];
 const getAudioArgs = () => ['-c:a','aac','-b:a','192k','-ar','44100','-ac','2'];
 
 // --- BUILD FRONTEND ---
@@ -550,7 +551,7 @@ async function renderVideoProject(project, jobId) {
         }
 
         const movementFilter = isVideo 
-            ? `scale=${targetW}:${targetH}:force_original_aspect_ratio=increase,crop=${targetW}:${targetH},setsar=1,fps=24,format=yuv420p`
+            ? `scale=${targetW}:${targetH}:force_original_aspect_ratio=increase,crop=${targetW}:${targetH},pad='ceil(iw/2)*2:ceil(ih/2)*2',setsar=1,fps=24,format=yuv420p`
             : getMovementFilter(clip.movement || "kenburns", duration, targetW, targetH);
         filterComplex += `[0:v]${movementFilter}[v_out];`;
 
