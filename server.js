@@ -564,7 +564,7 @@ async function renderVideoProject(project, jobId) {
             }
             filterComplex += `${clipAudioLabel}apad,atrim=0:${duration},asetpts=PTS-STARTPTS,${audioFmt}[a_out]`;
         } else {
-            filterComplex += `anullsrc=channel_layout=stereo:sample_rate=44100:duration=${duration},${audioFmt}[a_out]`;
+            filterComplex += `anullsrc=cl=stereo:r=44100:d=${duration},${audioFmt}[a_out]`;
         }
 
         args.push("-filter_complex", filterComplex, "-map", "[v_out]", "-map", "[a_out]", "-t", duration.toString(), ...getVideoArgs(), ...getAudioArgs(), outFile);
@@ -617,13 +617,17 @@ async function renderVideoProject(project, jobId) {
             
             filterGraph += `${prevLabelV}[${i}:v]xfade=transition=${trType}:duration=${trDur}:offset=${offset}${outLabelV};`;
             // Audio crossfade: using acrossfade with explicit curve
-            filterGraph += `${prevLabelA}[${i}:a]acrossfade=d=${trDur}:curve1=tri:curve2=tri${outLabelA};`;
+            filterGraph += `${prevLabelA}[${i}:a]acrossfade=d=${trDur}:c1=tri:c2=tri${outLabelA};`;
             
             prevLabelV = outLabelV;
             prevLabelA = outLabelA;
             outIndex++;
             timeCursor += (durations[i] - trDur);
         }
+        
+        // Ensure audio sync at the end of the chain
+        filterGraph += `${prevLabelA}aresample=async=1[a_sync]`;
+        prevLabelA = "[a_sync]";
         
         await runFFmpeg(["-y", ...inputArgs, "-filter_complex", filterGraph, "-map", prevLabelV, "-map", prevLabelA, ...getVideoArgs(), ...getAudioArgs(), concatOut]);
         jobs[jobId].progress = 70;
@@ -633,7 +637,7 @@ async function renderVideoProject(project, jobId) {
     let finalOutput = path.join(OUTPUT_DIR, `video_${jobId}.mp4`);
 
     if (bgm && fs.existsSync(bgm)) {
-        const mixGraph = `[1:a]aloop=loop=-1:size=2e+09,volume=${project.audio.bgmVolume ?? 0.2}[bgm];[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=0,volume=2[a_final]`;
+        const mixGraph = `[1:a]aloop=loop=-1:size=2e+09,volume=${project.audio.bgmVolume ?? 0.2}[bgm];[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=0,volume=2,aresample=async=1[a_final]`;
         await runFFmpeg(["-y", "-i", concatOut, "-i", bgm, "-filter_complex", mixGraph, "-map", "0:v", "-map", "[a_final]", ...getVideoArgs(), ...getAudioArgs(), finalOutput]);
     } else {
         fs.copyFileSync(concatOut, finalOutput);
