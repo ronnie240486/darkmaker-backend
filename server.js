@@ -549,7 +549,9 @@ async function renderVideoProject(project, jobId) {
             }
         }
 
-        const movementFilter = getMovementFilter(clip.movement || "kenburns", duration, targetW, targetH);
+        const movementFilter = isVideo 
+            ? `scale=${targetW}:${targetH}:force_original_aspect_ratio=increase,crop=${targetW}:${targetH},setsar=1,fps=24,format=yuv420p`
+            : getMovementFilter(clip.movement || "kenburns", duration, targetW, targetH);
         filterComplex += `[0:v]${movementFilter}[v_out];`;
 
         const audioFmt = "aresample=async=1,aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp";
