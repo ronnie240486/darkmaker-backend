@@ -490,6 +490,7 @@ async function processMedia(action, files, config, jobId) {
 }
 
 async function renderVideoProject(project, jobId) {
+    console.log(`Starting render job ${jobId} with ${project.clips.length} clips.`);
     const sessionDir = path.join(OUTPUT_DIR, `job_${jobId}`);
     if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
 
@@ -510,6 +511,11 @@ async function renderVideoProject(project, jobId) {
         const clip = project.clips[i];
         const inputPath = path.join(UPLOAD_DIR, clip.file);
         
+        if (!fs.existsSync(inputPath)) {
+            console.error(`Clip file not found: ${inputPath}`);
+            throw new Error(`Arquivo da cena ${i+1} não encontrado.`);
+        }
+
         let duration = clip.duration || 5;
         if (duration <= 0) duration = 5;
         durations.push(duration);
@@ -537,6 +543,8 @@ async function renderVideoProject(project, jobId) {
                 filterComplex += `[${inputIndex}:a]volume=${voiceVol}[voice_track];`;
                 audioMixParts.push("[voice_track]");
                 inputIndex++;
+            } else {
+                console.warn(`Audio file not found for clip ${i}: ${aPath}`);
             }
         } else if (isVideo && await fileHasAudio(inputPath)) {
              filterComplex += `[0:a]volume=${voiceVol}[voice_track];`;
@@ -550,6 +558,8 @@ async function renderVideoProject(project, jobId) {
                 filterComplex += `[${inputIndex}:a]volume=${sfxVol}[sfx_track];`;
                 audioMixParts.push("[sfx_track]");
                 inputIndex++;
+            } else {
+                console.warn(`SFX file not found for clip ${i}: ${sfxPath}`);
             }
         }
 
@@ -731,8 +741,11 @@ app.post("/api/render/start", async (req, res) => {
             const config = req.body.config || {};
             const bgmUrl = req.body.bgmUrl;
 
+            console.log(`Received render request with ${scenes?.length} scenes.`);
+
             if (!scenes || !Array.isArray(scenes) || scenes.length === 0) {
-                return res.status(400).json({ error: "Invalid scenes data" });
+                console.error("Invalid scenes data received:", req.body);
+                return res.status(400).json({ error: "Dados de cena inválidos ou vazios." });
             }
 
             const project = {
@@ -748,25 +761,45 @@ app.post("/api/render/start", async (req, res) => {
                 aspectRatio: config.aspectRatio || '16:9'
             };
 
-            if (bgmUrl) project.audio.bgm = await saveBase64OrUrl(bgmUrl, 'bgm', 'mp3');
+            if (bgmUrl) {
+                console.log("Saving BGM...");
+                project.audio.bgm = await saveBase64OrUrl(bgmUrl, 'bgm', 'mp3');
+            }
 
             for (let i = 0; i < scenes.length; i++) {
                 const s = scenes[i];
                 let visualFile = null;
                 try {
-                    if (s.videoUrl) visualFile = await saveBase64OrUrl(s.videoUrl, `scene_${i}_vid`, 'mp4');
-                    else if (s.imageUrl) visualFile = await saveBase64OrUrl(s.imageUrl, `scene_${i}_img`, 'png');
-                } catch (e) { console.error(`Failed to save visual for scene ${i}:`, e); }
+                    if (s.videoUrl) {
+                        visualFile = await saveBase64OrUrl(s.videoUrl, `scene_${i}_vid`, 'mp4');
+                    } else if (s.imageUrl) {
+                        visualFile = await saveBase64OrUrl(s.imageUrl, `scene_${i}_img`, 'png');
+                    }
+                    
+                    if (!visualFile) {
+                        console.warn(`No visual file generated for scene ${i}`);
+                    }
+                } catch (e) { 
+                    console.error(`Failed to save visual for scene ${i}:`, e); 
+                }
 
                 let audioFile = null;
                 try {
-                    if (s.audioUrl) audioFile = await saveBase64OrUrl(s.audioUrl, `scene_${i}_audio`, 'wav');
-                } catch (e) { console.error(`Failed to save audio for scene ${i}:`, e); }
+                    if (s.audioUrl) {
+                        audioFile = await saveBase64OrUrl(s.audioUrl, `scene_${i}_audio`, 'wav');
+                    }
+                } catch (e) { 
+                    console.error(`Failed to save audio for scene ${i}:`, e); 
+                }
 
                 let sfxFile = null;
                 try {
-                    if (s.sfxUrl) sfxFile = await saveBase64OrUrl(s.sfxUrl, `scene_${i}_sfx`, 'mp3');
-                } catch (e) { console.error(`Failed to save sfx for scene ${i}:`, e); }
+                    if (s.sfxUrl) {
+                        sfxFile = await saveBase64OrUrl(s.sfxUrl, `scene_${i}_sfx`, 'mp3');
+                    }
+                } catch (e) { 
+                    console.error(`Failed to save sfx for scene ${i}:`, e); 
+                }
 
                 if (visualFile) {
                     project.clips.push({
@@ -781,8 +814,11 @@ app.post("/api/render/start", async (req, res) => {
             }
 
             if (project.clips.length === 0) {
-                return res.status(400).json({ error: "Nenhuma cena válida pôde ser processada. Verifique se os arquivos foram gerados corretamente." });
+                console.error("No valid clips after processing scenes.");
+                return res.status(400).json({ error: "Nenhuma cena válida pôde ser processada. Verifique se as imagens/vídeos foram gerados corretamente." });
             }
+
+            console.log(`Project prepared with ${project.clips.length} valid clips. Starting render...`);
 
         renderVideoProject(project, jobId)
             .then(outputPath => {
