@@ -579,12 +579,15 @@ async function renderVideoProject(project, jobId) {
 
         try {
             await runFFmpeg(args);
-            if (!fs.existsSync(outFile) || fs.statSync(outFile).size < 1000) {
-                throw new Error("Arquivo de saída vazio ou muito pequeno.");
+            if (!fs.existsSync(outFile)) {
+                throw new Error(`Arquivo de saída não foi criado para a cena ${i+1}.`);
+            }
+            if (fs.statSync(outFile).size < 1000) {
+                throw new Error(`Arquivo de saída da cena ${i+1} está corrompido ou vazio (tamanho insuficiente).`);
             }
         } catch (e) {
-            console.error(`ERRO NA CENA ${i + 1}: ${e}`);
-            throw new Error(`Falha ao processar clipe ${i+1}`);
+            console.error(`ERRO NA CENA ${i + 1}:`, e);
+            throw new Error(`Falha ao processar clipe ${i+1}: ${e.message || e}`);
         }
 
         jobs[jobId].progress = Math.floor((i / project.clips.length) * 45);
@@ -603,8 +606,9 @@ async function renderVideoProject(project, jobId) {
         const listPath = path.join(sessionDir, "concat_list.txt");
         const listContent = tempClips.map(p => `file '${p.replace(/\\/g, '/')}'`).join('\n');
         fs.writeFileSync(listPath, listContent);
+        const res = project.config?.aspectRatio === '9:16' ? '1080x1920' : '1920x1080';
         // Use re-encoding instead of -c copy for better robustness with many clips
-        await runFFmpeg(["-y", "-f", "concat", "-safe", "0", "-i", listPath, ...getVideoArgs(), ...getAudioArgs(), concatOut]);
+        await runFFmpeg(["-y", "-f", "concat", "-safe", "0", "-i", listPath, ...getVideoArgs(), "-s", res, "-r", "30", ...getAudioArgs(), concatOut]);
         jobs[jobId].progress = 70;
     } else {
         const inputArgs = [];
