@@ -200,8 +200,6 @@ await buildFrontend();
 app.use(cors());
 app.use(express.json({limit:'900mb'}));
 app.use(express.urlencoded({extended:true, limit:'900mb'}));
-app.use(express.static(PUBLIC_DIR));
-app.use('/outputs', express.static(OUTPUT_DIR));
 
 const storage = multer.diskStorage({
     destination:(req,file,cb)=>cb(null,UPLOAD_DIR),
@@ -924,6 +922,20 @@ app.get("/api/download/:file", (req, res) => {
     const filePath = path.join(OUTPUT_DIR, req.params.file);
     if (!fs.existsSync(filePath)) return res.status(404).send("File not found");
     res.download(filePath);
+});
+
+// Static Files & SPA Fallback
+app.use(express.static(PUBLIC_DIR));
+app.use('/outputs', express.static(OUTPUT_DIR));
+
+// 404 for API routes
+app.use('/api/*', (req, res) => {
+    res.status(404).json({ error: `API route not found: ${req.originalUrl}` });
+});
+
+// Catch-all for SPA
+app.get('*', (req, res) => {
+    res.sendFile(path.join(PUBLIC_DIR, 'index.html'));
 });
 
 app.listen(PORT, '0.0.0.0', () => {
