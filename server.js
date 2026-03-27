@@ -93,6 +93,13 @@ function getExactDuration(filePath) {
 
 const saveBase64OrUrl = async (input, prefix, ext) => {
     if (!input) return null;
+    
+    // If it's already a filename in UPLOAD_DIR, just return it
+    if (!input.startsWith('data:') && !input.startsWith('http')) {
+        const existingPath = path.join(UPLOAD_DIR, input);
+        if (fs.existsSync(existingPath)) return input;
+    }
+
     const filename = `${prefix}_${Date.now()}_${Math.random().toString(36).substr(2, 5)}.${ext}`;
     const filepath = path.join(UPLOAD_DIR, filename);
     
@@ -139,7 +146,7 @@ function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 72
 
     const selected = moves[moveId] || moves['kenburns'];
     const pre = `scale=${Math.ceil(w*scaleFactor)}:${Math.ceil(h*scaleFactor)}:force_original_aspect_ratio=increase,crop=${Math.ceil(w*scaleFactor)}:${Math.ceil(h*scaleFactor)},setsar=1`;
-    const post = `scale=${w}:${h}:flags=lanczos,pad=ceil(iw/2)*2:ceil(ih/2)*2,setsar=1,fps=${fps},format=yuv420p`;
+    const post = `scale=${w}:${h}:flags=lanczos,pad=ceil(iw/2)*2:ceil(ih/2)*2,fps=${fps},format=yuv420p`;
     return `${pre},${selected},${post}`;
 }
 
@@ -153,7 +160,7 @@ function getTransitionXfade(t) {
     return map[t] || 'fade';
 }
 
-const getVideoArgs = (w = 1280, h = 720) => ['-c:v','libx264','-preset','ultrafast','-pix_fmt','yuv420p','-r','24','-s',`${w}x${h}`,'-movflags','+faststart'];
+const getVideoArgs = () => ['-c:v','libx264','-preset','ultrafast','-pix_fmt','yuv420p','-movflags','+faststart'];
 const getAudioArgs = () => ['-c:a','aac','-b:a','192k','-ar','44100','-ac','2'];
 
 // --- BUILD FRONTEND ---
@@ -212,10 +219,7 @@ function runFFmpeg(args) {
         ff.stderr.on('data', d => errData += d.toString());
         ff.on("close", code => {
             if (code === 0) resolve();
-            else {
-                console.error("FFmpeg full error:", errData);
-                reject(`FFmpeg error ${code}: ${errData.slice(-500)}`);
-            }
+            else reject(`FFmpeg error ${code}: ${errData.slice(-300)}`);
         });
     });
 }
@@ -490,7 +494,6 @@ async function processMedia(action, files, config, jobId) {
 }
 
 async function renderVideoProject(project, jobId) {
-    console.log(`Starting render job ${jobId} with ${project.clips.length} clips.`);
     const sessionDir = path.join(OUTPUT_DIR, `job_${jobId}`);
     if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
 
@@ -511,11 +514,6 @@ async function renderVideoProject(project, jobId) {
         const clip = project.clips[i];
         const inputPath = path.join(UPLOAD_DIR, clip.file);
         
-        if (!fs.existsSync(inputPath)) {
-            console.error(`Clip file not found: ${inputPath}`);
-            throw new Error(`Arquivo da cena ${i+1} não encontrado.`);
-        }
-
         let duration = clip.duration || 5;
         if (duration <= 0) duration = 5;
         durations.push(duration);
@@ -543,8 +541,6 @@ async function renderVideoProject(project, jobId) {
                 filterComplex += `[${inputIndex}:a]volume=${voiceVol}[voice_track];`;
                 audioMixParts.push("[voice_track]");
                 inputIndex++;
-            } else {
-                console.warn(`Audio file not found for clip ${i}: ${aPath}`);
             }
         } else if (isVideo && await fileHasAudio(inputPath)) {
              filterComplex += `[0:a]volume=${voiceVol}[voice_track];`;
@@ -558,8 +554,6 @@ async function renderVideoProject(project, jobId) {
                 filterComplex += `[${inputIndex}:a]volume=${sfxVol}[sfx_track];`;
                 audioMixParts.push("[sfx_track]");
                 inputIndex++;
-            } else {
-                console.warn(`SFX file not found for clip ${i}: ${sfxPath}`);
             }
         }
 
@@ -583,7 +577,7 @@ async function renderVideoProject(project, jobId) {
             filterComplex += `anullsrc=cl=stereo:r=44100:d=${duration},${audioFmt}[a_out]`;
         }
 
-        args.push("-filter_complex", filterComplex, "-map", "[v_out]", "-map", "[a_out]", "-t", duration.toString(), ...getVideoArgs(targetW, targetH), ...getAudioArgs(), outFile);
+        args.push("-filter_complex", filterComplex, "-map", "[v_out]", "-map", "[a_out]", "-t", duration.toString(), ...getVideoArgs(), ...getAudioArgs(), outFile);
 
         try {
             await runFFmpeg(args);
@@ -611,7 +605,8 @@ async function renderVideoProject(project, jobId) {
         const listPath = path.join(sessionDir, "concat_list.txt");
         const listContent = tempClips.map(p => `file '${p.replace(/\\/g, '/')}'`).join('\n');
         fs.writeFileSync(listPath, listContent);
-        await runFFmpeg(["-y", "-f", "concat", "-safe", "0", "-i", listPath, "-c", "copy", concatOut]);
+        // Use re-encoding instead of -c copy for better robustness with many clips
+        await runFFmpeg(["-y", "-f", "concat", "-safe", "0", "-i", listPath, ...getVideoArgs(), ...getAudioArgs(), concatOut]);
         jobs[jobId].progress = 70;
     } else {
         const inputArgs = [];
@@ -648,7 +643,7 @@ async function renderVideoProject(project, jobId) {
         filterGraph += `${prevLabelA}aresample=async=1[a_sync]`;
         prevLabelA = "[a_sync]";
         
-        await runFFmpeg(["-y", ...inputArgs, "-filter_complex", filterGraph, "-map", prevLabelV, "-map", "[a_sync]", ...getVideoArgs(targetW, targetH), ...getAudioArgs(), concatOut]);
+        await runFFmpeg(["-y", ...inputArgs, "-filter_complex", filterGraph, "-map", prevLabelV, "-map", prevLabelA, ...getVideoArgs(), ...getAudioArgs(), concatOut]);
         jobs[jobId].progress = 70;
     }
 
@@ -657,7 +652,7 @@ async function renderVideoProject(project, jobId) {
 
     if (bgm && fs.existsSync(bgm)) {
         const mixGraph = `[1:a]aloop=loop=-1:size=2e+09,volume=${project.audio.bgmVolume ?? 0.2}[bgm];[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=0,volume=2,aresample=async=1[a_final]`;
-        await runFFmpeg(["-y", "-i", concatOut, "-i", bgm, "-filter_complex", mixGraph, "-map", "0:v", "-map", "[a_final]", ...getVideoArgs(targetW, targetH), ...getAudioArgs(), finalOutput]);
+        await runFFmpeg(["-y", "-i", concatOut, "-i", bgm, "-filter_complex", mixGraph, "-map", "0:v", "-map", "[a_final]", ...getVideoArgs(), ...getAudioArgs(), finalOutput]);
     } else {
         fs.copyFileSync(concatOut, finalOutput);
     }
@@ -730,6 +725,17 @@ app.post("/api/image/start/:action", (req, res) => {
     });
 });
 
+// Dedicated Upload Route
+app.post("/api/upload", (req, res) => {
+    uploadAny(req, res, (err) => {
+        if (err) return res.status(500).json({ error: "Upload failed: " + err.message });
+        if (!req.files || req.files.length === 0) return res.status(400).json({ error: "No files uploaded" });
+        
+        // Return the filename of the first uploaded file
+        res.json({ filename: req.files[0].filename });
+    });
+});
+
 app.post("/api/render/start", async (req, res) => {
     const contentType = req.headers['content-type'] || '';
     const jobId = Date.now().toString();
@@ -741,11 +747,8 @@ app.post("/api/render/start", async (req, res) => {
             const config = req.body.config || {};
             const bgmUrl = req.body.bgmUrl;
 
-            console.log(`Received render request with ${scenes?.length} scenes.`);
-
             if (!scenes || !Array.isArray(scenes) || scenes.length === 0) {
-                console.error("Invalid scenes data received:", req.body);
-                return res.status(400).json({ error: "Dados de cena inválidos ou vazios." });
+                return res.status(400).json({ error: "Invalid scenes data" });
             }
 
             const project = {
@@ -761,45 +764,25 @@ app.post("/api/render/start", async (req, res) => {
                 aspectRatio: config.aspectRatio || '16:9'
             };
 
-            if (bgmUrl) {
-                console.log("Saving BGM...");
-                project.audio.bgm = await saveBase64OrUrl(bgmUrl, 'bgm', 'mp3');
-            }
+            if (bgmUrl) project.audio.bgm = await saveBase64OrUrl(bgmUrl, 'bgm', 'mp3');
 
             for (let i = 0; i < scenes.length; i++) {
                 const s = scenes[i];
                 let visualFile = null;
                 try {
-                    if (s.videoUrl) {
-                        visualFile = await saveBase64OrUrl(s.videoUrl, `scene_${i}_vid`, 'mp4');
-                    } else if (s.imageUrl) {
-                        visualFile = await saveBase64OrUrl(s.imageUrl, `scene_${i}_img`, 'png');
-                    }
-                    
-                    if (!visualFile) {
-                        console.warn(`No visual file generated for scene ${i}`);
-                    }
-                } catch (e) { 
-                    console.error(`Failed to save visual for scene ${i}:`, e); 
-                }
+                    if (s.videoUrl) visualFile = await saveBase64OrUrl(s.videoUrl, `scene_${i}_vid`, 'mp4');
+                    else if (s.imageUrl) visualFile = await saveBase64OrUrl(s.imageUrl, `scene_${i}_img`, 'png');
+                } catch (e) { console.error(`Failed to save visual for scene ${i}:`, e); }
 
                 let audioFile = null;
                 try {
-                    if (s.audioUrl) {
-                        audioFile = await saveBase64OrUrl(s.audioUrl, `scene_${i}_audio`, 'wav');
-                    }
-                } catch (e) { 
-                    console.error(`Failed to save audio for scene ${i}:`, e); 
-                }
+                    if (s.audioUrl) audioFile = await saveBase64OrUrl(s.audioUrl, `scene_${i}_audio`, 'wav');
+                } catch (e) { console.error(`Failed to save audio for scene ${i}:`, e); }
 
                 let sfxFile = null;
                 try {
-                    if (s.sfxUrl) {
-                        sfxFile = await saveBase64OrUrl(s.sfxUrl, `scene_${i}_sfx`, 'mp3');
-                    }
-                } catch (e) { 
-                    console.error(`Failed to save sfx for scene ${i}:`, e); 
-                }
+                    if (s.sfxUrl) sfxFile = await saveBase64OrUrl(s.sfxUrl, `scene_${i}_sfx`, 'mp3');
+                } catch (e) { console.error(`Failed to save sfx for scene ${i}:`, e); }
 
                 if (visualFile) {
                     project.clips.push({
@@ -814,22 +797,19 @@ app.post("/api/render/start", async (req, res) => {
             }
 
             if (project.clips.length === 0) {
-                console.error("No valid clips after processing scenes.");
-                return res.status(400).json({ error: "Nenhuma cena válida pôde ser processada. Verifique se as imagens/vídeos foram gerados corretamente." });
+                return res.status(400).json({ error: "Nenhuma cena válida pôde ser processada. Verifique se os arquivos foram gerados corretamente." });
             }
 
-            console.log(`Project prepared with ${project.clips.length} valid clips. Starting render...`);
-
-        renderVideoProject(project, jobId)
-            .then(outputPath => {
-                jobs[jobId].status = "completed";
-                jobs[jobId].downloadUrl = `/outputs/${path.basename(outputPath)}`;
-            })
-            .catch(err => {
-                const errorMsg = err instanceof Error ? err.message : String(err);
-                console.error(`Render job ${jobId} failed:`, errorMsg);
-                jobs[jobId] = { status: 'failed', error: `Erro no render: ${errorMsg}` };
-            });
+            renderVideoProject(project, jobId)
+                .then(outputPath => {
+                    jobs[jobId].status = "completed";
+                    jobs[jobId].downloadUrl = `/outputs/${path.basename(outputPath)}`;
+                })
+                .catch(err => {
+                    console.error("Render error:", err);
+                    jobs[jobId].status = "failed";
+                    jobs[jobId].error = err.toString();
+                });
 
             return res.json({ jobId });
         } catch (e) { return res.status(500).json({ error: e.message }); }
