@@ -728,9 +728,18 @@ app.post("/api/image/start/:action", (req, res) => {
 // Dedicated Upload Route
 app.post("/api/upload", (req, res) => {
     uploadAny(req, res, (err) => {
-        if (err) return res.status(500).json({ error: "Upload failed: " + err.message });
-        if (!req.files || req.files.length === 0) return res.status(400).json({ error: "No files uploaded" });
+        if (err) {
+            console.error("Multer upload error:", err);
+            return res.status(500).json({ error: "Upload failed: " + err.message });
+        }
         
+        console.log("Upload request received. Files:", req.files ? req.files.length : 0);
+        if (!req.files || req.files.length === 0) {
+            console.warn("No files in request");
+            return res.status(400).json({ error: "No files uploaded" });
+        }
+        
+        console.log("File uploaded:", req.files[0].filename);
         // Return the filename of the first uploaded file
         res.json({ filename: req.files[0].filename });
     });
@@ -875,13 +884,6 @@ app.post("/api/runway/generate", async (req, res) => {
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
-});
-
-app.post("/api/upload", (req, res) => {
-    uploadAny(req, res, (err) => {
-        if (err) return res.status(500).json({ error: "Upload failed" });
-        res.json({ files: req.files || [] });
-    });
 });
 
 app.post("/api/process/start/merge", async (req, res) => {
