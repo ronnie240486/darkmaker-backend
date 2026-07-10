@@ -9,6 +9,7 @@ import { spawn, execFile } from 'child_process';
 import ffmpegPath from 'ffmpeg-static';
 import ffprobePath from 'ffprobe-static';
 import * as esbuild from 'esbuild';
+import { GoogleGenAI, Modality } from '@google/genai';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -16,6 +17,17 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = 3000;
 const GEMINI_KEY = process.env.GEMINI_API_KEY || process.env.API_KEY || "";
+
+function getGeminiClient() {
+    return new GoogleGenAI({
+        apiKey: GEMINI_KEY,
+        httpOptions: {
+            headers: {
+                'User-Agent': 'aistudio-build'
+            }
+        }
+    });
+}
 
 // FFmpeg setup
 const FFMPEG_BIN = typeof ffmpegPath === 'string' ? ffmpegPath : ffmpegPath.path;
@@ -833,6 +845,433 @@ app.post("/api/render/start", async (req, res) => {
                 res.json({ jobId });
             } catch (err) { res.status(500).json({ error: "Start render error" }); }
         });
+    }
+});
+
+// ==========================================
+//  GEMINI SERVER-SIDE API PROXY ENDPOINTS
+// ==========================================
+
+app.post("/api/gemini/enhancePrompt", async (req, res) => {
+    const { text } = req.body;
+    if (!GEMINI_KEY) {
+        return res.status(400).json({ error: "Chave API do Gemini não configurada no servidor." });
+    }
+    try {
+        const ai = getGeminiClient();
+        const response = await ai.models.generateContent({
+            model: 'gemini-3.5-flash',
+            contents: `Act as a Senior Cinematographer. 
+            Transform the user's input into a professional visual prompt for video generation.
+            
+            CRITICAL RULES:
+            - Focus ONLY on visual composition, lighting, and environment.
+            - STRICTLY NO TEXT, NO LOGOS, NO LETTERS, NO SIGNATURES, NO WATERMARKS.
+            - Do NOT describe any user interface or display elements.
+            - Focus ONLY on the scene's interior/environment.
+            
+            Input: "${text}"
+            Output ONLY the improved visual description in English.`,
+        });
+        res.json({ text: response.text || text });
+    } catch (e) {
+        console.error("EnhancePrompt error:", e);
+        res.status(500).json({ error: e.message || "Erro ao aprimorar prompt." });
+    }
+});
+
+app.post("/api/gemini/generateText", async (req, res) => {
+    const { prompt, model, config } = req.body;
+    if (!GEMINI_KEY) {
+        return res.status(400).json({ error: "Chave API do Gemini não configurada no servidor." });
+    }
+    try {
+        const ai = getGeminiClient();
+        const response = await ai.models.generateContent({
+            model: model || 'gemini-3.5-flash',
+            contents: prompt,
+            config
+        });
+        res.json({ text: response.text || "" });
+    } catch (e) {
+        console.error("GenerateText error:", e);
+        res.status(500).json({ error: e.message || "Erro ao gerar texto." });
+    }
+});
+
+app.post("/api/gemini/audioToScenes", async (req, res) => {
+    const { base64Data, mimeType } = req.body;
+    if (!GEMINI_KEY) {
+        return res.status(400).json({ error: "Chave API do Gemini não configurada no servidor." });
+    }
+    try {
+        const ai = getGeminiClient();
+        const response = await ai.models.generateContent({
+            model: 'gemini-3.5-flash',
+            contents: {
+                parts: [
+                    { inlineData: { mimeType, data: base64Data } },
+                    { text: `Analyze this audio to create synchronized visual scenes.
+                      MANDATORY: Generate descriptions of the immersive world. 
+                      STRICTLY NO TEXT, NO CAPTIONS, NO LABELS in the visual descriptions.
+                      Output strictly raw JSON:
+                      [ { "duration": 5.0, "prompt": "Visual description of the world..." } ]` 
+                    }
+                ]
+            },
+            config: { responseMimeType: "application/json" }
+        });
+        const cleanJson = response.text?.replace(/```json/g, '').replace(/```/g, '').trim() || "[]";
+        res.json(JSON.parse(cleanJson));
+    } catch (e) {
+        console.error("AudioToScenes error:", e);
+        res.status(500).json({ error: e.message || "Erro ao converter áudio para cenas." });
+    }
+});
+
+app.post("/api/gemini/generateImage", async (req, res) => {
+    const { prompt, aspectRatio, tier, quality } = req.body;
+    if (!GEMINI_KEY) {
+        return res.status(400).json({ error: "Chave API do Gemini não configurada no servidor." });
+    }
+    try {
+        const ai = getGeminiClient();
+        const model = tier === 'pro' ? 'gemini-3.1-flash-image' : 'gemini-3.1-flash-lite-image';
+        
+        const immersivePrompt = `SCENE: ${prompt}. 
+        VISUAL STYLE INSTRUCTIONS: Apply aesthetic only. 
+        CRITICAL NEGATIVE CONSTRAINT: STRICTLY NO TEXT, NO LETTERS, NO NUMBERS, NO LOGOS, NO SIGNATURES, NO TITLES. 
+        The image must be 100% clean of any typography or brand names. 
+        Focus only on the environment and subjects.`;
+
+        const config = { imageConfig: { aspectRatio: aspectRatio || '1:1' } };
+        if (tier === 'pro' && quality) config.imageConfig.imageSize = quality;
+
+        const response = await ai.models.generateContent({
+            model,
+            contents: { parts: [{ text: immersivePrompt }] },
+            config
+        });
+        const parts = response.candidates?.[0]?.content?.parts;
+        if (parts) {
+            for (const part of parts) {
+                if (part.inlineData) {
+                    return res.json({ url: `data:image/png;base64,${part.inlineData.data}` });
+                }
+            }
+        }
+        res.status(400).json({ error: "Falha ao capturar imagem gerada." });
+    } catch (e) {
+        console.error("GenerateImage error:", e);
+        res.status(500).json({ error: e.message || "Erro ao gerar imagem." });
+    }
+});
+
+app.post("/api/gemini/generateTTS", async (req, res) => {
+    const { text, voiceValue, options } = req.body;
+    if (!GEMINI_KEY) {
+        return res.status(400).json({ error: "Chave API do Gemini não configurada no servidor." });
+    }
+    try {
+        const ai = getGeminiClient();
+        
+        let baseVoiceName = 'Puck';
+        let styleInstruction = '';
+
+        let safeVoiceString = 'Puck';
+        if (typeof voiceValue === 'string') {
+            safeVoiceString = voiceValue;
+        } else if (typeof voiceValue === 'object' && voiceValue !== null && 'value' in voiceValue) {
+            safeVoiceString = voiceValue.value;
+        }
+
+        if (safeVoiceString && safeVoiceString.includes('|')) {
+            const parts = safeVoiceString.split('|');
+            baseVoiceName = parts[0].trim();
+            if (parts.length >= 4 && parts[3]) {
+                styleInstruction = parts[3].trim();
+            }
+        } else {
+            baseVoiceName = safeVoiceString || 'Puck';
+        }
+
+        if (baseVoiceName.length > 0) {
+            baseVoiceName = baseVoiceName.charAt(0).toUpperCase() + baseVoiceName.slice(1).toLowerCase();
+        }
+
+        let finalPromptText = text;
+        if (styleInstruction) {
+            finalPromptText = `(Speaking instruction: ${styleInstruction}) ${text}`;
+        }
+
+        const response = await ai.models.generateContent({
+            model: "gemini-3.1-flash-tts-preview",
+            contents: [{ parts: [{ text: finalPromptText }] }],
+            config: {
+                responseModalities: [Modality.AUDIO],
+                speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: baseVoiceName } } }
+            }
+        });
+
+        const candidate = response.candidates?.[0];
+        let base64 = null;
+        if (candidate?.content?.parts) {
+            for (const part of candidate.content.parts) {
+                if (part.inlineData?.data) {
+                    base64 = part.inlineData.data;
+                    break;
+                }
+            }
+        }
+
+        if (!base64) {
+            console.warn("TTS Missing Audio. Finish Reason:", candidate?.finishReason);
+            return res.status(400).json({ error: `A IA não retornou áudio (Finish Reason: ${candidate?.finishReason || 'unknown'}).` });
+        }
+
+        res.json({ base64 });
+    } catch (e) {
+        console.error("TTS Server Error:", e);
+        res.status(500).json({ error: e.message || "Erro ao gerar áudio neural." });
+    }
+});
+
+app.post("/api/gemini/generateVideo", async (req, res) => {
+    const { requestData } = req.body;
+    if (!GEMINI_KEY) {
+        return res.status(400).json({ error: "Chave API do Gemini não configurada no servidor." });
+    }
+    try {
+        const ai = getGeminiClient();
+        const model = requestData.mode === 'reference' ? 'veo-3.1-generate-preview' : 'veo-3.1-lite-generate-preview';
+
+        const sceneOnlyPrompt = `SCENE: ${requestData.prompt}. 
+        MANDATORY: Direct immersive view. 
+        STRICTLY NO TEXT, NO LOGOS, NO TITLES, NO CAPTIONS. 
+        The video must be visually pure without any written words or screen frames.`;
+
+        const config = {
+            numberOfVideos: 1,
+            resolution: requestData.resolution || '720p',
+            aspectRatio: requestData.aspectRatio || '16:9',
+        };
+
+        let operation;
+        if (requestData.mode === 'image-to-video' && requestData.startImage) {
+            operation = await ai.models.generateVideos({
+                model, prompt: sceneOnlyPrompt,
+                image: { imageBytes: requestData.startImage.split(',')[1], mimeType: 'image/png' },
+                config
+            });
+        } else if (requestData.mode === 'interpolation' && requestData.startImage && requestData.endImage) {
+            operation = await ai.models.generateVideos({
+                model, prompt: sceneOnlyPrompt,
+                image: { imageBytes: requestData.startImage.split(',')[1], mimeType: 'image/png' },
+                config: { ...config, lastFrame: { imageBytes: requestData.endImage.split(',')[1], mimeType: 'image/png' } }
+            });
+        } else if (requestData.mode === 'reference' && requestData.refImages) {
+            const referenceImages = requestData.refImages.map(img => ({
+                image: { imageBytes: img.split(',')[1], mimeType: 'image/png' },
+                referenceType: 'ASSET'
+            }));
+            operation = await ai.models.generateVideos({ model, prompt: sceneOnlyPrompt, config: { ...config, referenceImages } });
+        } else {
+            operation = await ai.models.generateVideos({ model, prompt: sceneOnlyPrompt, config });
+        }
+
+        res.json({ operation });
+    } catch (e) {
+        console.error("GenerateVideo error:", e);
+        res.status(500).json({ error: e.message || "Erro ao iniciar geração de vídeo." });
+    }
+});
+
+app.post("/api/gemini/getOperation", async (req, res) => {
+    const { operation } = req.body;
+    if (!GEMINI_KEY) {
+        return res.status(400).json({ error: "Chave API do Gemini não configurada no servidor." });
+    }
+    try {
+        const ai = getGeminiClient();
+        const updatedOperation = await ai.operations.getVideosOperation({ operation });
+        res.json({ operation: updatedOperation });
+    } catch (e) {
+        console.error("GetOperation error:", e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post("/api/gemini/downloadVideoBlob", async (req, res) => {
+    const { downloadLink } = req.body;
+    if (!GEMINI_KEY) {
+        return res.status(400).json({ error: "Chave API do Gemini não configurada no servidor." });
+    }
+    try {
+        const videoResponse = await fetch(`${downloadLink}&key=${GEMINI_KEY}`);
+        const arrayBuffer = await videoResponse.arrayBuffer();
+        const base64 = Buffer.from(arrayBuffer).toString('base64');
+        res.json({ base64 });
+    } catch (e) {
+        console.error("DownloadVideoBlob error:", e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post("/api/gemini/transcribeAudio", async (req, res) => {
+    const { base64Data, mimeType, language } = req.body;
+    if (!GEMINI_KEY) {
+        return res.status(400).json({ error: "Chave API do Gemini não configurada no servidor." });
+    }
+    try {
+        const ai = getGeminiClient();
+        const response = await ai.models.generateContent({
+            model: 'gemini-3.5-flash',
+            contents: {
+                parts: [
+                    { inlineData: { data: base64Data, mimeType } },
+                    { text: `Transcreva o áudio para texto no idioma ${language || 'Português'}.` }
+                ]
+            }
+        });
+        res.json({ text: response.text || "" });
+    } catch (e) {
+        console.error("TranscribeAudio error:", e);
+        res.status(500).json({ error: e.message || "Erro ao transcrever áudio." });
+    }
+});
+
+// deAPI.ai Proxy Routes
+app.post("/api/deapi/video", async (req, res) => {
+    const { apiKey, prompt, aspectRatio, imageUrl, model } = req.body;
+    if (!apiKey) {
+        return res.status(400).json({ error: "Chave API deAPI não fornecida." });
+    }
+    try {
+        const payload = {
+            model: model || "ltx-video-13b",
+            prompt: prompt,
+            aspect_ratio: aspectRatio || "16:9",
+            aspectRatio: aspectRatio || "16:9"
+        };
+        if (imageUrl) {
+            payload.image_url = imageUrl;
+            payload.imageUrl = imageUrl;
+        }
+
+        console.log("[deAPI] Sending payload:", JSON.stringify(payload));
+
+        const endpoints = [
+            "https://api.deapi.ai/v2/video/generations",
+            "https://api.deapi.ai/v2/videos/generations",
+            "https://api.deapi.ai/v1/video/generations",
+            "https://api.deapi.ai/v1/videos/generations",
+            "https://api.deapi.ai/v2/video",
+            "https://api.deapi.ai/v2/videos",
+            "https://api.deapi.ai/v1/video",
+            "https://api.deapi.ai/v1/videos"
+        ];
+
+        let response;
+        let lastError = null;
+        let successUrl = "";
+
+        for (const url of endpoints) {
+            try {
+                console.log(`[deAPI] Trying endpoint: ${url}`);
+                const resTemp = await fetch(url, {
+                    method: "POST",
+                    headers: {
+                        "Authorization": `Bearer ${apiKey}`,
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify(payload)
+                });
+                
+                if (resTemp.ok) {
+                    response = resTemp;
+                    successUrl = url;
+                    break;
+                } else {
+                    const status = resTemp.status;
+                    const errText = await resTemp.text().catch(() => "");
+                    console.log(`[deAPI] Endpoint ${url} returned ${status}: ${errText.substring(0, 100)}`);
+                    lastError = `Status ${status}: ${errText}`;
+                }
+            } catch (err) {
+                console.log(`[deAPI] Endpoint ${url} failed with error:`, err.message);
+                lastError = err.message;
+            }
+        }
+
+        if (!response) {
+            throw new Error(`Todos os endpoints deAPI falharam. Último erro: ${lastError}`);
+        }
+
+        const data = await response.json();
+        console.log(`[deAPI] Success using endpoint: ${successUrl}`);
+        res.json(data);
+    } catch (e) {
+        console.error("deAPI Video error:", e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post("/api/deapi/status", async (req, res) => {
+    const { apiKey, taskId } = req.body;
+    if (!apiKey || !taskId) {
+        return res.status(400).json({ error: "Chave API ou ID de tarefa não fornecido." });
+    }
+    try {
+        const statusEndpoints = [
+            `https://api.deapi.ai/v2/video/generations/${taskId}`,
+            `https://api.deapi.ai/v2/videos/generations/${taskId}`,
+            `https://api.deapi.ai/v2/tasks/${taskId}`,
+            `https://api.deapi.ai/v1/video/generations/${taskId}`,
+            `https://api.deapi.ai/v1/videos/generations/${taskId}`,
+            `https://api.deapi.ai/v1/tasks/${taskId}`,
+            `https://api.deapi.ai/v2/video/${taskId}`,
+            `https://api.deapi.ai/v2/videos/${taskId}`,
+            `https://api.deapi.ai/v1/video/${taskId}`,
+            `https://api.deapi.ai/v1/videos/${taskId}`
+        ];
+
+        let response;
+        let lastError = null;
+        let successUrl = "";
+
+        for (const url of statusEndpoints) {
+            try {
+                console.log(`[deAPI Status] Trying status endpoint: ${url}`);
+                const resTemp = await fetch(url, {
+                    headers: { "Authorization": `Bearer ${apiKey}` }
+                });
+
+                if (resTemp.ok) {
+                    response = resTemp;
+                    successUrl = url;
+                    break;
+                } else {
+                    const status = resTemp.status;
+                    const errText = await resTemp.text().catch(() => "");
+                    console.log(`[deAPI Status] Endpoint ${url} returned ${status}`);
+                    lastError = `Status ${status}: ${errText}`;
+                }
+            } catch (err) {
+                console.log(`[deAPI Status] Endpoint ${url} failed with error:`, err.message);
+                lastError = err.message;
+            }
+        }
+
+        if (!response) {
+            throw new Error(`Falha ao obter status nos endpoints deAPI. Último erro: ${lastError}`);
+        }
+
+        const data = await response.json();
+        console.log(`[deAPI Status] Success using endpoint: ${successUrl}`);
+        res.json(data);
+    } catch (e) {
+        console.error("deAPI Status error:", e);
+        res.status(500).json({ error: e.message });
     }
 });
 
