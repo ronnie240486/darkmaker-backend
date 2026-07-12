@@ -28,35 +28,59 @@ app.get("/api/debug/headers", (req, res) => {
 });
 
 function getGeminiKey(req) {
-    // 1. Check environment variables (Secrets/Platform)
-    const envKeys = [
+    // 1. Environment Variables (Priority order for AI Studio and manual secrets)
+    const priorityEnv = [
         'GEMINI_API_KEY',
         'API_KEY',
         'GOOGLE_API_KEY',
+        'GOOGLE_GENERATIVE_AI_API_KEY',
         'GCP_API_KEY',
         'AI_STUDIO_API_KEY'
     ];
-    for (const keyName of envKeys) {
-        if (process.env[keyName]) return process.env[keyName];
+    for (const k of priorityEnv) {
+        if (process.env[k] && process.env[k].length > 5) return process.env[k];
+    }
+
+    // Generic search in env for anything that looks like a Gemini/Google API key
+    for (const key in process.env) {
+        const u = key.toUpperCase();
+        if ((u.includes('GEMINI') || u.includes('GOOGLE_AI')) && u.includes('KEY')) {
+            if (process.env[key] && process.env[key].length > 5) return process.env[key];
+        }
     }
     
-    // 2. Check request headers (Proxy/Android)
+    // 2. Request Headers (Proxy/Mobile/Manual)
     if (req) {
-        const headerKeys = [
+        const stdHeaders = [
             'x-goog-api-key',
             'x-api-key',
             'x-gemini-api-key',
             'authorization'
         ];
         
-        for (const headerName of headerKeys) {
-            const val = req.headers[headerName];
-            if (val) {
-                if (headerName === 'authorization' && typeof val === 'string' && val.startsWith('Bearer ')) {
+        for (const h of stdHeaders) {
+            const val = req.headers[h];
+            if (val && typeof val === 'string' && val.length > 5) {
+                if (h === 'authorization' && val.toLowerCase().startsWith('bearer ')) {
                     const token = val.substring(7).trim();
                     if (token && token !== 'undefined' && token !== 'null' && token.length > 5) return token;
-                } else if (typeof val === 'string' && val !== 'undefined' && val !== 'null' && val.length > 5) {
-                    return val;
+                } else if (val !== 'undefined' && val !== 'null') {
+                    const trimmed = val.trim();
+                    if (trimmed.length > 5) return trimmed;
+                }
+            }
+        }
+
+        // Generic search in headers for anything that looks like an API key
+        for (const h in req.headers) {
+            const l = h.toLowerCase();
+            if (l.includes('key') && (l.includes('api') || l.includes('google') || l.includes('gemini') || l.includes('token'))) {
+                const val = req.headers[h];
+                if (val && typeof val === 'string' && val.length > 5 && val !== 'undefined' && val !== 'null') {
+                     // Filter out common non-key headers that might match
+                     if (!['cookie', 'set-cookie', 'sec-ch-ua'].includes(l)) {
+                        return val.trim();
+                     }
                 }
             }
         }
@@ -67,10 +91,8 @@ function getGeminiKey(req) {
 function getGeminiClient(req) {
     const key = getGeminiKey(req);
     
-    // If no key found, we try to use the environment's default if available, 
-    // but @google/genai requires a key string.
     if (!key) {
-        throw new Error("Gemini API Key not found. Please:\n1. Go to 'Settings' > 'Secrets' and add GEMINI_API_KEY.\n2. Or select a key in the AI Studio footer.\n3. Or enter it in the app's Settings.");
+        throw new Error("Gemini API Key não encontrada.\n\nPara resolver:\n1. No AI Studio, vá em 'Settings' > 'Secrets' e adicione GEMINI_API_KEY.\n2. Ou selecione sua chave no ícone de chave no rodapé do AI Studio.\n3. Ou insira a chave manualmente nas Configurações do app.");
     }
     
     const config = {
