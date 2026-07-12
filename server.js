@@ -28,40 +28,36 @@ app.get("/api/debug/headers", (req, res) => {
 });
 
 function getGeminiKey(req) {
-    // 1. Environment Variables (Priority order for AI Studio and manual secrets)
-    const priorityEnv = [
-        'GEMINI_API_KEY',
-        'API_KEY',
+    // 1. Check environment variables (AI Studio Secrets / Runtime)
+    // GOOGLE_API_KEY is the most common platform-injected variable
+    const envVars = [
         'GOOGLE_API_KEY',
+        'GEMINI_API_KEY', 
+        'API_KEY',
         'GOOGLE_GENERATIVE_AI_API_KEY',
         'GCP_API_KEY',
         'AI_STUDIO_API_KEY'
     ];
-    for (const k of priorityEnv) {
-        if (process.env[k] && process.env[k].length > 5) return process.env[k];
-    }
-
-    // Generic search in env for anything that looks like a Gemini/Google API key
-    for (const key in process.env) {
-        const u = key.toUpperCase();
-        if ((u.includes('GEMINI') || u.includes('GOOGLE_AI')) && u.includes('KEY')) {
-            if (process.env[key] && process.env[key].length > 5) return process.env[key];
+    for (const envVar of envVars) {
+        const val = process.env[envVar];
+        if (val && typeof val === 'string' && val.length > 5 && val !== 'undefined' && val !== 'null') {
+            return val;
         }
     }
-    
-    // 2. Request Headers (Proxy/Mobile/Manual)
+
+    // 2. Check request headers (Injected by AI Studio Proxy when a key is selected in the footer)
     if (req) {
-        const stdHeaders = [
+        const headerNames = [
             'x-goog-api-key',
             'x-api-key',
             'x-gemini-api-key',
             'authorization'
         ];
         
-        for (const h of stdHeaders) {
-            const val = req.headers[h];
+        for (const headerName of headerNames) {
+            const val = req.headers[headerName];
             if (val && typeof val === 'string' && val.length > 5) {
-                if (h === 'authorization' && val.toLowerCase().startsWith('bearer ')) {
+                if (headerName === 'authorization' && val.toLowerCase().startsWith('bearer ')) {
                     const token = val.substring(7).trim();
                     if (token && token !== 'undefined' && token !== 'null' && token.length > 5) return token;
                 } else if (val !== 'undefined' && val !== 'null') {
@@ -70,21 +66,8 @@ function getGeminiKey(req) {
                 }
             }
         }
-
-        // Generic search in headers for anything that looks like an API key
-        for (const h in req.headers) {
-            const l = h.toLowerCase();
-            if (l.includes('key') && (l.includes('api') || l.includes('google') || l.includes('gemini') || l.includes('token'))) {
-                const val = req.headers[h];
-                if (val && typeof val === 'string' && val.length > 5 && val !== 'undefined' && val !== 'null') {
-                     // Filter out common non-key headers that might match
-                     if (!['cookie', 'set-cookie', 'sec-ch-ua'].includes(l)) {
-                        return val.trim();
-                     }
-                }
-            }
-        }
     }
+    
     return "";
 }
 
@@ -92,18 +75,17 @@ function getGeminiClient(req) {
     const key = getGeminiKey(req);
     
     if (!key) {
-        throw new Error("Gemini API Key não encontrada.\n\nPara resolver:\n1. No AI Studio, vá em 'Settings' > 'Secrets' e adicione GEMINI_API_KEY.\n2. Ou selecione sua chave no ícone de chave no rodapé do AI Studio.\n3. Ou insira a chave manualmente nas Configurações do app.");
+        throw new Error("Chave API não detectada.\n\nPara usar o Gemini aqui no AI Studio:\n1. Clique no ícone de chave (🔑) no rodapé da página (ao lado do botão de Play).\n2. Selecione sua API Key.\n3. O app usará essa chave automaticamente.");
     }
     
-    const config = {
+    return new GoogleGenAI({
         apiKey: key,
         httpOptions: {
             headers: {
-                'User-Agent': 'aistudio-build'
+                'User-Agent': 'aistudio-build',
             }
         }
-    };
-    return new GoogleGenAI(config);
+    });
 }
 
 // FFmpeg setup
