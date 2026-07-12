@@ -16,17 +16,72 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = 3000;
-const GEMINI_KEY = process.env.GEMINI_API_KEY || process.env.API_KEY || "";
 
-function getGeminiClient() {
-    return new GoogleGenAI({
-        apiKey: GEMINI_KEY,
+// Debug route to check headers
+app.get("/api/debug/headers", (req, res) => {
+    res.json({
+        headers: req.headers,
+        envKeys: Object.keys(process.env).filter(k => k.toLowerCase().includes('key') || k.toLowerCase().includes('api')),
+        hasGeminiKey: !!process.env.GEMINI_API_KEY,
+        hasApiKey: !!process.env.API_KEY
+    });
+});
+
+function getGeminiKey(req) {
+    // 1. Check environment variables (Secrets/Platform)
+    const envKeys = [
+        'GEMINI_API_KEY',
+        'API_KEY',
+        'GOOGLE_API_KEY',
+        'GCP_API_KEY',
+        'AI_STUDIO_API_KEY'
+    ];
+    for (const keyName of envKeys) {
+        if (process.env[keyName]) return process.env[keyName];
+    }
+    
+    // 2. Check request headers (Proxy/Android)
+    if (req) {
+        const headerKeys = [
+            'x-goog-api-key',
+            'x-api-key',
+            'x-gemini-api-key',
+            'authorization'
+        ];
+        
+        for (const headerName of headerKeys) {
+            const val = req.headers[headerName];
+            if (val) {
+                if (headerName === 'authorization' && typeof val === 'string' && val.startsWith('Bearer ')) {
+                    const token = val.substring(7).trim();
+                    if (token && token !== 'undefined' && token !== 'null' && token.length > 5) return token;
+                } else if (typeof val === 'string' && val !== 'undefined' && val !== 'null' && val.length > 5) {
+                    return val;
+                }
+            }
+        }
+    }
+    return "";
+}
+
+function getGeminiClient(req) {
+    const key = getGeminiKey(req);
+    
+    // If no key found, we try to use the environment's default if available, 
+    // but @google/genai requires a key string.
+    if (!key) {
+        throw new Error("Gemini API Key not found. Please:\n1. Go to 'Settings' > 'Secrets' and add GEMINI_API_KEY.\n2. Or select a key in the AI Studio footer.\n3. Or enter it in the app's Settings.");
+    }
+    
+    const config = {
+        apiKey: key,
         httpOptions: {
             headers: {
                 'User-Agent': 'aistudio-build'
             }
         }
-    });
+    };
+    return new GoogleGenAI(config);
 }
 
 // FFmpeg setup
@@ -199,7 +254,7 @@ async function buildFrontend() {
             format:'esm',
             minify:true,
             external: ['fs', 'path', 'child_process', 'url', 'https', 'ffmpeg-static', 'ffprobe-static', 'react', 'react-dom', 'react-dom/client', 'lucide-react'],
-            define: { 'process.env.API_KEY': JSON.stringify(GEMINI_KEY), 'global': 'window' },
+            define: { 'process.env.API_KEY': JSON.stringify(getGeminiKey()), 'global': 'window' },
             loader: { '.tsx': 'tsx', '.ts': 'ts', '.css': 'css' },
         });
     } catch(e) { console.error("Frontend error:", e); }
@@ -852,13 +907,25 @@ app.post("/api/render/start", async (req, res) => {
 //  GEMINI SERVER-SIDE API PROXY ENDPOINTS
 // ==========================================
 
+app.get("/api/test-headers", (req, res) => {
+    res.json({
+        headers: req.headers,
+        keys: Object.keys(req.headers).filter(k => k.includes("key") || k.includes("token") || k.includes("auth") || k.includes("gemini") || k.includes("ai"))
+    });
+});
+
+app.get("/api/test-env", (req, res) => {
+    res.json({
+        keys: Object.keys(process.env).filter(k => k.includes("GEMINI") || k.includes("API") || k.includes("KEY")),
+        hasGeminiApiKey: !!process.env.GEMINI_API_KEY,
+        hasApiKey: !!process.env.API_KEY
+    });
+});
+
 app.post("/api/gemini/enhancePrompt", async (req, res) => {
     const { text } = req.body;
-    if (!GEMINI_KEY) {
-        return res.status(400).json({ error: "Chave API do Gemini não configurada no servidor." });
-    }
     try {
-        const ai = getGeminiClient();
+        const ai = getGeminiClient(req);
         const response = await ai.models.generateContent({
             model: 'gemini-3.5-flash',
             contents: `Act as a Senior Cinematographer. 
@@ -882,11 +949,8 @@ app.post("/api/gemini/enhancePrompt", async (req, res) => {
 
 app.post("/api/gemini/generateText", async (req, res) => {
     const { prompt, model, config } = req.body;
-    if (!GEMINI_KEY) {
-        return res.status(400).json({ error: "Chave API do Gemini não configurada no servidor." });
-    }
     try {
-        const ai = getGeminiClient();
+        const ai = getGeminiClient(req);
         const response = await ai.models.generateContent({
             model: model || 'gemini-3.5-flash',
             contents: prompt,
@@ -901,11 +965,8 @@ app.post("/api/gemini/generateText", async (req, res) => {
 
 app.post("/api/gemini/audioToScenes", async (req, res) => {
     const { base64Data, mimeType } = req.body;
-    if (!GEMINI_KEY) {
-        return res.status(400).json({ error: "Chave API do Gemini não configurada no servidor." });
-    }
     try {
-        const ai = getGeminiClient();
+        const ai = getGeminiClient(req);
         const response = await ai.models.generateContent({
             model: 'gemini-3.5-flash',
             contents: {
@@ -931,11 +992,8 @@ app.post("/api/gemini/audioToScenes", async (req, res) => {
 
 app.post("/api/gemini/generateImage", async (req, res) => {
     const { prompt, aspectRatio, tier, quality } = req.body;
-    if (!GEMINI_KEY) {
-        return res.status(400).json({ error: "Chave API do Gemini não configurada no servidor." });
-    }
     try {
-        const ai = getGeminiClient();
+        const ai = getGeminiClient(req);
         const model = tier === 'pro' ? 'gemini-3.1-flash-image' : 'gemini-3.1-flash-lite-image';
         
         const immersivePrompt = `SCENE: ${prompt}. 
@@ -969,11 +1027,8 @@ app.post("/api/gemini/generateImage", async (req, res) => {
 
 app.post("/api/gemini/generateTTS", async (req, res) => {
     const { text, voiceValue, options } = req.body;
-    if (!GEMINI_KEY) {
-        return res.status(400).json({ error: "Chave API do Gemini não configurada no servidor." });
-    }
     try {
-        const ai = getGeminiClient();
+        const ai = getGeminiClient(req);
         
         let baseVoiceName = 'Puck';
         let styleInstruction = '';
@@ -1038,11 +1093,8 @@ app.post("/api/gemini/generateTTS", async (req, res) => {
 
 app.post("/api/gemini/generateVideo", async (req, res) => {
     const { requestData } = req.body;
-    if (!GEMINI_KEY) {
-        return res.status(400).json({ error: "Chave API do Gemini não configurada no servidor." });
-    }
     try {
-        const ai = getGeminiClient();
+        const ai = getGeminiClient(req);
         const model = requestData.mode === 'reference' ? 'veo-3.1-generate-preview' : 'veo-3.1-lite-generate-preview';
 
         const sceneOnlyPrompt = `SCENE: ${requestData.prompt}. 
@@ -1088,11 +1140,8 @@ app.post("/api/gemini/generateVideo", async (req, res) => {
 
 app.post("/api/gemini/getOperation", async (req, res) => {
     const { operation } = req.body;
-    if (!GEMINI_KEY) {
-        return res.status(400).json({ error: "Chave API do Gemini não configurada no servidor." });
-    }
     try {
-        const ai = getGeminiClient();
+        const ai = getGeminiClient(req);
         const updatedOperation = await ai.operations.getVideosOperation({ operation });
         res.json({ operation: updatedOperation });
     } catch (e) {
@@ -1103,11 +1152,9 @@ app.post("/api/gemini/getOperation", async (req, res) => {
 
 app.post("/api/gemini/downloadVideoBlob", async (req, res) => {
     const { downloadLink } = req.body;
-    if (!GEMINI_KEY) {
-        return res.status(400).json({ error: "Chave API do Gemini não configurada no servidor." });
-    }
     try {
-        const videoResponse = await fetch(`${downloadLink}&key=${GEMINI_KEY}`);
+        const keyQuery = getGeminiKey(req) ? `&key=${getGeminiKey(req)}` : '';
+        const videoResponse = await fetch(`${downloadLink}${keyQuery}`);
         const arrayBuffer = await videoResponse.arrayBuffer();
         const base64 = Buffer.from(arrayBuffer).toString('base64');
         res.json({ base64 });
@@ -1119,11 +1166,8 @@ app.post("/api/gemini/downloadVideoBlob", async (req, res) => {
 
 app.post("/api/gemini/transcribeAudio", async (req, res) => {
     const { base64Data, mimeType, language } = req.body;
-    if (!GEMINI_KEY) {
-        return res.status(400).json({ error: "Chave API do Gemini não configurada no servidor." });
-    }
     try {
-        const ai = getGeminiClient();
+        const ai = getGeminiClient(req);
         const response = await ai.models.generateContent({
             model: 'gemini-3.5-flash',
             contents: {
@@ -1160,7 +1204,15 @@ app.post("/api/deapi/video", async (req, res) => {
 
         console.log("[deAPI] Sending payload:", JSON.stringify(payload));
 
-        const endpoints = [
+        const endpoints = [];
+        if (imageUrl) {
+            endpoints.push("https://api.deapi.ai/api/v1/client/img2video");
+            endpoints.push("https://api.deapi.ai/api/v1/client/txt2video");
+        } else {
+            endpoints.push("https://api.deapi.ai/api/v1/client/txt2video");
+            endpoints.push("https://api.deapi.ai/api/v1/client/img2video");
+        }
+        endpoints.push(
             "https://api.deapi.ai/v2/video/generations",
             "https://api.deapi.ai/v2/videos/generations",
             "https://api.deapi.ai/v1/video/generations",
@@ -1169,7 +1221,7 @@ app.post("/api/deapi/video", async (req, res) => {
             "https://api.deapi.ai/v2/videos",
             "https://api.deapi.ai/v1/video",
             "https://api.deapi.ai/v1/videos"
-        ];
+        );
 
         let response;
         let lastError = null;
@@ -1223,6 +1275,15 @@ app.post("/api/deapi/status", async (req, res) => {
     }
     try {
         const statusEndpoints = [
+            `https://api.deapi.ai/api/v1/client/prediction/${taskId}`,
+            `https://api.deapi.ai/api/v1/client/predictions/${taskId}`,
+            `https://api.deapi.ai/api/v1/client/task/${taskId}`,
+            `https://api.deapi.ai/api/v1/client/tasks/${taskId}`,
+            `https://api.deapi.ai/api/v1/client/status/${taskId}`,
+            `https://api.deapi.ai/api/v1/client/job/${taskId}`,
+            `https://api.deapi.ai/api/v1/client/jobs/${taskId}`,
+            `https://api.deapi.ai/api/v1/client/result/${taskId}`,
+            `https://api.deapi.ai/api/v1/client/results/${taskId}`,
             `https://api.deapi.ai/v2/video/generations/${taskId}`,
             `https://api.deapi.ai/v2/videos/generations/${taskId}`,
             `https://api.deapi.ai/v2/tasks/${taskId}`,
