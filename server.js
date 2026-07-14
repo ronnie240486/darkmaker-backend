@@ -28,41 +28,50 @@ app.get("/api/debug/headers", (req, res) => {
 });
 
 function getGeminiKey(req) {
-    // 1. Check environment variables (AI Studio Secrets / Runtime)
-    // GOOGLE_API_KEY is the most common platform-injected variable
-    const envVars = [
-        'GOOGLE_API_KEY',
-        'GEMINI_API_KEY', 
-        'API_KEY',
-        'GOOGLE_GENERATIVE_AI_API_KEY',
-        'GCP_API_KEY',
-        'AI_STUDIO_API_KEY'
-    ];
-    for (const envVar of envVars) {
-        const val = process.env[envVar];
+    // 1. Check environment variables
+    const priorityEnv = ['GOOGLE_API_KEY', 'GEMINI_API_KEY', 'API_KEY', 'GOOGLE_GENERATIVE_AI_API_KEY', 'AI_STUDIO_API_KEY'];
+    for (const key of priorityEnv) {
+        const val = process.env[key];
         if (val && typeof val === 'string' && val.length > 5 && val !== 'undefined' && val !== 'null') {
-            return val;
+            return val.trim();
         }
     }
 
-    // 2. Check request headers (Injected by AI Studio Proxy when a key is selected in the footer)
-    if (req) {
-        const headerNames = [
-            'x-goog-api-key',
-            'x-api-key',
-            'x-gemini-api-key',
-            'authorization'
-        ];
-        
-        for (const headerName of headerNames) {
-            const val = req.headers[headerName];
+    // Greedy environment search
+    for (const key in process.env) {
+        const u = key.toUpperCase();
+        if ((u.includes('GEMINI') || u.includes('GOOGLE_AI') || u.includes('GENAI')) && u.includes('KEY')) {
+            const val = process.env[key];
+            if (val && typeof val === 'string' && val.length > 5 && val !== 'undefined' && val !== 'null') {
+                return val.trim();
+            }
+        }
+    }
+
+    // 2. Check request headers
+    if (req && req.headers) {
+        const headerNames = ['x-goog-api-key', 'x-api-key', 'x-gemini-api-key', 'authorization'];
+        for (const name of headerNames) {
+            const val = req.headers[name];
             if (val && typeof val === 'string' && val.length > 5) {
-                if (headerName === 'authorization' && val.toLowerCase().startsWith('bearer ')) {
+                if (name === 'authorization' && val.toLowerCase().startsWith('bearer ')) {
                     const token = val.substring(7).trim();
-                    if (token && token !== 'undefined' && token !== 'null' && token.length > 5) return token;
+                    if (token && token.length > 5 && token !== 'undefined' && token !== 'null') return token;
                 } else if (val !== 'undefined' && val !== 'null') {
-                    const trimmed = val.trim();
-                    if (trimmed.length > 5) return trimmed;
+                    return val.trim();
+                }
+            }
+        }
+
+        // Greedy header search
+        for (const h in req.headers) {
+            const l = h.toLowerCase();
+            if ((l.includes('key') || l.includes('token')) && (l.includes('api') || l.includes('google') || l.includes('gemini'))) {
+                const val = req.headers[h];
+                if (val && typeof val === 'string' && val.length > 5 && val !== 'undefined' && val !== 'null') {
+                    if (!['cookie', 'set-cookie', 'host', 'user-agent', 'referer'].includes(l)) {
+                        return val.trim();
+                    }
                 }
             }
         }
@@ -75,7 +84,7 @@ function getGeminiClient(req) {
     const key = getGeminiKey(req);
     
     if (!key) {
-        throw new Error("Chave API não detectada.\n\nPara usar o Gemini aqui no AI Studio:\n1. Clique no ícone de chave (🔑) no rodapé da página (ao lado do botão de Play).\n2. Selecione sua API Key.\n3. O app usará essa chave automaticamente.");
+        throw new Error("Configuração da API não encontrada. No AI Studio, selecione sua chave no ícone de chave (🔑) no rodapé ou adicione GEMINI_API_KEY em Settings > Secrets. Se estiver no APK, insira a chave nas configurações do app.");
     }
     
     return new GoogleGenAI({
@@ -629,7 +638,19 @@ async function renderVideoProject(project, jobId) {
         const movementFilter = isVideo 
             ? `scale=${targetW}:${targetH}:force_original_aspect_ratio=increase,crop=${targetW}:${targetH},pad='ceil(iw/2)*2:ceil(ih/2)*2',setsar=1,fps=24,format=yuv420p`
             : getMovementFilter(clip.movement || "kenburns", duration, targetW, targetH);
-        filterComplex += `[0:v]${movementFilter}[v_out];`;
+        
+        let visualLabel = "[v_moved]";
+        filterComplex += `[0:v]${movementFilter}${visualLabel};`;
+
+        // Add Caption if exists
+        if (clip.text) {
+            const safeText = clip.text.replace(/'/g, "'\\''").replace(/:/g, '\\:');
+            const fontSize = Math.floor(targetH * 0.05); // 5% of height
+            const boxW = Math.floor(targetW * 0.8);
+            filterComplex += `${visualLabel}drawtext=text='${safeText}':fontcolor=white:fontsize=${fontSize}:x=(w-text_w)/2:y=h-(text_h*3):box=1:boxcolor=black@0.5:boxborderw=10:line_spacing=5:fix_bounds=1:w=${boxW}[v_out];`;
+        } else {
+            filterComplex += `${visualLabel}null[v_out];`;
+        }
 
         const audioFmt = "aresample=async=1,aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp";
         let clipAudioLabel = "";
@@ -703,8 +724,8 @@ async function renderVideoProject(project, jobId) {
             const outLabelA = `[a${outIndex + 1}]`;
             
             filterGraph += `${prevLabelV}[${i}:v]xfade=transition=${trType}:duration=${trDur}:offset=${offset}${outLabelV};`;
-            // Audio crossfade: using acrossfade with explicit curve
-            filterGraph += `${prevLabelA}[${i}:a]acrossfade=d=${trDur}:c1=tri:c2=tri${outLabelA};`;
+            // Audio crossfade: using a more stable curve and ensuring enough data
+            filterGraph += `${prevLabelA}[${i}:a]acrossfade=d=${trDur}:c1=linear:c2=linear${outLabelA};`;
             
             prevLabelV = outLabelV;
             prevLabelA = outLabelA;
@@ -712,8 +733,8 @@ async function renderVideoProject(project, jobId) {
             timeCursor += (durations[i] - trDur);
         }
         
-        // Ensure audio sync at the end of the chain
-        filterGraph += `${prevLabelA}aresample=async=1[a_sync]`;
+        // Ensure audio sync at the end of the chain and pad if needed
+        filterGraph += `${prevLabelA}aresample=async=1,apad=whole_dur=${timeCursor.toFixed(3)}[a_sync]`;
         prevLabelA = "[a_sync]";
         
         await runFFmpeg(["-y", ...inputArgs, "-filter_complex", filterGraph, "-map", prevLabelV, "-map", prevLabelA, ...getVideoArgs(), ...getAudioArgs(), concatOut]);
@@ -871,6 +892,7 @@ app.post("/api/render/start", async (req, res) => {
                         file: visualFile,
                         audio: audioFile,
                         sfx: sfxFile,
+                        text: s.text || s.narration || '',
                         duration: parseFloat(s.duration || 5),
                         movement: s.effect || config.movement || 'kenburns',
                         mediaType: s.mediaType 
@@ -978,9 +1000,10 @@ app.post("/api/gemini/audioToScenes", async (req, res) => {
                     { inlineData: { mimeType, data: base64Data } },
                     { text: `Analyze this audio to create synchronized visual scenes.
                       MANDATORY: Generate descriptions of the immersive world. 
-                      STRICTLY NO TEXT, NO CAPTIONS, NO LABELS in the visual descriptions.
+                      ALSO: Generate a short caption for each scene based on the narration.
+                      STRICTLY NO TEXT, NO CAPTIONS, NO LABELS in the "prompt" field.
                       Output strictly raw JSON:
-                      [ { "duration": 5.0, "prompt": "Visual description of the world..." } ]` 
+                      [ { "duration": 5.0, "prompt": "Visual description...", "text": "Caption text..." } ]` 
                     }
                 ]
             },
@@ -1190,18 +1213,136 @@ app.post("/api/gemini/transcribeAudio", async (req, res) => {
 
 // deAPI.ai Proxy Routes
 app.post("/api/deapi/video", async (req, res) => {
-    const { apiKey, prompt, aspectRatio, imageUrl, model } = req.body;
+    const { apiKey, prompt, aspectRatio, imageUrl, model, frames, width: customWidth, height: customHeight, fps, steps, negative_prompt } = req.body;
     if (!apiKey) {
         return res.status(400).json({ error: "Chave API deAPI não fornecida." });
     }
     try {
+        let width = customWidth || 960;
+        let height = customHeight || 544;
+        const ar = aspectRatio || "16:9";
+
+        // Se for um modelo específico de 768 ou 512 base, vamos redefinir os padrões de forma inteligente se não especificados
+        if (!customWidth || !customHeight) {
+            const is13B = model === "Ltxv_13B_0_9_8_Distilled_FP8";
+            const isLarger = model === "Ltx2_3_22B_Dist_INT8" || model === "Ltx2_19B_Dist_FP8";
+            
+            if (is13B) {
+                if (ar === "1:1") {
+                    width = 512; height = 512;
+                } else if (ar === "9:16") {
+                    width = 288; height = 512;
+                } else if (ar === "3:4") {
+                    width = 384; height = 512;
+                } else if (ar === "4:3") {
+                    width = 512; height = 384;
+                } else { // 16:9
+                    width = 512; height = 288;
+                }
+            } else if (isLarger) {
+                if (ar === "1:1") {
+                    width = 768; height = 768;
+                } else if (ar === "9:16") {
+                    width = 432; height = 768;
+                } else if (ar === "3:4") {
+                    width = 576; height = 768;
+                } else if (ar === "4:3") {
+                    width = 768; height = 576;
+                } else { // 16:9
+                    width = 768; height = 432;
+                }
+            } else {
+                if (ar === "9:16") {
+                    width = 544;
+                    height = 960;
+                } else if (ar === "1:1") {
+                    width = 768;
+                    height = 768;
+                } else if (ar === "4:3") {
+                    width = 960;
+                    height = 720;
+                } else if (ar === "3:4") {
+                    width = 720;
+                    height = 960;
+                }
+            }
+        }
+
+        // Resolvendo dinamicamente o modelo correto do deAPI.ai se não for passado ou for genérico
+        let resolvedModel = model || "Ltx2_3_22B_Dist_INT8";
+        if (!model) {
+            try {
+                const urls = [
+                    "https://api.deapi.ai/v1/models",
+                    "https://api.deapi.ai/api/v1/models"
+                ];
+                for (const u of urls) {
+                    try {
+                        const mRes = await fetch(u, {
+                            headers: { "Authorization": `Bearer ${apiKey}`, "Accept": "application/json" }
+                        });
+                        if (mRes.ok) {
+                            const mData = await mRes.json();
+                            const list = mData.data || mData || [];
+                            if (Array.isArray(list)) {
+                                const ids = list.map(m => m.id || m.name || m).filter(Boolean);
+                                console.log(`[deAPI] Live models fetched from ${u}:`, ids);
+                                if (ids.length > 0) {
+                                    // Tentar achar um que contenha "ltx"
+                                    const ltx = ids.find(id => id.toLowerCase().includes("ltx"));
+                                    if (ltx) {
+                                        resolvedModel = ltx;
+                                        break;
+                                    }
+                                    // Ou qualquer um que tenha "video"
+                                    const video = ids.find(id => id.toLowerCase().includes("video"));
+                                    if (video) {
+                                        resolvedModel = video;
+                                        break;
+                                    }
+                                    // Fallback para o primeiro da lista se for uma lista de modelos de vídeo
+                                    if (ids[0]) {
+                                        resolvedModel = ids[0];
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    } catch (err) {
+                        console.log(`[deAPI] Fail to query ${u}:`, err.message);
+                    }
+                }
+            } catch (e) {
+                console.log("[deAPI] Model list query error:", e.message);
+            }
+        }
+
+        // Se após a consulta continuarmos com o padrão, mas ltx-video-13b não existia antes,
+        // vamos usar o fallback mais comum "ltx-video" ou manter o solicitado caso o usuário tenha um plano diferente.
+        if (resolvedModel === "ltx-video-13b") {
+            resolvedModel = "ltx-video"; // deAPI de fato usa "ltx-video" como o identificador principal do LTX Video 13B
+        }
+
+        console.log(`[deAPI] Resolved Model: ${resolvedModel}`);
+
         const payload = {
-            model: model || "ltx-video-13b",
+            model: resolvedModel,
             prompt: prompt,
-            aspect_ratio: aspectRatio || "16:9",
-            aspectRatio: aspectRatio || "16:9"
+            aspect_ratio: ar,
+            aspectRatio: ar,
+            width: width,
+            height: height,
+            frames: frames !== undefined ? Number(frames) : 120,      // Obrigatório na v1 deAPI.ai
+            num_frames: frames !== undefined ? Number(frames) : 120,  // Compatibilidade
+            fps: fps !== undefined ? Number(fps) : 24,                // Obrigatório na v1 deAPI.ai
+            steps: steps !== undefined ? Number(steps) : 25,
+            guidance_scale: 3.5,
+            negative_prompt: negative_prompt !== undefined ? negative_prompt : "low quality, bad anatomy, worst quality, text, logo, signature, watermark",
+            seed: Math.floor(Math.random() * 1000000)
         };
         if (imageUrl) {
+            payload.first_frame_image = imageUrl;
+            payload.first_frame_image_url = imageUrl;
             payload.image_url = imageUrl;
             payload.imageUrl = imageUrl;
         }
@@ -1210,10 +1351,14 @@ app.post("/api/deapi/video", async (req, res) => {
 
         const endpoints = [];
         if (imageUrl) {
+            endpoints.push("https://api.deapi.ai/v1/client/img2video");
             endpoints.push("https://api.deapi.ai/api/v1/client/img2video");
+            endpoints.push("https://api.deapi.ai/v1/client/txt2video");
             endpoints.push("https://api.deapi.ai/api/v1/client/txt2video");
         } else {
+            endpoints.push("https://api.deapi.ai/v1/client/txt2video");
             endpoints.push("https://api.deapi.ai/api/v1/client/txt2video");
+            endpoints.push("https://api.deapi.ai/v1/client/img2video");
             endpoints.push("https://api.deapi.ai/api/v1/client/img2video");
         }
         endpoints.push(
@@ -1251,11 +1396,47 @@ app.post("/api/deapi/video", async (req, res) => {
                     const status = resTemp.status;
                     const errText = await resTemp.text().catch(() => "");
                     console.log(`[deAPI] Endpoint ${url} returned ${status}: ${errText.substring(0, 100)}`);
+                    
+                    const isPrimary = url.includes("/api/v1/client/txt2video") || url.includes("/api/v1/client/img2video");
+                    if (isPrimary) {
+                        if (status === 429) {
+                            throw new Error("Limite de requisições excedido ou falta de créditos (429 - Too Many Attempts) na deAPI.ai. Por favor, verifique seus créditos no painel da deAPI ou tente novamente mais tarde.");
+                        }
+                        if (status === 401) {
+                            throw new Error("Chave API deAPI.ai inválida ou expirada (401 - Unauthorized). Por favor, corrija ou atualize sua chave deAPI em Configurações.");
+                        }
+                        if (status === 402) {
+                            throw new Error("Saldo de créditos insuficiente (402 - Payment Required) em sua conta deAPI.ai.");
+                        }
+                        if (status === 403) {
+                            throw new Error("Acesso proibido (403 - Forbidden) na deAPI.ai. Verifique as permissões da sua chave ou status da conta.");
+                        }
+                        if (status === 400 || status === 422) {
+                            try {
+                                const parsed = JSON.parse(errText);
+                                const msg = parsed.message || parsed.error || parsed.detail || errText;
+                                throw new Error(`deAPI.ai rejeitou os parâmetros (Status ${status}): ${msg}`);
+                            } catch (e2) {
+                                throw new Error(`Parâmetros inválidos ou erro de validação na deAPI.ai (Status ${status}): ${errText}`);
+                            }
+                        }
+                    }
                     lastError = `Status ${status}: ${errText}`;
                 }
             } catch (err) {
                 console.log(`[deAPI] Endpoint ${url} failed with error:`, err.message);
                 lastError = err.message;
+                // If it's one of our specific thrown Errors, rethrow it to stop the loop!
+                if (err.message && (
+                    err.message.includes("429") || 
+                    err.message.includes("401") || 
+                    err.message.includes("402") || 
+                    err.message.includes("403") || 
+                    err.message.includes("rejeitou os parâmetros") ||
+                    err.message.includes("Parâmetros inválidos")
+                )) {
+                    throw err;
+                }
             }
         }
 
@@ -1279,14 +1460,23 @@ app.post("/api/deapi/status", async (req, res) => {
     }
     try {
         const statusEndpoints = [
+            `https://api.deapi.ai/v1/client/prediction/${taskId}`,
             `https://api.deapi.ai/api/v1/client/prediction/${taskId}`,
+            `https://api.deapi.ai/v1/client/predictions/${taskId}`,
             `https://api.deapi.ai/api/v1/client/predictions/${taskId}`,
+            `https://api.deapi.ai/v1/client/task/${taskId}`,
             `https://api.deapi.ai/api/v1/client/task/${taskId}`,
+            `https://api.deapi.ai/v1/client/tasks/${taskId}`,
             `https://api.deapi.ai/api/v1/client/tasks/${taskId}`,
+            `https://api.deapi.ai/v1/client/status/${taskId}`,
             `https://api.deapi.ai/api/v1/client/status/${taskId}`,
+            `https://api.deapi.ai/v1/client/job/${taskId}`,
             `https://api.deapi.ai/api/v1/client/job/${taskId}`,
+            `https://api.deapi.ai/v1/client/jobs/${taskId}`,
             `https://api.deapi.ai/api/v1/client/jobs/${taskId}`,
+            `https://api.deapi.ai/v1/client/result/${taskId}`,
             `https://api.deapi.ai/api/v1/client/result/${taskId}`,
+            `https://api.deapi.ai/v1/client/results/${taskId}`,
             `https://api.deapi.ai/api/v1/client/results/${taskId}`,
             `https://api.deapi.ai/v2/video/generations/${taskId}`,
             `https://api.deapi.ai/v2/videos/generations/${taskId}`,
