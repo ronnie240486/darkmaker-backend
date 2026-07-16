@@ -1456,7 +1456,16 @@ app.post("/api/deapi/video", async (req, res) => {
         res.json(data);
     } catch (e) {
         console.error("deAPI Video error:", e);
-        res.status(500).json({ error: e.message });
+        
+        // Determina o status code apropriado para o erro
+        let statusCode = 500;
+        if (e.message.includes("429")) statusCode = 429;
+        else if (e.message.includes("401")) statusCode = 401;
+        else if (e.message.includes("402")) statusCode = 402;
+        else if (e.message.includes("403")) statusCode = 403;
+        else if (e.message.includes("400") || e.message.includes("422")) statusCode = 400;
+        
+        res.status(statusCode).json({ error: e.message });
     }
 });
 
@@ -1533,7 +1542,12 @@ app.post("/api/deapi/status", async (req, res) => {
         res.json(data);
     } catch (e) {
         console.error("deAPI Status error:", e);
-        res.status(500).json({ error: e.message });
+        
+        let statusCode = 500;
+        if (e.message.includes("Status 429")) statusCode = 429;
+        else if (e.message.includes("Status 401")) statusCode = 401;
+        
+        res.status(statusCode).json({ error: e.message });
     }
 });
 
