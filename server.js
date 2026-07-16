@@ -1476,40 +1476,33 @@ app.post("/api/deapi/status", async (req, res) => {
     }
     try {
         const statusEndpoints = [
-            `https://api.deapi.ai/v1/client/prediction/${taskId}`,
-            `https://api.deapi.ai/api/v1/client/prediction/${taskId}`,
-            `https://api.deapi.ai/v1/client/predictions/${taskId}`,
-            `https://api.deapi.ai/api/v1/client/predictions/${taskId}`,
-            `https://api.deapi.ai/v1/client/task/${taskId}`,
-            `https://api.deapi.ai/api/v1/client/task/${taskId}`,
-            `https://api.deapi.ai/v1/client/tasks/${taskId}`,
-            `https://api.deapi.ai/api/v1/client/tasks/${taskId}`,
-            `https://api.deapi.ai/v1/client/status/${taskId}`,
-            `https://api.deapi.ai/api/v1/client/status/${taskId}`,
+            // Standard endpoints based on deapi.ai documentation and common patterns
             `https://api.deapi.ai/api/v1/client/status?request_id=${taskId}`,
-            `https://api.deapi.ai/api/v1/client/txt2video/status/${taskId}`,
-            `https://api.deapi.ai/api/v1/client/txt2video/status?request_id=${taskId}`,
-            `https://api.deapi.ai/api/v1/client/txt2video/status?id=${taskId}`,
-            `https://api.deapi.ai/api/v1/client/prediction?id=${taskId}`,
-            `https://api.deapi.ai/api/v1/client/predictions?id=${taskId}`,
-            `https://api.deapi.ai/v1/client/job/${taskId}`,
+            `https://api.deapi.ai/api/v1/client/status/${taskId}`,
+            `https://api.deapi.ai/v1/client/txt2video/status?request_id=${taskId}`,
+            `https://api.deapi.ai/v1/client/txt2video/status/${taskId}`,
+            `https://api.deapi.ai/v1/client/status?id=${taskId}`,
+            
+            // Variations without /api prefix (sometimes domain already implies it)
+            `https://api.deapi.ai/v1/client/status?request_id=${taskId}`,
+            `https://api.deapi.ai/v1/client/status/${taskId}`,
+            `https://api.deapi.ai/v1/client/txt2video/status?request_id=${taskId}`,
+            
+            // Other common AI API patterns
+            `https://api.deapi.ai/api/v1/client/prediction/${taskId}`,
+            `https://api.deapi.ai/api/v1/client/predictions/${taskId}`,
+            `https://api.deapi.ai/api/v1/client/task/${taskId}`,
+            `https://api.deapi.ai/api/v1/client/tasks/${taskId}`,
+            
+            // More variations
             `https://api.deapi.ai/api/v1/client/job/${taskId}`,
-            `https://api.deapi.ai/v1/client/jobs/${taskId}`,
             `https://api.deapi.ai/api/v1/client/jobs/${taskId}`,
-            `https://api.deapi.ai/v1/client/result/${taskId}`,
             `https://api.deapi.ai/api/v1/client/result/${taskId}`,
-            `https://api.deapi.ai/v1/client/results/${taskId}`,
             `https://api.deapi.ai/api/v1/client/results/${taskId}`,
-            `https://api.deapi.ai/v2/video/generations/${taskId}`,
-            `https://api.deapi.ai/v2/videos/generations/${taskId}`,
-            `https://api.deapi.ai/v2/tasks/${taskId}`,
-            `https://api.deapi.ai/v1/video/generations/${taskId}`,
-            `https://api.deapi.ai/v1/videos/generations/${taskId}`,
-            `https://api.deapi.ai/v1/tasks/${taskId}`,
-            `https://api.deapi.ai/v2/video/${taskId}`,
-            `https://api.deapi.ai/v2/videos/${taskId}`,
-            `https://api.deapi.ai/v1/video/${taskId}`,
-            `https://api.deapi.ai/v1/videos/${taskId}`
+            `https://api.deapi.ai/v1/client/status?uuid=${taskId}`,
+            `https://api.deapi.ai/api/v1/client/status?job_id=${taskId}`,
+            `https://api.deapi.ai/api/v1/client/video/status/${taskId}`,
+            `https://api.deapi.ai/api/v1/client/video/status?request_id=${taskId}`
         ];
 
         let response;
@@ -1519,20 +1512,36 @@ app.post("/api/deapi/status", async (req, res) => {
         for (const url of statusEndpoints) {
             try {
                 console.log(`[deAPI Status] Trying status endpoint: ${url}`);
-                const resTemp = await fetch(url, {
-                    headers: { "Authorization": `Bearer ${apiKey}` }
-                });
+                
+                // Try with both common auth headers
+                const headers = {
+                    "Authorization": `Bearer ${apiKey}`,
+                    "X-Api-Key": apiKey,
+                    "Accept": "application/json"
+                };
+
+                const resTemp = await fetch(url, { headers });
 
                 if (resTemp.ok) {
                     response = resTemp;
                     successUrl = url;
                     break;
-                } else {
-                    const status = resTemp.status;
-                    const errText = await resTemp.text().catch(() => "");
-                    console.log(`[deAPI Status] Endpoint ${url} returned ${status}`);
-                    lastError = `Status ${status}: ${errText}`;
+                } else if (resTemp.status === 429) {
+                    // Se for rate limit, espera um pouco e tenta novamente o mesmo endpoint
+                    console.log(`[deAPI Status] Rate limit on ${url}, waiting...`);
+                    await new Promise(r => setTimeout(r, 2000));
+                    const resRetry = await fetch(url, { headers });
+                    if (resRetry.ok) {
+                        response = resRetry;
+                        successUrl = url;
+                        break;
+                    }
                 }
+
+                const status = resTemp.status;
+                const errText = await resTemp.text().catch(() => "");
+                console.log(`[deAPI Status] Endpoint ${url} returned ${status}`);
+                lastError = `Status ${status}: ${errText.substring(0, 100)}`;
             } catch (err) {
                 console.log(`[deAPI Status] Endpoint ${url} failed with error:`, err.message);
                 lastError = err.message;
