@@ -1358,14 +1358,14 @@ app.post("/api/deapi/video", async (req, res) => {
 
         const endpoints = [];
         if (imageUrl) {
-            endpoints.push("https://api.deapi.ai/v1/client/img2video");
             endpoints.push("https://api.deapi.ai/api/v1/client/img2video");
-            endpoints.push("https://api.deapi.ai/v1/client/txt2video");
-            endpoints.push("https://api.deapi.ai/api/v1/client/txt2video");
-        } else {
-            endpoints.push("https://api.deapi.ai/v1/client/txt2video");
-            endpoints.push("https://api.deapi.ai/api/v1/client/txt2video");
             endpoints.push("https://api.deapi.ai/v1/client/img2video");
+            endpoints.push("https://api.deapi.ai/api/v1/client/txt2video");
+            endpoints.push("https://api.deapi.ai/v1/client/txt2video");
+        } else {
+            endpoints.push("https://api.deapi.ai/api/v1/client/txt2video");
+            endpoints.push("https://api.deapi.ai/v1/client/txt2video");
+            endpoints.push("https://api.deapi.ai/api/v1/client/img2video");
             endpoints.push("https://api.deapi.ai/api/v1/client/img2video");
         }
         endpoints.push(
@@ -1386,12 +1386,18 @@ app.post("/api/deapi/video", async (req, res) => {
         for (const url of endpoints) {
             try {
                 console.log(`[deAPI] Trying endpoint: ${url}`);
+                
+                // Try with multiple headers for compatibility
+                const headers = {
+                    "Authorization": `Bearer ${apiKey}`,
+                    "X-Api-Key": apiKey,
+                    "Content-Type": "application/json",
+                    "Accept": "application/json"
+                };
+
                 const resTemp = await fetch(url, {
                     method: "POST",
-                    headers: {
-                        "Authorization": `Bearer ${apiKey}`,
-                        "Content-Type": "application/json"
-                    },
+                    headers,
                     body: JSON.stringify(payload)
                 });
                 
@@ -1402,48 +1408,29 @@ app.post("/api/deapi/video", async (req, res) => {
                 } else {
                     const status = resTemp.status;
                     const errText = await resTemp.text().catch(() => "");
-                    console.log(`[deAPI] Endpoint ${url} returned ${status}: ${errText.substring(0, 100)}`);
+                    console.log(`[deAPI] Endpoint ${url} returned ${status}: ${errText.substring(0, 200)}`);
                     
-                    const isPrimary = url.includes("/api/v1/client/txt2video") || url.includes("/api/v1/client/img2video");
-                    if (isPrimary) {
-                        if (status === 429) {
-                            throw new Error("Limite de requisições excedido ou falta de créditos (429 - Too Many Attempts) na deAPI.ai. Por favor, verifique seus créditos no painel da deAPI ou tente novamente mais tarde.");
-                        }
-                        if (status === 401) {
-                            throw new Error("Chave API deAPI.ai inválida ou expirada (401 - Unauthorized). Por favor, corrija ou atualize sua chave deAPI em Configurações.");
-                        }
-                        if (status === 402) {
-                            throw new Error("Saldo de créditos insuficiente (402 - Payment Required) em sua conta deAPI.ai.");
-                        }
-                        if (status === 403) {
-                            throw new Error("Acesso proibido (403 - Forbidden) na deAPI.ai. Verifique as permissões da sua chave ou status da conta.");
-                        }
-                        if (status === 400 || status === 422) {
-                            try {
-                                const parsed = JSON.parse(errText);
-                                const msg = parsed.message || parsed.error || parsed.detail || errText;
-                                throw new Error(`deAPI.ai rejeitou os parâmetros (Status ${status}): ${msg}`);
-                            } catch (e2) {
-                                throw new Error(`Parâmetros inválidos ou erro de validação na deAPI.ai (Status ${status}): ${errText}`);
-                            }
-                        }
+                    // If it's a critical error on a primary endpoint, we might want to throw, 
+                    // but let's try other endpoints first unless it's clearly an auth error
+                    if (status === 401) {
+                        throw new Error("Chave API deAPI.ai inválida ou expirada (401).");
                     }
-                    lastError = `Status ${status}: ${errText}`;
+                    if (status === 402) {
+                        throw new Error("Saldo de créditos insuficiente na deAPI.ai (402).");
+                    }
+                    
+                    lastError = `Status ${status}: ${errText.substring(0, 100)}`;
+                    
+                    // If 429, maybe wait a bit?
+                    if (status === 429) {
+                        console.warn(`[deAPI] Rate limit on ${url}, waiting 1s...`);
+                        await new Promise(r => setTimeout(r, 1000));
+                    }
                 }
             } catch (err) {
-                console.log(`[deAPI] Endpoint ${url} failed with error:`, err.message);
+                console.log(`[deAPI] Endpoint ${url} failed:`, err.message);
                 lastError = err.message;
-                // If it's one of our specific thrown Errors, rethrow it to stop the loop!
-                if (err.message && (
-                    err.message.includes("429") || 
-                    err.message.includes("401") || 
-                    err.message.includes("402") || 
-                    err.message.includes("403") || 
-                    err.message.includes("rejeitou os parâmetros") ||
-                    err.message.includes("Parâmetros inválidos")
-                )) {
-                    throw err;
-                }
+                if (err.message.includes("401") || err.message.includes("402")) throw err;
             }
         }
 
@@ -1476,33 +1463,26 @@ app.post("/api/deapi/status", async (req, res) => {
     }
     try {
         const statusEndpoints = [
-            // Standard endpoints based on deapi.ai documentation and common patterns
-            `https://api.deapi.ai/api/v1/client/status?request_id=${taskId}`,
             `https://api.deapi.ai/api/v1/client/status/${taskId}`,
-            `https://api.deapi.ai/v1/client/txt2video/status?request_id=${taskId}`,
-            `https://api.deapi.ai/v1/client/txt2video/status/${taskId}`,
-            `https://api.deapi.ai/v1/client/status?id=${taskId}`,
-            
-            // Variations without /api prefix (sometimes domain already implies it)
-            `https://api.deapi.ai/v1/client/status?request_id=${taskId}`,
-            `https://api.deapi.ai/v1/client/status/${taskId}`,
-            `https://api.deapi.ai/v1/client/txt2video/status?request_id=${taskId}`,
-            
-            // Other common AI API patterns
+            `https://api.deapi.ai/api/v1/client/status?request_id=${taskId}`,
+            `https://api.deapi.ai/api/v1/client/status?id=${taskId}`,
             `https://api.deapi.ai/api/v1/client/prediction/${taskId}`,
             `https://api.deapi.ai/api/v1/client/predictions/${taskId}`,
-            `https://api.deapi.ai/api/v1/client/task/${taskId}`,
-            `https://api.deapi.ai/api/v1/client/tasks/${taskId}`,
-            
-            // More variations
+            `https://api.deapi.ai/api/v1/client/txt2video/status/${taskId}`,
+            `https://api.deapi.ai/api/v1/client/txt2video/status?request_id=${taskId}`,
             `https://api.deapi.ai/api/v1/client/job/${taskId}`,
             `https://api.deapi.ai/api/v1/client/jobs/${taskId}`,
-            `https://api.deapi.ai/api/v1/client/result/${taskId}`,
-            `https://api.deapi.ai/api/v1/client/results/${taskId}`,
-            `https://api.deapi.ai/v1/client/status?uuid=${taskId}`,
+            `https://api.deapi.ai/api/v1/client/status?uuid=${taskId}`,
             `https://api.deapi.ai/api/v1/client/status?job_id=${taskId}`,
             `https://api.deapi.ai/api/v1/client/video/status/${taskId}`,
-            `https://api.deapi.ai/api/v1/client/video/status?request_id=${taskId}`
+            `https://api.deapi.ai/api/v1/client/video/status?request_id=${taskId}`,
+            `https://api.deapi.ai/v1/status/${taskId}`,
+            `https://api.deapi.ai/v1/status?request_id=${taskId}`,
+            `https://api.deapi.ai/v1/prediction/${taskId}`,
+            `https://api.deapi.ai/v2/video/generations/${taskId}`,
+            `https://api.deapi.ai/v2/videos/generations/${taskId}`,
+            `https://api.deapi.ai/v1/video/generations/${taskId}`,
+            `https://api.deapi.ai/v1/videos/generations/${taskId}`
         ];
 
         let response;
@@ -1513,7 +1493,6 @@ app.post("/api/deapi/status", async (req, res) => {
             try {
                 console.log(`[deAPI Status] Trying status endpoint: ${url}`);
                 
-                // Try with both common auth headers
                 const headers = {
                     "Authorization": `Bearer ${apiKey}`,
                     "X-Api-Key": apiKey,
@@ -1522,31 +1501,33 @@ app.post("/api/deapi/status", async (req, res) => {
 
                 const resTemp = await fetch(url, { headers });
                 const status = resTemp.status;
-                const errText = await resTemp.text().catch(() => "");
+                const bodyText = await resTemp.text().catch(() => "");
 
                 if (resTemp.ok) {
                     response = resTemp;
                     successUrl = url;
                     // Mocking methods since we already read the body
-                    response.text = () => Promise.resolve(errText);
-                    response.json = () => Promise.resolve(JSON.parse(errText));
+                    response.text = () => Promise.resolve(bodyText);
+                    response.json = () => Promise.resolve(JSON.parse(bodyText));
                     break;
-                } else if (resTemp.status === 429) {
-                    // Se for rate limit, espera um pouco e tenta novamente o mesmo endpoint
-                    console.log(`[deAPI Status] Rate limit on ${url}, waiting...`);
+                } else if (status === 429) {
+                    console.log(`[deAPI Status] Rate limit on ${url}, waiting 2s...`);
                     await new Promise(r => setTimeout(r, 2000));
                     const resRetry = await fetch(url, { headers });
                     if (resRetry.ok) {
+                        const retryText = await resRetry.text().catch(() => "");
                         response = resRetry;
                         successUrl = url;
+                        response.text = () => Promise.resolve(retryText);
+                        response.json = () => Promise.resolve(JSON.parse(retryText));
                         break;
                     }
                 }
 
-                console.log(`[deAPI Status] Endpoint ${url} returned ${status}: ${errText.substring(0, 200)}`);
-                lastError = `Status ${status}: ${errText.substring(0, 100)}`;
+                console.log(`[deAPI Status] Endpoint ${url} returned ${status}: ${bodyText.substring(0, 100)}`);
+                lastError = `Status ${status}: ${bodyText.substring(0, 50)}`;
             } catch (err) {
-                console.log(`[deAPI Status] Endpoint ${url} failed with error:`, err.message);
+                console.log(`[deAPI Status] Endpoint ${url} failed:`, err.message);
                 lastError = err.message;
             }
         }
