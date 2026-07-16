@@ -1521,10 +1521,15 @@ app.post("/api/deapi/status", async (req, res) => {
                 };
 
                 const resTemp = await fetch(url, { headers });
+                const status = resTemp.status;
+                const errText = await resTemp.text().catch(() => "");
 
                 if (resTemp.ok) {
                     response = resTemp;
                     successUrl = url;
+                    // Mocking methods since we already read the body
+                    response.text = () => Promise.resolve(errText);
+                    response.json = () => Promise.resolve(JSON.parse(errText));
                     break;
                 } else if (resTemp.status === 429) {
                     // Se for rate limit, espera um pouco e tenta novamente o mesmo endpoint
@@ -1538,9 +1543,7 @@ app.post("/api/deapi/status", async (req, res) => {
                     }
                 }
 
-                const status = resTemp.status;
-                const errText = await resTemp.text().catch(() => "");
-                console.log(`[deAPI Status] Endpoint ${url} returned ${status}`);
+                console.log(`[deAPI Status] Endpoint ${url} returned ${status}: ${errText.substring(0, 200)}`);
                 lastError = `Status ${status}: ${errText.substring(0, 100)}`;
             } catch (err) {
                 console.log(`[deAPI Status] Endpoint ${url} failed with error:`, err.message);
