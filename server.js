@@ -1231,25 +1231,25 @@ app.post("/api/deapi/video", async (req, res) => {
                 if (ar === "1:1") {
                     width = 512; height = 512;
                 } else if (ar === "9:16") {
-                    width = 288; height = 512;
-                } else if (ar === "3:4") {
-                    width = 384; height = 512;
-                } else if (ar === "4:3") {
-                    width = 512; height = 384;
-                } else { // 16:9
-                    width = 512; height = 288;
-                }
-            } else if (isLarger) {
-                if (ar === "1:1") {
-                    width = 768; height = 768;
-                } else if (ar === "9:16") {
-                    width = 432; height = 768;
+                    width = 512; height = 768;
                 } else if (ar === "3:4") {
                     width = 576; height = 768;
                 } else if (ar === "4:3") {
                     width = 768; height = 576;
                 } else { // 16:9
-                    width = 768; height = 432;
+                    width = 768; height = 512;
+                }
+            } else if (isLarger) {
+                if (ar === "1:1") {
+                    width = 768; height = 768;
+                } else if (ar === "9:16") {
+                    width = 544; height = 960;
+                } else if (ar === "3:4") {
+                    width = 720; height = 960;
+                } else if (ar === "4:3") {
+                    width = 960; height = 720;
+                } else { // 16:9
+                    width = 960; height = 544;
                 }
             } else {
                 if (ar === "9:16") {
@@ -1264,9 +1264,16 @@ app.post("/api/deapi/video", async (req, res) => {
                 } else if (ar === "3:4") {
                     width = 720;
                     height = 960;
+                } else { // 16:9
+                    width = 960;
+                    height = 544;
                 }
             }
         }
+
+        // Garante defensivamente que largura e altura sejam pelo menos 512 para evitar erros de validação
+        if (width < 512) width = 512;
+        if (height < 512) height = 512;
 
         // Resolvendo dinamicamente o modelo correto do deAPI.ai se não for passado ou for genérico
         let resolvedModel = model || "Ltx2_3_22B_Dist_INT8";
