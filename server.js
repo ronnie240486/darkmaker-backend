@@ -1432,7 +1432,7 @@ app.post("/api/deapi/video", async (req, res) => {
         }
 
         const data = await response.json();
-        console.log(`[deAPI] Success using endpoint: ${successUrl}`);
+        console.log(`[deAPI] Success using endpoint: ${successUrl}. Response:`, JSON.stringify(data));
         res.json(data);
     } catch (e) {
         console.error("deAPI Video error:", e);
@@ -1460,13 +1460,17 @@ app.post("/api/deapi/status", async (req, res) => {
             `https://api.deapi.ai/api/v1/client/status/${taskId}`,
             `https://api.deapi.ai/api/v1/client/txt2video/status?request_id=${taskId}`,
             `https://api.deapi.ai/api/v1/client/txt2video/status/${taskId}`,
+            `https://api.deapi.ai/api/v1/client/video/status?request_id=${taskId}`,
+            `https://api.deapi.ai/api/v1/client/video/status/${taskId}`,
+            `https://api.deapi.ai/api/v1/client/txt2video/${taskId}`,
+            `https://api.deapi.ai/api/v1/client/img2video/${taskId}`,
             `https://api.deapi.ai/api/v1/client/prediction/${taskId}`,
             `https://api.deapi.ai/api/v1/client/status?id=${taskId}`,
             `https://api.deapi.ai/api/v1/client/job/${taskId}`,
-            `https://api.deapi.ai/v1/status/${taskId}`,
-            `https://api.deapi.ai/v1/status?request_id=${taskId}`,
-            `https://api.deapi.ai/v1/prediction/${taskId}`,
-            `https://api.deapi.ai/v2/video/generations/${taskId}`
+            `https://api.deapi.ai/api/v1/status/${taskId}`,
+            `https://api.deapi.ai/api/v1/status?request_id=${taskId}`,
+            `https://api.deapi.ai/api/v1/prediction/${taskId}`,
+            `https://api.deapi.ai/api/v2/video/generations/${taskId}`
         ];
 
         let response;
@@ -1515,6 +1519,32 @@ app.post("/api/deapi/status", async (req, res) => {
                 lastError = `Status ${status}: ${bodyText.substring(0, 50)}`;
             } catch (err) {
                 lastError = err.message;
+            }
+        }
+
+        if (!response) {
+            console.log(`[deAPI Status] All GET endpoints failed for ${taskId}. Trying POST on /status...`);
+            try {
+                const postUrl = "https://api.deapi.ai/api/v1/client/status";
+                const postRes = await fetch(postUrl, {
+                    method: "POST",
+                    headers: {
+                        "Authorization": `Bearer ${apiKey}`,
+                        "X-Api-Key": apiKey,
+                        "Content-Type": "application/json",
+                        "Accept": "application/json"
+                    },
+                    body: JSON.stringify({ request_id: taskId, id: taskId })
+                });
+                if (postRes.ok) {
+                    console.log(`[deAPI Status] SUCCESS on POST endpoint: ${postUrl}`);
+                    response = postRes;
+                    successUrl = postUrl + " (POST)";
+                } else {
+                    lastError = `POST status failed with ${postRes.status}: ${await postRes.text().catch(() => "")}`;
+                }
+            } catch (e) {
+                lastError = `POST status error: ${e.message}`;
             }
         }
 
