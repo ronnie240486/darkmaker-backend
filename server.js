@@ -1326,8 +1326,8 @@ app.post("/api/deapi/video", async (req, res) => {
 
         // Se após a consulta continuarmos com o padrão, mas ltx-video-13b não existia antes,
         // vamos usar o fallback mais comum "ltx-video" ou manter o solicitado caso o usuário tenha um plano diferente.
-        if (resolvedModel === "ltx-video-13b") {
-            resolvedModel = "ltx-video"; // deAPI de fato usa "ltx-video" como o identificador principal do LTX Video 13B
+        if (resolvedModel === "ltx-video-13b" || resolvedModel === "ltx-video") {
+            resolvedModel = "Ltx2_3_22B_Dist_INT8"; 
         }
 
         console.log(`[deAPI] Resolved Model: ${resolvedModel}`);
@@ -1356,18 +1356,11 @@ app.post("/api/deapi/video", async (req, res) => {
 
         console.log("[deAPI] Sending payload:", JSON.stringify(payload));
 
-        const endpoints = [];
-        if (imageUrl) {
-            endpoints.push("https://api.deapi.ai/api/v1/client/img2video");
-            endpoints.push("https://api.deapi.ai/v1/client/img2video");
-            endpoints.push("https://api.deapi.ai/api/v1/client/txt2video");
-            endpoints.push("https://api.deapi.ai/v1/client/txt2video");
-        } else {
-            endpoints.push("https://api.deapi.ai/api/v1/client/txt2video");
-            endpoints.push("https://api.deapi.ai/v1/client/txt2video");
-            endpoints.push("https://api.deapi.ai/api/v1/client/img2video");
-            endpoints.push("https://api.deapi.ai/api/v1/client/img2video");
-        }
+        const endpoints = [
+            "https://api.deapi.ai/api/v1/client/txt2video",
+            "https://api.deapi.ai/api/v1/client/img2video"
+        ];
+        // Endpoints set
         endpoints.push(
             "https://api.deapi.ai/v2/video/generations",
             "https://api.deapi.ai/v2/videos/generations",
@@ -1463,36 +1456,27 @@ app.post("/api/deapi/status", async (req, res) => {
     }
     try {
         const statusEndpoints = [
-            `https://api.deapi.ai/api/v1/client/status/${taskId}`,
             `https://api.deapi.ai/api/v1/client/status?request_id=${taskId}`,
-            `https://api.deapi.ai/api/v1/client/status?id=${taskId}`,
-            `https://api.deapi.ai/api/v1/client/prediction/${taskId}`,
-            `https://api.deapi.ai/api/v1/client/predictions/${taskId}`,
-            `https://api.deapi.ai/api/v1/client/txt2video/status/${taskId}`,
+            `https://api.deapi.ai/api/v1/client/status/${taskId}`,
             `https://api.deapi.ai/api/v1/client/txt2video/status?request_id=${taskId}`,
+            `https://api.deapi.ai/api/v1/client/txt2video/status/${taskId}`,
+            `https://api.deapi.ai/api/v1/client/prediction/${taskId}`,
+            `https://api.deapi.ai/api/v1/client/status?id=${taskId}`,
             `https://api.deapi.ai/api/v1/client/job/${taskId}`,
-            `https://api.deapi.ai/api/v1/client/jobs/${taskId}`,
-            `https://api.deapi.ai/api/v1/client/status?uuid=${taskId}`,
-            `https://api.deapi.ai/api/v1/client/status?job_id=${taskId}`,
-            `https://api.deapi.ai/api/v1/client/video/status/${taskId}`,
-            `https://api.deapi.ai/api/v1/client/video/status?request_id=${taskId}`,
             `https://api.deapi.ai/v1/status/${taskId}`,
             `https://api.deapi.ai/v1/status?request_id=${taskId}`,
             `https://api.deapi.ai/v1/prediction/${taskId}`,
-            `https://api.deapi.ai/v2/video/generations/${taskId}`,
-            `https://api.deapi.ai/v2/videos/generations/${taskId}`,
-            `https://api.deapi.ai/v1/video/generations/${taskId}`,
-            `https://api.deapi.ai/v1/videos/generations/${taskId}`
+            `https://api.deapi.ai/v2/video/generations/${taskId}`
         ];
 
         let response;
         let lastError = null;
         let successUrl = "";
 
+        console.log(`[deAPI Status] Checking status for taskId: ${taskId}`);
         for (const url of statusEndpoints) {
             try {
-                console.log(`[deAPI Status] Trying status endpoint: ${url}`);
-                
+                // Silently try endpoints, only log if success or critical error
                 const headers = {
                     "Authorization": `Bearer ${apiKey}`,
                     "X-Api-Key": apiKey,
@@ -1504,6 +1488,7 @@ app.post("/api/deapi/status", async (req, res) => {
                 const bodyText = await resTemp.text().catch(() => "");
 
                 if (resTemp.ok) {
+                    console.log(`[deAPI Status] SUCCESS on endpoint: ${url}`);
                     response = resTemp;
                     successUrl = url;
                     // Mocking methods since we already read the body
@@ -1524,10 +1509,11 @@ app.post("/api/deapi/status", async (req, res) => {
                     }
                 }
 
-                console.log(`[deAPI Status] Endpoint ${url} returned ${status}: ${bodyText.substring(0, 100)}`);
+                if (status !== 404) {
+                    console.log(`[deAPI Status] Endpoint ${url} returned ${status}: ${bodyText.substring(0, 200)}`);
+                }
                 lastError = `Status ${status}: ${bodyText.substring(0, 50)}`;
             } catch (err) {
-                console.log(`[deAPI Status] Endpoint ${url} failed:`, err.message);
                 lastError = err.message;
             }
         }
