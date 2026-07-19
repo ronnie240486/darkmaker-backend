@@ -1875,13 +1875,15 @@ app.post("/api/deapi/video", async (req, res) => {
             height: height,
             frames: frames !== undefined ? Number(frames) : 120,      // Obrigatório na v1 deAPI.ai
             num_frames: frames !== undefined ? Number(frames) : 120,  // Compatibilidade
-            fps: fps !== undefined ? Number(fps) : 24,                // Obrigatório na v1 deAPI.ai
+            fps: fps !== undefined ? Number(fps) : 30,                // Padrão v2 é 30
             steps: steps !== undefined ? Number(steps) : 25,
+            guidance: guidance_scale !== undefined ? Number(guidance_scale) : 1, // guidance na v2
             guidance_scale: 3.5,
             negative_prompt: negative_prompt !== undefined ? negative_prompt : "low quality, bad anatomy, worst quality, text, logo, signature, watermark",
             seed: Math.floor(Math.random() * 1000000)
         };
         if (imageUrl) {
+            payload.image = imageUrl; // v2 usa image
             payload.first_frame_image = imageUrl;
             payload.first_frame_image_url = imageUrl;
             payload.image_url = imageUrl;
@@ -1890,20 +1892,23 @@ app.post("/api/deapi/video", async (req, res) => {
 
         console.log("[deAPI] Sending payload:", JSON.stringify(payload));
 
-        const endpoints = [
-            "https://api.deapi.ai/api/v1/client/txt2video",
-            "https://api.deapi.ai/api/v1/client/img2video"
-        ];
-        // Endpoints set
+        // Prioridade para v2 conforme documentação mais recente
+        const endpoints = [];
+        if (imageUrl) {
+            endpoints.push("https://api.deapi.ai/api/v2/videos/animations");
+            endpoints.push("https://api.deapi.ai/api/v2/video/animations");
+            endpoints.push("https://api.deapi.ai/api/v1/client/img2video");
+        } else {
+            endpoints.push("https://api.deapi.ai/api/v2/videos/generations");
+            endpoints.push("https://api.deapi.ai/api/v2/video/generations");
+            endpoints.push("https://api.deapi.ai/api/v1/client/txt2video");
+        }
+
+        // Outros fallbacks
         endpoints.push(
-            "https://api.deapi.ai/v2/video/generations",
             "https://api.deapi.ai/v2/videos/generations",
             "https://api.deapi.ai/v1/video/generations",
-            "https://api.deapi.ai/v1/videos/generations",
-            "https://api.deapi.ai/v2/video",
-            "https://api.deapi.ai/v2/videos",
-            "https://api.deapi.ai/v1/video",
-            "https://api.deapi.ai/v1/videos"
+            "https://api.deapi.ai/v1/videos/generations"
         );
 
         let response;
@@ -1994,6 +1999,46 @@ app.post("/api/deapi/video", async (req, res) => {
     }
 });
 
+app.post("/api/deapi/image", async (req, res) => {
+    const { apiKey, prompt, model, width, height, guidance, steps, seed } = req.body;
+    if (!apiKey) {
+        return res.status(400).json({ error: "Chave API deAPI não fornecida." });
+    }
+    try {
+        const payload = {
+            prompt,
+            model: model || "flux-1-schnell",
+            width: width || 1024,
+            height: height || 1024,
+            guidance: guidance || 1,
+            steps: steps || 4,
+            seed: seed !== undefined ? seed : -1
+        };
+
+        const url = "https://api.deapi.ai/api/v2/images/generations";
+        const response = await fetch(url, {
+            method: "POST",
+            headers: {
+                "Authorization": `Bearer ${apiKey}`,
+                "Content-Type": "application/json",
+                "Accept": "application/json"
+            },
+            body: JSON.stringify(payload)
+        });
+
+        if (!response.ok) {
+            const errText = await response.text();
+            throw new Error(`deAPI Image Error: ${response.status} ${errText}`);
+        }
+
+        const data = await response.json();
+        res.json(data);
+    } catch (e) {
+        console.error("[deAPI Image] Error:", e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
 app.post("/api/deapi/status", async (req, res) => {
     const { apiKey, taskId } = req.body;
     if (!apiKey || !taskId) {
@@ -2001,6 +2046,9 @@ app.post("/api/deapi/status", async (req, res) => {
     }
     try {
         const statusEndpoints = [
+            `https://api.deapi.ai/api/v2/jobs/${taskId}`,
+            `https://api.deapi.ai/api/v1/client/task_status?request_id=${taskId}`,
+            `https://api.deapi.ai/api/v1/client/task?request_id=${taskId}`,
             `https://api.deapi.ai/api/v1/client/video/generations/${taskId}`,
             `https://api.deapi.ai/api/v1/client/videos/generations/${taskId}`,
             `https://api.deapi.ai/api/v1/client/task/${taskId}`,
