@@ -2047,6 +2047,7 @@ app.post("/api/deapi/status", async (req, res) => {
     try {
         const statusEndpoints = [
             `https://api.deapi.ai/api/v2/jobs/${taskId}`,
+            `https://api.deapi.ai/api/v2/jobs?job_id=${taskId}`,
             `https://api.deapi.ai/api/v1/client/task_status?request_id=${taskId}`,
             `https://api.deapi.ai/api/v1/client/task?request_id=${taskId}`,
             `https://api.deapi.ai/api/v1/client/video/generations/${taskId}`,
