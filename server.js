@@ -302,7 +302,40 @@ function runFFmpeg(args) {
     });
 }
 
+function escapeFFmpegText(str) {
+    if (!str) return '';
+    return str
+        .replace(/\\/g, '\\\\')
+        .replace(/'/g, "\\'")
+        .replace(/:/g, '\\:');
+}
+
 // --- IMAGE PROCESSING ---
+function getGeminiClientBackground() {
+    let key = "";
+    for (const k in process.env) {
+        const u = k.toUpperCase();
+        if ((u.includes('GEMINI') || u.includes('GOOGLE_AI') || u.includes('GENAI')) && u.includes('KEY')) {
+            const val = process.env[k];
+            if (val && typeof val === 'string' && val.length > 5 && val !== 'undefined' && val !== 'null') {
+                key = val.trim();
+                break;
+            }
+        }
+    }
+    if (!key) {
+        throw new Error("Chave API Gemini não encontrada no ambiente.");
+    }
+    return new GoogleGenAI({
+        apiKey: key,
+        httpOptions: {
+            headers: {
+                'User-Agent': 'aistudio-build',
+            }
+        }
+    });
+}
+
 async function processImage(action, files, config, jobId) {
     if (!files || files.length === 0) throw new Error("No files provided");
     const inputPath = path.join(UPLOAD_DIR, files[0].filename);
@@ -322,7 +355,127 @@ async function processImage(action, files, config, jobId) {
     }
     
     const outputPath = path.join(OUTPUT_DIR, `${action}_${jobId}.${ext}`);
-    
+
+    if (['inpainting', 'expand', 'recreate', 'restore', 'remove-bg', 'logo', 'prompt-gen', 'batch-gen'].includes(action)) {
+        const fileBuffer = fs.readFileSync(inputPath);
+        const base64Data = fileBuffer.toString('base64');
+        const mimeType = files[0].mimetype || 'image/png';
+
+        const ai = getGeminiClientBackground();
+        
+        let promptText = "";
+        if (action === 'inpainting') {
+            promptText = `You are a professional image editing model. 
+The user wants to remove or edit specific elements in this image.
+USER REQUEST: "${config.prompt || 'remove background objects and clean the image'}".
+CRITICAL INSTRUCTIONS:
+- Intelligently identify and remove the elements described by the user.
+- Seamlessly infill the removed areas with matching background textures, lighting, and colors.
+- Maintain the original details of the remaining image.
+- CRITICAL NEGATIVE CONSTRAINT: STRICTLY NO ADDED TEXT, LETTERS, NUMBERS, LOGOS, OR BRAND NAMES.
+Produce a fully processed, clean, visually beautiful, high-quality edited image.`;
+        } else if (action === 'expand') {
+            promptText = `You are a professional image outpainting model.
+The user wants to expand the scene/landscape around the edges of this image.
+USER INTENT FOR EXPANDED SCENE: "${config.prompt || 'extend the natural environment'}"
+CRITICAL INSTRUCTIONS:
+- Keep the original center portion of the image perfectly intact.
+- Seamlessly expand the scene in all directions to create a wider, beautiful, high-quality landscape.
+- The new areas must blend flawlessly in lighting, perspective, color, and texture.
+- CRITICAL NEGATIVE CONSTRAINT: STRICTLY NO ADDED TEXT, LETTERS, NUMBERS, LOGOS, OR SIGNATURES.`;
+        } else if (action === 'recreate') {
+            promptText = `You are a professional image styling and remixing model.
+The user wants to recreate or remix this image into a new style.
+STYLE REQUESTED: "${config.prompt || 'recreate with artistic style'}"
+CRITICAL INSTRUCTIONS:
+- Retain the general shape, pose, composition, and core subject of the original image.
+- Completely recreate and stylize the image based on the style request (e.g. oil painting, cyberpunk, pencil sketch, watercolor, etc.).
+- Produce a gorgeous, artistic, high-resolution result.
+- CRITICAL NEGATIVE CONSTRAINT: STRICTLY NO ADDED TEXT, LETTERS, NUMBERS, LOGOS, OR SIGNATURES.`;
+        } else if (action === 'restore') {
+            promptText = `You are a professional image restoration model.
+The user wants to restore, upscale, denoise, and improve this old or low-resolution photo.
+ADDITIONAL INSTRUCTIONS (IF ANY): "${config.prompt || 'restore face details, denoise, improve colors and clarity'}"
+CRITICAL INSTRUCTIONS:
+- Identify and fix scratches, dust, compression artifacts, and blurs.
+- Improve the clarity, sharpness, and details of faces and textures.
+- Do color correction to make colors natural and vibrant.
+- Retain the absolute content and likeness of the original image without inventing unrelated elements.
+- CRITICAL NEGATIVE CONSTRAINT: STRICTLY NO ADDED TEXT, LETTERS, NUMBERS, LOGOS, OR SIGNATURES.`;
+        } else if (action === 'remove-bg') {
+            const backgroundType = config.color || 'transparent';
+            promptText = `You are a professional background removal model.
+The user wants to remove the background of this image.
+DESIRED BACKGROUND OUTCOME: "${backgroundType}"
+CRITICAL INSTRUCTIONS:
+- Perfect silhouette extraction: precisely isolate the primary subjects (people, animals, objects) from the background, including fine details like hair or complex edges.
+- Replace the background entirely with: ${backgroundType === 'transparent' ? 'a completely transparent/empty space' : backgroundType === 'studio' ? 'a professional soft gradient studio backdrop' : 'solid ' + backgroundType}.
+- Produce a clean, professional, high-quality result.
+- CRITICAL NEGATIVE CONSTRAINT: STRICTLY NO ADDED TEXT, LETTERS, NUMBERS, LOGOS, OR SIGNATURES.`;
+        } else if (action === 'logo') {
+            promptText = `You are an elite corporate brand identity designer.
+The user wants to transform this uploaded image/sketch into a highly professional, modern, minimalist logo.
+BRAND NAME: "${config.prompt || 'Premium Brand'}".
+CRITICAL INSTRUCTIONS:
+- Design a stunning, clean vector-style logo emblem.
+- Include the brand name "${config.prompt || 'Premium Brand'}" in elegant, modern corporate typography within the design.
+- The background must be clean, solid, and high-contrast, or completely isolated.
+- Retain the general shape/concept from the uploaded image if relevant, but elevate it to a world-class professional design.
+- Produce a crisp, high-resolution branding asset.`;
+        } else if (action === 'prompt-gen') {
+            promptText = `You are a professional prompt engineer and artist.
+Analyze this uploaded image and the user concept "${config.prompt || 'Creative Concept'}".
+Create a highly optimized, extremely detailed descriptive prompt for image generators.
+Then, generate a brand-new, ultra-creative, mind-bending and high-fidelity artistic illustration representing that creative prompt concept.
+CRITICAL NEGATIVE CONSTRAINT: STRICTLY NO ADDED TEXT, LETTERS, NUMBERS, LOGOS, OR SIGNATURES.`;
+        } else if (action === 'batch-gen') {
+            promptText = `You are a creative director.
+The user wants multiple variations of this theme: "${config.prompt || 'Artistic variation'}".
+Generate a high-fidelity, stunning, beautifully styled multi-pane image sheet showing 4 distinct, gorgeous artistic variations/renderings of this theme arranged in a clean 2x2 grid.
+Make each pane distinct, highly detailed, and aesthetically magnificent.
+CRITICAL NEGATIVE CONSTRAINT: STRICTLY NO TYPOGRAPHY, LETTERS, OR WORDS in any of the panes.`;
+        }
+
+        console.log(`Running Gemini Image Edit background task for action: ${action}`);
+        
+        const model = 'gemini-3.1-flash-image';
+        const response = await ai.models.generateContent({
+            model,
+            contents: {
+                parts: [
+                    {
+                        inlineData: {
+                            data: base64Data,
+                            mimeType: mimeType
+                        }
+                    },
+                    {
+                        text: promptText
+                    }
+                ]
+            }
+        });
+
+        const parts = response.candidates?.[0]?.content?.parts;
+        let generatedBase64 = null;
+        if (parts) {
+            for (const part of parts) {
+                if (part.inlineData) {
+                    generatedBase64 = part.inlineData.data;
+                    break;
+                }
+            }
+        }
+
+        if (generatedBase64) {
+            const outBuffer = Buffer.from(generatedBase64, 'base64');
+            fs.writeFileSync(outputPath, outBuffer);
+            return outputPath;
+        } else {
+            throw new Error("A IA processou o pedido mas não retornou uma imagem de saída.");
+        }
+    }
+
     let args = ['-y', '-i', inputPath];
 
     // Parse aggression level (0 to 100) - Defined here for scope access
@@ -381,9 +534,23 @@ async function processImage(action, files, config, jobId) {
              args.push('-vf', 'hue=s=0');
              break;
         case 'watermark':
-             if (config.text) {
-                 args.push('-vf', `drawtext=text='${config.text}':x=10:y=10:fontsize=24:fontcolor=white`);
+             const wmText = escapeFFmpegText(config.text || "AI Studio Premium");
+             args.push('-vf', `drawtext=text='${wmText}':x=(w-text_w)/2:y=(h-text_h)/2:fontsize=36:fontcolor=white@0.4:box=1:boxcolor=black@0.1`);
+             break;
+        case 'join':
+             if (files.length >= 2) {
+                 const img1 = path.join(UPLOAD_DIR, files[0].filename);
+                 const img2 = path.join(UPLOAD_DIR, files[1].filename);
+                 args = ['-y', '-i', img1, '-i', img2, '-filter_complex', '[0:v]scale=-1:720[v0];[1:v]scale=-1:720[v1];[v0][v1]hstack=inputs=2'];
+             } else {
+                 args.push('-vf', 'split[left][right];[left][right]hstack');
              }
+             break;
+        case 'shuffle':
+             args.push('-filter_complex', 'split=3[r][g][b];[r]lutrgb=g=0:b=0,scale=iw+10:ih+10,crop=iw-10:ih-10:5:5[red];[g]lutrgb=r=0:b=0[green];[b]lutrgb=r=0:g=0,scale=iw+20:ih+20,crop=iw-20:ih-20:10:10[blue];[red][green]blend=all_mode=addition[rg];[rg][blue]blend=all_mode=addition');
+             break;
+        case 'metadata':
+             args.push('-map_metadata', '-1');
              break;
     }
 
@@ -438,6 +605,31 @@ async function processMedia(action, files, config, jobId) {
 
     const outputPath = path.join(OUTPUT_DIR, `${action}_${jobId}.${ext}`);
     
+    if (action === 'join') {
+        if (files.length < 2) {
+            const singleIn = path.join(UPLOAD_DIR, files[0].filename);
+            await runFFmpeg(['-y', '-i', singleIn, ...getVideoArgs(), ...getAudioArgs(), outputPath]);
+            return outputPath;
+        }
+        const listPath = path.join(UPLOAD_DIR, `concat_${jobId}.txt`);
+        const listContent = files.map(p => `file '${path.join(UPLOAD_DIR, p.filename).replace(/\\/g, '/')}'`).join('\n');
+        fs.writeFileSync(listPath, listContent);
+        const res = config.aspectRatio === '9:16' ? '720x1280' : '1280x720';
+        await runFFmpeg(["-y", "-f", "concat", "-safe", "0", "-i", listPath, ...getVideoArgs(), "-s", res, "-r", "30", ...getAudioArgs(), outputPath]);
+        try { fs.unlinkSync(listPath); } catch(e){}
+        return outputPath;
+    }
+
+    if (action === 'audio-swap') {
+        if (files.length < 2) {
+            throw new Error("Trocar áudio requer um arquivo de vídeo e um arquivo de áudio.");
+        }
+        const videoInput = path.join(UPLOAD_DIR, files[0].filename);
+        const audioInput = path.join(UPLOAD_DIR, files[1].filename);
+        await runFFmpeg(["-y", "-i", videoInput, "-i", audioInput, "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac", "-shortest", outputPath]);
+        return outputPath;
+    }
+
     let args = ['-y'];
     
     // Input seeking logic for Cut
@@ -482,23 +674,35 @@ async function processMedia(action, files, config, jobId) {
              filterA.push('areverse');
              break;
         case 'watermark':
-             const text = config.watermarkText || 'AI Studio';
+             const text = escapeFFmpegText(config.watermarkText || 'AI Studio');
              filterV.push(`drawtext=text='${text}':x=10:y=10:fontsize=24:fontcolor=white`);
              break;
         case 'compress':
-             args.push('-c:v', 'libx264', '-crf', config.crf || '28');
+             if (isAudio) {
+                 args.push('-b:a', '64k');
+             } else {
+                 args.push('-c:v', 'libx264', '-crf', config.crf || '28');
+             }
              break;
         case 'gif':
              filterV.push('fps=10,scale=320:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse');
              break;
         case 'stabilize':
-             console.log("Stabilize requested - placeholder");
+             filterV.push('deshake=edge=mirror:blocksize=8:contrast=125:search=15');
+             break;
+        case 'inpainting':
+             filterV.push('delogo=x=10:y=10:w=120:h=60:band=10');
+             break;
+        case 'subtitles':
+             const sub = escapeFFmpegText(config.watermarkText || 'Legenda gerada por IA...');
+             filterV.push(`drawtext=text='${sub}':x=(w-text_w)/2:y=h-80:fontsize=28:fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=10`);
              break;
         
         // --- AI PLACEHOLDERS (FFMPEG SIMULATIONS) ---
         case 'upscale':
-             const scale = config.scale || 2;
-             filterV.push(`scale=iw*${scale}:ih*${scale}:flags=lanczos`);
+             const targetScale = parseFloat(config.scale) || 2;
+             const maxDim = targetScale >= 4 ? 3840 : 2560;
+             filterV.push(`scale=w='if(gt(iw,ih),min(${maxDim},iw*${targetScale}),-2)':h='if(gt(iw,ih),-2,min(${maxDim},ih*${targetScale}))':flags=lanczos`);
              args.push('-c:v', 'libx264', '-crf', '18', '-preset', 'slow');
              break;
         case 'colorize':
@@ -513,10 +717,28 @@ async function processMedia(action, files, config, jobId) {
 
         // --- AUDIO TOOLS ---
         case 'clean':
-             filterA.push('highpass=f=200,lowpass=f=3000');
+             filterA.push('afftdn,highpass=f=50,lowpass=f=8000');
              break;
         case 'normalize':
              filterA.push('loudnorm=I=-16:TP=-1.5:LRA=11');
+             break;
+        case 'pitch':
+             const pitchVal = parseFloat(config.pitch) || 0;
+             if (pitchVal !== 0) {
+                 const factor = Math.pow(2, pitchVal / 12);
+                 filterA.push(`asetrate=44100*${factor},atempo=${1/factor},aresample=44100`);
+             }
+             break;
+        case 'high-pass':
+             const hpf = config.frequency || '300';
+             filterA.push(`highpass=f=${hpf}`);
+             break;
+        case 'low-pass':
+             const lpf = config.frequency || '3000';
+             filterA.push(`lowpass=f=${lpf}`);
+             break;
+        case 'limiter':
+             filterA.push('alimiter=level_in=1:level_out=1:limit=0.1:attack=5:release=50');
              break;
         case 'bass':
              filterA.push('equalizer=f=100:width_type=h:width=200:g=10');
@@ -756,6 +978,318 @@ async function renderVideoProject(project, jobId) {
 }
 
 // ... ROUTES ...
+
+// Helpers for smart podcast split
+function parseTimeToSeconds(timeInput) {
+    if (typeof timeInput === 'number') return timeInput;
+    if (typeof timeInput !== 'string') return 0;
+    
+    const clean = timeInput.trim();
+    if (!isNaN(parseFloat(clean)) && !clean.includes(':')) {
+        return parseFloat(clean);
+    }
+    
+    const parts = clean.split(':').map(parseFloat);
+    if (parts.length === 2) {
+        return parts[0] * 60 + parts[1];
+    } else if (parts.length === 3) {
+        return parts[0] * 3600 + parts[1] * 60 + parts[2];
+    }
+    return 0;
+}
+
+function formatSecondsToTime(secs) {
+    const s = Math.floor(secs);
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const rSecs = s % 60;
+    
+    const pad = (n) => String(n).padStart(2, '0');
+    if (h > 0) {
+        return `${pad(h)}:${pad(m)}:${pad(rSecs)}`;
+    }
+    return `${pad(m)}:${pad(rSecs)}`;
+}
+
+// Special Route for AI Podcast Suggestion
+app.post("/api/process/podcast-suggest", (req, res) => {
+    uploadAny(req, res, async (err) => {
+        if (err) return res.status(500).json({ error: err.message });
+        
+        const files = req.files;
+        if (!files || files.length === 0) return res.status(400).json({ error: "Nenhum vídeo fornecido." });
+
+        const inputPath = path.join(UPLOAD_DIR, files[0].filename);
+        const apiKey = getGeminiKey(req);
+
+        if (!apiKey) {
+            return res.status(400).json({ error: "Chave Gemini não configurada para análise de IA." });
+        }
+
+        try {
+            const totalDuration = await getExactDuration(inputPath);
+            const hasAudio = await fileHasAudio(inputPath);
+            if (!hasAudio) {
+                return res.json({ suggestedParts: 3, explanation: "Não foi detectado áudio para análise. Recomendamos dividir em 3 partes padrão." });
+            }
+
+            console.log(`[PodcastSuggest] Extracting audio for suggestion...`);
+            const tempAudioName = `audio_suggest_${Date.now()}.mp3`;
+            const tempAudioPath = path.join(UPLOAD_DIR, tempAudioName);
+            
+            await runFFmpeg([
+                '-y',
+                '-i', inputPath,
+                '-vn',
+                '-ar', '16000',
+                '-ac', '1',
+                '-b:a', '32k',
+                tempAudioPath
+            ]);
+
+            if (fs.existsSync(tempAudioPath)) {
+                const audioBase64 = fs.readFileSync(tempAudioPath).toString('base64');
+                const ai = new GoogleGenAI({
+                    apiKey,
+                    httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
+                });
+
+                const response = await ai.models.generateContent({
+                    model: 'gemini-2.5-flash',
+                    contents: [
+                        {
+                            inlineData: {
+                                mimeType: 'audio/mp3',
+                                data: audioBase64
+                            }
+                        },
+                        `Você é um consultor estratégico de mídia e editor profissional de podcasts.
+                         Analise a estrutura deste áudio de ${totalDuration} segundos e sugira a quantidade ideal de partes (entre 2 e 8 partes) para cortar em Shorts de alto engajamento.
+                         Foque em identificar as mudanças de assunto, ganchos dramáticos, ou momentos de maior energia.
+                         
+                         Retorne estritamente um JSON limpo (use responseMimeType JSON):
+                         {
+                           "suggestedParts": 4,
+                           "explanation": "Uma explicação profissional e direta em português detalhando por que esse número de cortes foi sugerido com base no conteúdo falado e onde ocorrem as principais conclusões de raciocínio."
+                         }`
+                    ],
+                    config: { responseMimeType: "application/json" }
+                });
+
+                try { fs.unlinkSync(tempAudioPath); } catch(e) {}
+                try { fs.unlinkSync(inputPath); } catch(e) {}
+
+                const parsed = JSON.parse(response.text || "{}");
+                return res.json({
+                    suggestedParts: parsed.suggestedParts || 5,
+                    explanation: parsed.explanation || "Divisão sugerida com base em pausas naturais e relevância temática do podcast."
+                });
+            } else {
+                throw new Error("Falha ao extrair áudio para análise.");
+            }
+        } catch (e) {
+            console.error("[PodcastSuggest] Error suggesting split count:", e);
+            try { fs.unlinkSync(inputPath); } catch (err) {}
+            return res.status(500).json({ error: "Erro ao analisar o áudio: " + e.message });
+        }
+    });
+});
+
+// Special Route for AI Podcast Split
+app.post("/api/process/start/podcast-split", (req, res) => {
+    uploadAny(req, res, async (err) => {
+        if (err) return res.status(500).json({ error: err.message });
+        
+        const jobId = Date.now().toString();
+        const files = req.files;
+        let config = {};
+        if (req.body.config) {
+            try { config = JSON.parse(req.body.config); } catch (e) {}
+        }
+
+        if (!files || files.length === 0) return res.status(400).json({ error: "Nenhum vídeo fornecido." });
+
+        const inputPath = path.join(UPLOAD_DIR, files[0].filename);
+        const numParts = parseInt(config.numParts) || 5;
+        const aspectRatio = config.aspectRatio || '9:16';
+        const apiKey = getGeminiKey(req);
+
+        jobs[jobId] = { progress: 5, status: "processing", results: [] };
+
+        res.json({ jobId });
+
+        // Run background task
+        (async () => {
+            try {
+                const totalDuration = await getExactDuration(inputPath);
+                if (totalDuration <= 0) {
+                    throw new Error("Não foi possível obter a duração do vídeo de origem.");
+                }
+
+                let splits = [];
+                let usedAI = false;
+                
+                const hasAudio = await fileHasAudio(inputPath);
+                if (hasAudio && apiKey) {
+                    try {
+                        console.log(`[PodcastSplit] Extracting low-bitrate audio for Gemini analysis...`);
+                        jobs[jobId].progress = 15;
+                        const tempAudioName = `audio_temp_${jobId}.mp3`;
+                        const tempAudioPath = path.join(UPLOAD_DIR, tempAudioName);
+                        
+                        await runFFmpeg([
+                            '-y',
+                            '-i', inputPath,
+                            '-vn',
+                            '-ar', '16000',
+                            '-ac', '1',
+                            '-b:a', '32k',
+                            tempAudioPath
+                        ]);
+
+                        if (fs.existsSync(tempAudioPath)) {
+                            jobs[jobId].progress = 25;
+                            const audioBase64 = fs.readFileSync(tempAudioPath).toString('base64');
+                            
+                            console.log(`[PodcastSplit] Sending compressed audio to Gemini 3.5 for split detection...`);
+                            const ai = new GoogleGenAI({
+                                apiKey,
+                                httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
+                            });
+
+                            const response = await ai.models.generateContent({
+                                model: 'gemini-2.5-flash',
+                                contents: [
+                                    {
+                                        inlineData: {
+                                            mimeType: 'audio/mp3',
+                                            data: audioBase64
+                                        }
+                                    },
+                                    `Você é um editor de vídeo profissional de podcasts especializado em gerar Shorts e Reels virais extremamente limpos e profissionais.
+                                     Analise o áudio e selecione exatamente ${numParts} partes para cortar em Shorts de alta qualidade.
+                                     REGRAS CRÍTICAS DE ÁUDIO E CORTE:
+                                     - Cada parte deve conter uma fala, resposta ou assunto coerente, completo e de alto impacto.
+                                     - O corte de fim de cada parte deve acontecer SEMPRE em um ponto de conclusão da frase ou raciocínio. NUNCA corte no meio de uma palavra, sílaba ou frase em andamento.
+                                     - IMPORTANTE: Deixe sempre uma margem de segurança/silêncio generosa de 0.8 a 1.2 segundos APÓS o palestrante terminar completamente de falar a última palavra. É infinitamente melhor incluir um pequeno fôlego, risada ou início de silêncio do que cortar abruptamente antes de concluir a última palavra.
+                                     - Evite silêncios longos inúteis.
+                                     - O tempo total do áudio é de ${totalDuration} segundos. Garanta que todos os tempos estejam estritamente dentro de 0 e ${totalDuration}.
+                                     - Cada clipe deve idealmente durar entre 15 e 60 segundos.
+                                     - Retorne exatamente ${numParts} partes organizadas em ordem cronológica.
+                                     
+                                     Retorne estritamente uma estrutura JSON limpa sem markdown adicionais (use responseMimeType JSON), um array de objetos:
+                                     [
+                                       {
+                                         "partNumber": 1,
+                                         "startTime": 12.4,
+                                         "endTime": 45.1,
+                                         "title": "Título Chamativo do Short",
+                                         "explanation": "Explicação do porquê esse trecho foi escolhido e cortado neste ponto"
+                                       }
+                                     ]`
+                                ],
+                                config: { responseMimeType: "application/json" }
+                            });
+
+                            const jsonText = response.text || "";
+                            console.log(`[PodcastSplit] Gemini response:`, jsonText);
+                            const parsed = JSON.parse(jsonText);
+                            if (Array.isArray(parsed) && parsed.length > 0) {
+                                splits = parsed.map(item => ({
+                                    startTime: parseTimeToSeconds(item.startTime),
+                                    endTime: parseTimeToSeconds(item.endTime),
+                                    title: item.title || "Trecho Inteligente",
+                                    explanation: item.explanation || "Corte inteligente realizado pela IA no final de frase/pausa de fala."
+                                }));
+                                usedAI = true;
+                            }
+                            
+                            try { fs.unlinkSync(tempAudioPath); } catch(e) {}
+                        }
+                    } catch (e) {
+                        console.error("[PodcastSplit] Gemini split detection failed. Falling back to default mathematical splits.", e);
+                    }
+                }
+
+                if (splits.length === 0) {
+                    console.log(`[PodcastSplit] Using mathematical fallback splits...`);
+                    const partDuration = totalDuration / numParts;
+                    for (let i = 0; i < numParts; i++) {
+                        const start = i * partDuration;
+                        const end = (i + 1) * partDuration;
+                        splits.push({
+                            startTime: start,
+                            endTime: end,
+                            title: `Corte de Podcast - Parte ${i + 1}`,
+                            explanation: `Corte automático baseado em divisão uniforme de tempo (${Math.round(partDuration)} segundos cada).`
+                        });
+                    }
+                }
+
+                const results = [];
+                jobs[jobId].progress = 35;
+
+                for (let i = 0; i < splits.length; i++) {
+                    const split = splits[i];
+                    let start = split.startTime;
+                    let end = split.endTime;
+                    
+                    if (start < 0) start = 0;
+                    
+                    // Add standard 0.8 seconds safety padding to make sure speech is completely captured
+                    if (usedAI) {
+                        end = end + 0.8;
+                    }
+                    if (end > totalDuration) end = totalDuration;
+                    if (start >= end) {
+                        start = i * (totalDuration / numParts);
+                        end = Math.min(start + 15, totalDuration);
+                    }
+
+                    const clipDuration = end - start;
+                    const outputFilename = `split_${i+1}_${jobId}.mp4`;
+                    const outputPath = path.join(OUTPUT_DIR, outputFilename);
+
+                    const cutArgs = ['-y', '-ss', start.toFixed(3), '-i', inputPath, '-t', clipDuration.toFixed(3)];
+
+                    if (aspectRatio === '9:16') {
+                        cutArgs.push('-vf', 'scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280');
+                    } else if (aspectRatio === '1:1') {
+                        cutArgs.push('-vf', 'scale=720:720:force_original_aspect_ratio=increase,crop=720:720');
+                    }
+
+                    cutArgs.push(...getVideoArgs(), ...getAudioArgs(), outputPath);
+
+                    console.log(`[PodcastSplit] Cutting part ${i+1}/${numParts}: ${start.toFixed(1)}s to ${end.toFixed(1)}s...`);
+                    await runFFmpeg(cutArgs);
+
+                    results.push({
+                        partNumber: i + 1,
+                        title: split.title,
+                        startTime: formatSecondsToTime(start),
+                        endTime: formatSecondsToTime(end),
+                        duration: clipDuration.toFixed(1) + "s",
+                        explanation: split.explanation,
+                        downloadUrl: `/outputs/${outputFilename}`
+                    });
+
+                    jobs[jobId].progress = 40 + Math.floor(((i + 1) / numParts) * 55);
+                }
+
+                jobs[jobId].status = "completed";
+                jobs[jobId].progress = 100;
+                jobs[jobId].results = results;
+                jobs[jobId].usedAI = usedAI;
+                console.log(`[PodcastSplit] Job ${jobId} successfully completed! Generated ${results.length} parts.`);
+
+            } catch (err) {
+                console.error(`[PodcastSplit] Job ${jobId} failed:`, err);
+                jobs[jobId].status = "failed";
+                jobs[jobId].error = err.message || err.toString();
+            }
+        })();
+    });
+});
 
 // Generic Action Route for Tools (Video & Audio)
 app.post("/api/process/start/:action", (req, res) => {
@@ -1142,536 +1676,3 @@ app.post("/api/gemini/generateVideo", async (req, res) => {
                 image: { imageBytes: requestData.startImage.split(',')[1], mimeType: 'image/png' },
                 config
             });
-        } else if (requestData.mode === 'interpolation' && requestData.startImage && requestData.endImage) {
-            operation = await ai.models.generateVideos({
-                model, prompt: sceneOnlyPrompt,
-                image: { imageBytes: requestData.startImage.split(',')[1], mimeType: 'image/png' },
-                config: { ...config, lastFrame: { imageBytes: requestData.endImage.split(',')[1], mimeType: 'image/png' } }
-            });
-        } else if (requestData.mode === 'reference' && requestData.refImages) {
-            const referenceImages = requestData.refImages.map(img => ({
-                image: { imageBytes: img.split(',')[1], mimeType: 'image/png' },
-                referenceType: 'ASSET'
-            }));
-            operation = await ai.models.generateVideos({ model, prompt: sceneOnlyPrompt, config: { ...config, referenceImages } });
-        } else {
-            operation = await ai.models.generateVideos({ model, prompt: sceneOnlyPrompt, config });
-        }
-
-        res.json({ operation });
-    } catch (e) {
-        console.error("GenerateVideo error:", e);
-        res.status(500).json({ error: e.message || "Erro ao iniciar geração de vídeo." });
-    }
-});
-
-app.post("/api/gemini/getOperation", async (req, res) => {
-    const { operation } = req.body;
-    try {
-        const ai = getGeminiClient(req);
-        const updatedOperation = await ai.operations.getVideosOperation({ operation });
-        res.json({ operation: updatedOperation });
-    } catch (e) {
-        console.error("GetOperation error:", e);
-        res.status(500).json({ error: e.message });
-    }
-});
-
-app.post("/api/gemini/downloadVideoBlob", async (req, res) => {
-    const { downloadLink } = req.body;
-    try {
-        const keyQuery = getGeminiKey(req) ? `&key=${getGeminiKey(req)}` : '';
-        const videoResponse = await fetch(`${downloadLink}${keyQuery}`);
-        const arrayBuffer = await videoResponse.arrayBuffer();
-        const base64 = Buffer.from(arrayBuffer).toString('base64');
-        res.json({ base64 });
-    } catch (e) {
-        console.error("DownloadVideoBlob error:", e);
-        res.status(500).json({ error: e.message });
-    }
-});
-
-app.post("/api/gemini/transcribeAudio", async (req, res) => {
-    const { base64Data, mimeType, language } = req.body;
-    try {
-        const ai = getGeminiClient(req);
-        const response = await ai.models.generateContent({
-            model: 'gemini-3.5-flash',
-            contents: {
-                parts: [
-                    { inlineData: { data: base64Data, mimeType } },
-                    { text: `Transcreva o áudio para texto no idioma ${language || 'Português'}.` }
-                ]
-            }
-        });
-        res.json({ text: response.text || "" });
-    } catch (e) {
-        console.error("TranscribeAudio error:", e);
-        res.status(500).json({ error: e.message || "Erro ao transcrever áudio." });
-    }
-});
-
-// deAPI.ai Proxy Routes
-app.post("/api/deapi/video", async (req, res) => {
-    const { apiKey, prompt, aspectRatio, imageUrl, model, frames, width: customWidth, height: customHeight, fps, steps, negative_prompt } = req.body;
-    if (!apiKey) {
-        return res.status(400).json({ error: "Chave API deAPI não fornecida." });
-    }
-    try {
-        let width = customWidth || 960;
-        let height = customHeight || 544;
-        const ar = aspectRatio || "16:9";
-
-        // Se for um modelo específico de 768 ou 512 base, vamos redefinir os padrões de forma inteligente se não especificados
-        if (!customWidth || !customHeight) {
-            const is13B = model === "Ltxv_13B_0_9_8_Distilled_FP8";
-            const isLarger = model === "Ltx2_3_22B_Dist_INT8" || model === "Ltx2_19B_Dist_FP8";
-            
-            if (is13B) {
-                if (ar === "1:1") {
-                    width = 512; height = 512;
-                } else if (ar === "9:16") {
-                    width = 512; height = 768;
-                } else if (ar === "3:4") {
-                    width = 576; height = 768;
-                } else if (ar === "4:3") {
-                    width = 768; height = 576;
-                } else { // 16:9
-                    width = 768; height = 512;
-                }
-            } else if (isLarger) {
-                if (ar === "1:1") {
-                    width = 768; height = 768;
-                } else if (ar === "9:16") {
-                    width = 544; height = 960;
-                } else if (ar === "3:4") {
-                    width = 720; height = 960;
-                } else if (ar === "4:3") {
-                    width = 960; height = 720;
-                } else { // 16:9
-                    width = 960; height = 544;
-                }
-            } else {
-                if (ar === "9:16") {
-                    width = 544;
-                    height = 960;
-                } else if (ar === "1:1") {
-                    width = 768;
-                    height = 768;
-                } else if (ar === "4:3") {
-                    width = 960;
-                    height = 720;
-                } else if (ar === "3:4") {
-                    width = 720;
-                    height = 960;
-                } else { // 16:9
-                    width = 960;
-                    height = 544;
-                }
-            }
-        }
-
-        // Garante defensivamente que largura e altura sejam pelo menos 512 para evitar erros de validação
-        if (width < 512) width = 512;
-        if (height < 512) height = 512;
-
-        // Resolvendo dinamicamente o modelo correto do deAPI.ai se não for passado ou for genérico
-        let resolvedModel = model || "Ltx2_3_22B_Dist_INT8";
-        if (!model) {
-            try {
-                const urls = [
-                    "https://api.deapi.ai/v1/models",
-                    "https://api.deapi.ai/api/v1/models"
-                ];
-                for (const u of urls) {
-                    try {
-                        const mRes = await fetch(u, {
-                            headers: { "Authorization": `Bearer ${apiKey}`, "Accept": "application/json" }
-                        });
-                        if (mRes.ok) {
-                            const mData = await mRes.json();
-                            const list = mData.data || mData || [];
-                            if (Array.isArray(list)) {
-                                const ids = list.map(m => m.id || m.name || m).filter(Boolean);
-                                console.log(`[deAPI] Live models fetched from ${u}:`, ids);
-                                if (ids.length > 0) {
-                                    // Tentar achar um que contenha "ltx"
-                                    const ltx = ids.find(id => id.toLowerCase().includes("ltx"));
-                                    if (ltx) {
-                                        resolvedModel = ltx;
-                                        break;
-                                    }
-                                    // Ou qualquer um que tenha "video"
-                                    const video = ids.find(id => id.toLowerCase().includes("video"));
-                                    if (video) {
-                                        resolvedModel = video;
-                                        break;
-                                    }
-                                    // Fallback para o primeiro da lista se for uma lista de modelos de vídeo
-                                    if (ids[0]) {
-                                        resolvedModel = ids[0];
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    } catch (err) {
-                        console.log(`[deAPI] Fail to query ${u}:`, err.message);
-                    }
-                }
-            } catch (e) {
-                console.log("[deAPI] Model list query error:", e.message);
-            }
-        }
-
-        // Se após a consulta continuarmos com o padrão, mas ltx-video-13b não existia antes,
-        // vamos usar o fallback mais comum "ltx-video" ou manter o solicitado caso o usuário tenha um plano diferente.
-        if (resolvedModel === "ltx-video-13b" || resolvedModel === "ltx-video") {
-            resolvedModel = "Ltx2_3_22B_Dist_INT8"; 
-        }
-
-        console.log(`[deAPI] Resolved Model: ${resolvedModel}`);
-
-        const payload = {
-            model: resolvedModel,
-            prompt: prompt,
-            aspect_ratio: ar,
-            aspectRatio: ar,
-            width: width,
-            height: height,
-            frames: frames !== undefined ? Number(frames) : 120,      // Obrigatório na v1 deAPI.ai
-            num_frames: frames !== undefined ? Number(frames) : 120,  // Compatibilidade
-            fps: fps !== undefined ? Number(fps) : 24,                // Obrigatório na v1 deAPI.ai
-            steps: steps !== undefined ? Number(steps) : 25,
-            guidance_scale: 3.5,
-            negative_prompt: negative_prompt !== undefined ? negative_prompt : "low quality, bad anatomy, worst quality, text, logo, signature, watermark",
-            seed: Math.floor(Math.random() * 1000000)
-        };
-        if (imageUrl) {
-            payload.first_frame_image = imageUrl;
-            payload.first_frame_image_url = imageUrl;
-            payload.image_url = imageUrl;
-            payload.imageUrl = imageUrl;
-        }
-
-        console.log("[deAPI] Sending payload:", JSON.stringify(payload));
-
-        const endpoints = [
-            "https://api.deapi.ai/api/v1/client/txt2video",
-            "https://api.deapi.ai/api/v1/client/img2video"
-        ];
-        // Endpoints set
-        endpoints.push(
-            "https://api.deapi.ai/v2/video/generations",
-            "https://api.deapi.ai/v2/videos/generations",
-            "https://api.deapi.ai/v1/video/generations",
-            "https://api.deapi.ai/v1/videos/generations",
-            "https://api.deapi.ai/v2/video",
-            "https://api.deapi.ai/v2/videos",
-            "https://api.deapi.ai/v1/video",
-            "https://api.deapi.ai/v1/videos"
-        );
-
-        let response;
-        let lastError = null;
-        let successUrl = "";
-
-        for (const url of endpoints) {
-            try {
-                console.log(`[deAPI] Trying endpoint: ${url}`);
-                
-                // Try with multiple headers for compatibility
-                const headers = {
-                    "Authorization": `Bearer ${apiKey}`,
-                    "X-Api-Key": apiKey,
-                    "Content-Type": "application/json",
-                    "Accept": "application/json"
-                };
-
-                const resTemp = await fetch(url, {
-                    method: "POST",
-                    headers,
-                    body: JSON.stringify(payload)
-                });
-                
-                if (resTemp.ok) {
-                    response = resTemp;
-                    successUrl = url;
-                    break;
-                } else {
-                    const status = resTemp.status;
-                    const errText = await resTemp.text().catch(() => "");
-                    console.log(`[deAPI] Endpoint ${url} returned ${status}: ${errText.substring(0, 200)}`);
-                    
-                    // If it's a critical error on a primary endpoint, we might want to throw, 
-                    // but let's try other endpoints first unless it's clearly an auth error
-                    if (status === 401) {
-                        throw new Error("Chave API deAPI.ai inválida ou expirada (401).");
-                    }
-                    if (status === 402) {
-                        throw new Error("Saldo de créditos insuficiente na deAPI.ai (402).");
-                    }
-                    
-                    lastError = `Status ${status}: ${errText.substring(0, 100)}`;
-                    
-                    // If 429, maybe wait a bit?
-                    if (status === 429) {
-                        console.warn(`[deAPI] Rate limit on ${url}, waiting 1s...`);
-                        await new Promise(r => setTimeout(r, 1000));
-                    }
-                }
-            } catch (err) {
-                console.log(`[deAPI] Endpoint ${url} failed:`, err.message);
-                lastError = err.message;
-                if (err.message.includes("401") || err.message.includes("402")) throw err;
-            }
-        }
-
-        if (!response) {
-            throw new Error(`Todos os endpoints deAPI falharam. Último erro: ${lastError}`);
-        }
-
-        const data = await response.json();
-        console.log(`[deAPI] Success using endpoint: ${successUrl}. Response:`, JSON.stringify(data));
-        res.json(data);
-    } catch (e) {
-        console.error("deAPI Video error:", e);
-        
-        // Determina o status code apropriado para o erro
-        let statusCode = 500;
-        if (e.message.includes("429")) statusCode = 429;
-        else if (e.message.includes("401")) statusCode = 401;
-        else if (e.message.includes("402")) statusCode = 402;
-        else if (e.message.includes("403")) statusCode = 403;
-        else if (e.message.includes("400") || e.message.includes("422")) statusCode = 400;
-        
-        res.status(statusCode).json({ error: e.message });
-    }
-});
-
-app.post("/api/deapi/status", async (req, res) => {
-    const { apiKey, taskId } = req.body;
-    if (!apiKey || !taskId) {
-        return res.status(400).json({ error: "Chave API ou ID de tarefa não fornecido." });
-    }
-    try {
-        const statusEndpoints = [
-            `https://api.deapi.ai/api/v1/client/status?request_id=${taskId}`,
-            `https://api.deapi.ai/api/v1/client/status/${taskId}`,
-            `https://api.deapi.ai/api/v1/client/txt2video/status?request_id=${taskId}`,
-            `https://api.deapi.ai/api/v1/client/txt2video/status/${taskId}`,
-            `https://api.deapi.ai/api/v1/client/video/status?request_id=${taskId}`,
-            `https://api.deapi.ai/api/v1/client/video/status/${taskId}`,
-            `https://api.deapi.ai/api/v1/client/txt2video/${taskId}`,
-            `https://api.deapi.ai/api/v1/client/img2video/${taskId}`,
-            `https://api.deapi.ai/api/v1/client/prediction/${taskId}`,
-            `https://api.deapi.ai/api/v1/client/status?id=${taskId}`,
-            `https://api.deapi.ai/api/v1/client/job/${taskId}`,
-            `https://api.deapi.ai/api/v1/status/${taskId}`,
-            `https://api.deapi.ai/api/v1/status?request_id=${taskId}`,
-            `https://api.deapi.ai/api/v1/prediction/${taskId}`,
-            `https://api.deapi.ai/api/v2/video/generations/${taskId}`
-        ];
-
-        let response;
-        let lastError = null;
-        let successUrl = "";
-
-        console.log(`[deAPI Status] Checking status for taskId: ${taskId}`);
-        for (const url of statusEndpoints) {
-            try {
-                // Silently try endpoints, only log if success or critical error
-                const headers = {
-                    "Authorization": `Bearer ${apiKey}`,
-                    "X-Api-Key": apiKey,
-                    "Accept": "application/json"
-                };
-
-                const resTemp = await fetch(url, { headers });
-                const status = resTemp.status;
-                const bodyText = await resTemp.text().catch(() => "");
-
-                if (resTemp.ok) {
-                    console.log(`[deAPI Status] SUCCESS on endpoint: ${url}`);
-                    response = resTemp;
-                    successUrl = url;
-                    // Mocking methods since we already read the body
-                    response.text = () => Promise.resolve(bodyText);
-                    response.json = () => Promise.resolve(JSON.parse(bodyText));
-                    break;
-                } else if (status === 429) {
-                    console.log(`[deAPI Status] Rate limit on ${url}, waiting 2s...`);
-                    await new Promise(r => setTimeout(r, 2000));
-                    const resRetry = await fetch(url, { headers });
-                    if (resRetry.ok) {
-                        const retryText = await resRetry.text().catch(() => "");
-                        response = resRetry;
-                        successUrl = url;
-                        response.text = () => Promise.resolve(retryText);
-                        response.json = () => Promise.resolve(JSON.parse(retryText));
-                        break;
-                    }
-                }
-
-                if (status !== 404) {
-                    console.log(`[deAPI Status] Endpoint ${url} returned ${status}: ${bodyText.substring(0, 200)}`);
-                }
-                lastError = `Status ${status}: ${bodyText.substring(0, 50)}`;
-            } catch (err) {
-                lastError = err.message;
-            }
-        }
-
-        if (!response) {
-            console.log(`[deAPI Status] All GET endpoints failed for ${taskId}. Trying POST on /status...`);
-            try {
-                const postUrl = "https://api.deapi.ai/api/v1/client/status";
-                const postRes = await fetch(postUrl, {
-                    method: "POST",
-                    headers: {
-                        "Authorization": `Bearer ${apiKey}`,
-                        "X-Api-Key": apiKey,
-                        "Content-Type": "application/json",
-                        "Accept": "application/json"
-                    },
-                    body: JSON.stringify({ request_id: taskId, id: taskId })
-                });
-                if (postRes.ok) {
-                    console.log(`[deAPI Status] SUCCESS on POST endpoint: ${postUrl}`);
-                    response = postRes;
-                    successUrl = postUrl + " (POST)";
-                } else {
-                    lastError = `POST status failed with ${postRes.status}: ${await postRes.text().catch(() => "")}`;
-                }
-            } catch (e) {
-                lastError = `POST status error: ${e.message}`;
-            }
-        }
-
-        if (!response) {
-            throw new Error(`Falha ao obter status nos endpoints deAPI. Último erro: ${lastError}`);
-        }
-
-        const data = await response.json();
-        console.log(`[deAPI Status] Success using endpoint: ${successUrl}`);
-        res.json(data);
-    } catch (e) {
-        console.error("deAPI Status error:", e);
-        
-        let statusCode = 500;
-        if (e.message.includes("Status 429")) statusCode = 429;
-        else if (e.message.includes("Status 401")) statusCode = 401;
-        
-        res.status(statusCode).json({ error: e.message });
-    }
-});
-
-// Proxy route
-app.post("/api/proxy", async (req, res) => {
-    const { url, method, headers, body } = req.body;
-    try {
-        console.log(`[Proxy] Requesting: ${url}`);
-        const fetchOptions = {
-            method: method || 'GET',
-            headers: headers || { 'Content-Type': 'application/json' },
-        };
-        if (body && (method === 'POST' || method === 'PUT')) {
-            fetchOptions.body = typeof body === 'string' ? body : JSON.stringify(body);
-        }
-        const response = await fetch(url, fetchOptions);
-        const contentType = response.headers.get("content-type");
-        
-        let responseData;
-        if (contentType && contentType.includes("application/json")) {
-            responseData = await response.json();
-        } else {
-            responseData = await response.text();
-        }
-        
-        res.status(response.status).json(responseData);
-    } catch (e) {
-        console.error(`[Proxy Error] ${e.message}`);
-        res.status(500).json({ error: e.message });
-    }
-});
-
-app.post("/api/runway/generate", async (req, res) => {
-    const { prompt, aspectRatio, apiKey } = req.body;
-    try {
-        const response = await fetch('https://api.runwayml.com/v1/image_to_video', {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${apiKey}`,
-                'Content-Type': 'application/json',
-                'X-Runway-Version': '2024-05-01'
-            },
-            body: JSON.stringify({
-                promptText: prompt,
-                aspectRatio: aspectRatio || '9:16',
-                model: 'gen3'
-            })
-        });
-        const data = await response.json();
-        res.status(response.status).json(data);
-    } catch (e) {
-        res.status(500).json({ error: e.message });
-    }
-});
-
-app.post("/api/process/start/merge", async (req, res) => {
-    uploadAny(req, res, async (err) => {
-        if (err) return res.status(500).json({ error: "Upload failed" });
-        try {
-            const jobId = Date.now().toString();
-            jobs[jobId] = { progress: 1, status: "processing" };
-            const files = req.files || [];
-            if (files.length < 2) throw new Error("Requires video + audio");
-            
-            const vPath = path.join(UPLOAD_DIR, files[0].filename);
-            const aPath = path.join(UPLOAD_DIR, files[1].filename);
-            const outPath = path.join(OUTPUT_DIR, `merged_${jobId}.mp4`);
-            
-            const args = ["-y", "-i", vPath, "-i", aPath, "-c:v", "copy", "-c:a", "aac", "-map", "0:v:0", "-map", "1:a:0", "-shortest", outPath];
-            if (files[0].mimetype.startsWith('image')) {
-                 const dur = await getExactDuration(aPath) || 10;
-                 args.splice(3, 2); args.splice(1, 0, "-loop", "1"); args.push("-t", dur.toString(), ...getVideoArgs());
-            }
-
-            runFFmpeg(args).then(() => {
-                jobs[jobId].status = "completed"; jobs[jobId].downloadUrl = `/outputs/${path.basename(outPath)}`;
-            }).catch(e => { jobs[jobId].status = "failed"; jobs[jobId].error = e.toString(); });
-
-            res.json({ jobId });
-        } catch (e) { res.status(500).json({ error: e.message }); }
-    });
-});
-
-app.get("/api/process/status/:id", (req, res) => {
-    const job = jobs[req.params.id];
-    if (!job) return res.status(404).json({ status: "not_found" });
-    res.json(job);
-});
-
-app.get("/api/download/:file", (req, res) => {
-    const filePath = path.join(OUTPUT_DIR, req.params.file);
-    if (!fs.existsSync(filePath)) return res.status(404).send("File not found");
-    res.download(filePath);
-});
-
-// Static Files & SPA Fallback
-app.use(express.static(PUBLIC_DIR));
-app.use('/outputs', express.static(OUTPUT_DIR));
-
-// 404 for API routes
-app.use('/api/*', (req, res) => {
-    res.status(404).json({ error: `API route not found: ${req.originalUrl}` });
-});
-
-// Catch-all for SPA
-app.get('*', (req, res) => {
-    res.sendFile(path.join(PUBLIC_DIR, 'index.html'));
-});
-
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server Running on Port ${PORT}`);
-});
