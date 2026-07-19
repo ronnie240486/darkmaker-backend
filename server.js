@@ -15,6 +15,22 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
+app.get("/api/deapi/logs", async (req, res) => {
+    try {
+        const fs = require("fs");
+        let logs = "";
+        if (fs.existsSync("deapi_generation_debug.log")) {
+            logs += "--- GENERATION LOGS ---\n" + fs.readFileSync("deapi_generation_debug.log", "utf8") + "\n\n";
+        }
+        if (fs.existsSync("deapi_status_debug.log")) {
+            logs += "--- STATUS LOGS ---\n" + fs.readFileSync("deapi_status_debug.log", "utf8") + "\n\n";
+        }
+        res.send(logs || "Nenhum log encontrado.");
+    } catch (e) {
+        res.status(500).send("Erro ao ler logs: " + e.message);
+    }
+});
+
 const PORT = 3000;
 
 // Debug route to check headers
@@ -1897,26 +1913,40 @@ app.post("/api/deapi/video", async (req, res) => {
         if (imageUrl) {
             endpoints.push("https://api.deapi.ai/api/v2/videos/animations");
             endpoints.push("https://api.deapi.ai/api/v2/video/animations");
+            endpoints.push("https://api.deapi.ai/v2/videos/animations");
             endpoints.push("https://api.deapi.ai/api/v1/client/img2video");
+            endpoints.push("https://api.deapi.ai/v1/client/img2video");
         } else {
             endpoints.push("https://api.deapi.ai/api/v2/videos/generations");
             endpoints.push("https://api.deapi.ai/api/v2/video/generations");
             endpoints.push("https://api.deapi.ai/api/v1/client/txt2video");
+            endpoints.push("https://api.deapi.ai/v1/client/txt2video");
         }
 
-        // Outros fallbacks
+        // Fallbacks exaustivos
         endpoints.push(
+            "https://api.deapi.ai/api/v2/videos/generations",
+            "https://api.deapi.ai/api/v1/video/generations",
+            "https://api.deapi.ai/api/v1/videos/generations",
+            "https://api.deapi.ai/api/v1/client/txt2video",
+            "https://api.deapi.ai/api/v1/client/img2video",
             "https://api.deapi.ai/v2/videos/generations",
+            "https://api.deapi.ai/v2/video/generations",
             "https://api.deapi.ai/v1/video/generations",
-            "https://api.deapi.ai/v1/videos/generations"
+            "https://api.deapi.ai/v1/videos/generations",
+            "https://api.deapi.ai/v1/client/txt2video",
+            "https://api.deapi.ai/v1/client/img2video",
+            "https://api.deapi.ai/v1/img2video"
         );
 
         let response;
         let lastError = null;
         let successUrl = "";
+        let debugLog = `--- GENERATION ATTEMPT AT ${new Date().toISOString()} ---\nPayload: ${JSON.stringify(payload)}\n`;
 
         for (const url of endpoints) {
             try {
+                debugLog += `Trying ${url}... `;
                 console.log(`[deAPI] Trying endpoint: ${url}`);
                 
                 // Try with multiple headers for compatibility
@@ -1933,27 +1963,26 @@ app.post("/api/deapi/video", async (req, res) => {
                     body: JSON.stringify(payload)
                 });
                 
+                const status = resTemp.status;
+                const errText = await resTemp.text().catch(() => "");
+                debugLog += `Status: ${status} | Body: ${errText.substring(0, 100)}\n`;
+
                 if (resTemp.ok) {
                     response = resTemp;
                     successUrl = url;
+                    try {
+                        const data = JSON.parse(errText);
+                        const taskId = data.id || data.task_id || data.job_id || data.request_id || (data.data && (data.data.id || data.data.task_id || data.data.job_id || data.data.request_id));
+                        debugLog += `SUCCESS! TaskId: ${taskId}\n`;
+                    } catch(e) {}
                     break;
                 } else {
-                    const status = resTemp.status;
-                    const errText = await resTemp.text().catch(() => "");
                     console.log(`[deAPI] Endpoint ${url} returned ${status}: ${errText.substring(0, 200)}`);
                     
-                    // If it's a critical error on a primary endpoint, we might want to throw, 
-                    // but let's try other endpoints first unless it's clearly an auth error
-                    if (status === 401) {
-                        throw new Error("Chave API deAPI.ai inválida ou expirada (401).");
-                    }
-                    if (status === 402) {
-                        throw new Error("Saldo de créditos insuficiente na deAPI.ai (402).");
-                    }
+                    if (status === 401) throw new Error("Chave API deAPI.ai inválida ou expirada (401).");
+                    if (status === 402) throw new Error("Saldo de créditos insuficiente na deAPI.ai (402).");
                     
                     lastError = `Status ${status}: ${errText.substring(0, 100)}`;
-                    
-                    // If 429, maybe wait a bit?
                     if (status === 429) {
                         console.warn(`[deAPI] Rate limit on ${url}, waiting 1s...`);
                         await new Promise(r => setTimeout(r, 1000));
@@ -1961,10 +1990,16 @@ app.post("/api/deapi/video", async (req, res) => {
                 }
             } catch (err) {
                 console.log(`[deAPI] Endpoint ${url} failed:`, err.message);
+                debugLog += `ERROR: ${err.message}\n`;
                 lastError = err.message;
                 if (err.message.includes("401") || err.message.includes("402")) throw err;
             }
         }
+
+        try {
+            const fs = require("fs");
+            fs.appendFileSync("deapi_generation_debug.log", debugLog + "-------------------\n");
+        } catch(e) {}
 
         if (!response) {
             throw new Error(`Todos os endpoints deAPI falharam. Último erro: ${lastError}`);
