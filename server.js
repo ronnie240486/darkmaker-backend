@@ -1676,3 +1676,607 @@ app.post("/api/gemini/generateVideo", async (req, res) => {
                 image: { imageBytes: requestData.startImage.split(',')[1], mimeType: 'image/png' },
                 config
             });
+        } else if (requestData.mode === 'interpolation' && requestData.startImage && requestData.endImage) {
+            operation = await ai.models.generateVideos({
+                model, prompt: sceneOnlyPrompt,
+                image: { imageBytes: requestData.startImage.split(',')[1], mimeType: 'image/png' },
+                config: { ...config, lastFrame: { imageBytes: requestData.endImage.split(',')[1], mimeType: 'image/png' } }
+            });
+        } else if (requestData.mode === 'reference' && requestData.refImages) {
+            const referenceImages = requestData.refImages.map(img => ({
+                image: { imageBytes: img.split(',')[1], mimeType: 'image/png' },
+                referenceType: 'ASSET'
+            }));
+            operation = await ai.models.generateVideos({ model, prompt: sceneOnlyPrompt, config: { ...config, referenceImages } });
+        } else {
+            operation = await ai.models.generateVideos({ model, prompt: sceneOnlyPrompt, config });
+        }
+
+        res.json({ operation });
+    } catch (e) {
+        console.error("GenerateVideo error:", e);
+        res.status(500).json({ error: e.message || "Erro ao iniciar geração de vídeo." });
+    }
+});
+
+app.post("/api/gemini/getOperation", async (req, res) => {
+    const { operation } = req.body;
+    try {
+        const ai = getGeminiClient(req);
+        const updatedOperation = await ai.operations.getVideosOperation({ operation });
+        res.json({ operation: updatedOperation });
+    } catch (e) {
+        console.error("GetOperation error:", e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post("/api/gemini/downloadVideoBlob", async (req, res) => {
+    const { downloadLink } = req.body;
+    try {
+        const keyQuery = getGeminiKey(req) ? `&key=${getGeminiKey(req)}` : '';
+        const videoResponse = await fetch(`${downloadLink}${keyQuery}`);
+        const arrayBuffer = await videoResponse.arrayBuffer();
+        const base64 = Buffer.from(arrayBuffer).toString('base64');
+        res.json({ base64 });
+    } catch (e) {
+        console.error("DownloadVideoBlob error:", e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post("/api/gemini/transcribeAudio", async (req, res) => {
+    const { base64Data, mimeType, language } = req.body;
+    try {
+        const ai = getGeminiClient(req);
+        const response = await ai.models.generateContent({
+            model: 'gemini-3.5-flash',
+            contents: {
+                parts: [
+                    { inlineData: { data: base64Data, mimeType } },
+                    { text: `Transcreva o áudio para texto no idioma ${language || 'Português'}.` }
+                ]
+            }
+        });
+        res.json({ text: response.text || "" });
+    } catch (e) {
+        console.error("TranscribeAudio error:", e);
+        res.status(500).json({ error: e.message || "Erro ao transcrever áudio." });
+    }
+});
+
+// deAPI.ai Proxy Routes
+app.post("/api/deapi/video", async (req, res) => {
+    const { apiKey, prompt, aspectRatio, imageUrl, model, frames, width: customWidth, height: customHeight, fps, steps, negative_prompt } = req.body;
+    if (!apiKey) {
+        return res.status(400).json({ error: "Chave API deAPI não fornecida." });
+    }
+    try {
+        let width = customWidth || 960;
+        let height = customHeight || 544;
+        const ar = aspectRatio || "16:9";
+
+        // Se for um modelo específico de 768 ou 512 base, vamos redefinir os padrões de forma inteligente se não especificados
+        if (!customWidth || !customHeight) {
+            const is13B = model === "Ltxv_13B_0_9_8_Distilled_FP8";
+            const isLarger = model === "Ltx2_3_22B_Dist_INT8" || model === "Ltx2_19B_Dist_FP8";
+            
+            if (is13B) {
+                if (ar === "1:1") {
+                    width = 512; height = 512;
+                } else if (ar === "9:16") {
+                    width = 512; height = 768;
+                } else if (ar === "3:4") {
+                    width = 576; height = 768;
+                } else if (ar === "4:3") {
+                    width = 768; height = 576;
+                } else { // 16:9
+                    width = 768; height = 512;
+                }
+            } else if (isLarger) {
+                if (ar === "1:1") {
+                    width = 768; height = 768;
+                } else if (ar === "9:16") {
+                    width = 544; height = 960;
+                } else if (ar === "3:4") {
+                    width = 720; height = 960;
+                } else if (ar === "4:3") {
+                    width = 960; height = 720;
+                } else { // 16:9
+                    width = 960; height = 544;
+                }
+            } else {
+                if (ar === "9:16") {
+                    width = 544;
+                    height = 960;
+                } else if (ar === "1:1") {
+                    width = 768;
+                    height = 768;
+                } else if (ar === "4:3") {
+                    width = 960;
+                    height = 720;
+                } else if (ar === "3:4") {
+                    width = 720;
+                    height = 960;
+                } else { // 16:9
+                    width = 960;
+                    height = 544;
+                }
+            }
+        }
+
+        // Garante defensivamente que largura e altura sejam pelo menos 512 para evitar erros de validação
+        if (width < 512) width = 512;
+        if (height < 512) height = 512;
+
+        // Resolvendo dinamicamente o modelo correto do deAPI.ai se não for passado ou for genérico
+        let resolvedModel = model || "Ltx2_3_22B_Dist_INT8";
+        if (!model) {
+            try {
+                const urls = [
+                    "https://api.deapi.ai/v1/models",
+                    "https://api.deapi.ai/api/v1/models"
+                ];
+                for (const u of urls) {
+                    try {
+                        const mRes = await fetch(u, {
+                            headers: { "Authorization": `Bearer ${apiKey}`, "Accept": "application/json" }
+                        });
+                        if (mRes.ok) {
+                            const mData = await mRes.json();
+                            const list = mData.data || mData || [];
+                            if (Array.isArray(list)) {
+                                const ids = list.map(m => m.id || m.name || m).filter(Boolean);
+                                console.log(`[deAPI] Live models fetched from ${u}:`, ids);
+                                if (ids.length > 0) {
+                                    // Tentar achar um que contenha "ltx"
+                                    const ltx = ids.find(id => id.toLowerCase().includes("ltx"));
+                                    if (ltx) {
+                                        resolvedModel = ltx;
+                                        break;
+                                    }
+                                    // Ou qualquer um que tenha "video"
+                                    const video = ids.find(id => id.toLowerCase().includes("video"));
+                                    if (video) {
+                                        resolvedModel = video;
+                                        break;
+                                    }
+                                    // Fallback para o primeiro da lista se for uma lista de modelos de vídeo
+                                    if (ids[0]) {
+                                        resolvedModel = ids[0];
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    } catch (err) {
+                        console.log(`[deAPI] Fail to query ${u}:`, err.message);
+                    }
+                }
+            } catch (e) {
+                console.log("[deAPI] Model list query error:", e.message);
+            }
+        }
+
+        // Se após a consulta continuarmos com o padrão, mas ltx-video-13b não existia antes,
+        // vamos usar o fallback mais comum "ltx-video" ou manter o solicitado caso o usuário tenha um plano diferente.
+        if (resolvedModel === "ltx-video-13b" || resolvedModel === "ltx-video") {
+            resolvedModel = "Ltx2_3_22B_Dist_INT8"; 
+        }
+
+        console.log(`[deAPI] Resolved Model: ${resolvedModel}`);
+
+        const payload = {
+            model: resolvedModel,
+            prompt: prompt,
+            aspect_ratio: ar,
+            aspectRatio: ar,
+            width: width,
+            height: height,
+            frames: frames !== undefined ? Number(frames) : 120,      // Obrigatório na v1 deAPI.ai
+            num_frames: frames !== undefined ? Number(frames) : 120,  // Compatibilidade
+            fps: fps !== undefined ? Number(fps) : 24,                // Obrigatório na v1 deAPI.ai
+            steps: steps !== undefined ? Number(steps) : 25,
+            guidance_scale: 3.5,
+            negative_prompt: negative_prompt !== undefined ? negative_prompt : "low quality, bad anatomy, worst quality, text, logo, signature, watermark",
+            seed: Math.floor(Math.random() * 1000000)
+        };
+        if (imageUrl) {
+            payload.first_frame_image = imageUrl;
+            payload.first_frame_image_url = imageUrl;
+            payload.image_url = imageUrl;
+            payload.imageUrl = imageUrl;
+        }
+
+        console.log("[deAPI] Sending payload:", JSON.stringify(payload));
+
+        const endpoints = [
+            "https://api.deapi.ai/api/v1/client/txt2video",
+            "https://api.deapi.ai/api/v1/client/img2video"
+        ];
+        // Endpoints set
+        endpoints.push(
+            "https://api.deapi.ai/v2/video/generations",
+            "https://api.deapi.ai/v2/videos/generations",
+            "https://api.deapi.ai/v1/video/generations",
+            "https://api.deapi.ai/v1/videos/generations",
+            "https://api.deapi.ai/v2/video",
+            "https://api.deapi.ai/v2/videos",
+            "https://api.deapi.ai/v1/video",
+            "https://api.deapi.ai/v1/videos"
+        );
+
+        let response;
+        let lastError = null;
+        let successUrl = "";
+
+        for (const url of endpoints) {
+            try {
+                console.log(`[deAPI] Trying endpoint: ${url}`);
+                
+                // Try with multiple headers for compatibility
+                const headers = {
+                    "Authorization": `Bearer ${apiKey}`,
+                    "X-Api-Key": apiKey,
+                    "Content-Type": "application/json",
+                    "Accept": "application/json"
+                };
+
+                const resTemp = await fetch(url, {
+                    method: "POST",
+                    headers,
+                    body: JSON.stringify(payload)
+                });
+                
+                if (resTemp.ok) {
+                    response = resTemp;
+                    successUrl = url;
+                    break;
+                } else {
+                    const status = resTemp.status;
+                    const errText = await resTemp.text().catch(() => "");
+                    console.log(`[deAPI] Endpoint ${url} returned ${status}: ${errText.substring(0, 200)}`);
+                    
+                    // If it's a critical error on a primary endpoint, we might want to throw, 
+                    // but let's try other endpoints first unless it's clearly an auth error
+                    if (status === 401) {
+                        throw new Error("Chave API deAPI.ai inválida ou expirada (401).");
+                    }
+                    if (status === 402) {
+                        throw new Error("Saldo de créditos insuficiente na deAPI.ai (402).");
+                    }
+                    
+                    lastError = `Status ${status}: ${errText.substring(0, 100)}`;
+                    
+                    // If 429, maybe wait a bit?
+                    if (status === 429) {
+                        console.warn(`[deAPI] Rate limit on ${url}, waiting 1s...`);
+                        await new Promise(r => setTimeout(r, 1000));
+                    }
+                }
+            } catch (err) {
+                console.log(`[deAPI] Endpoint ${url} failed:`, err.message);
+                lastError = err.message;
+                if (err.message.includes("401") || err.message.includes("402")) throw err;
+            }
+        }
+
+        if (!response) {
+            throw new Error(`Todos os endpoints deAPI falharam. Último erro: ${lastError}`);
+        }
+
+        const data = await response.json();
+        console.log(`[deAPI] Success using endpoint: ${successUrl}. Response:`, JSON.stringify(data));
+        
+        try {
+            const genLog = `--- GENERATION SUCCESS AT ${new Date().toISOString()} ---\n` +
+                           `Endpoint: ${successUrl}\n` +
+                           `Payload Sent: ${JSON.stringify(payload, null, 2)}\n` +
+                           `Response Received: ${JSON.stringify(data, null, 2)}\n\n`;
+            fs.appendFileSync('deapi_generation_debug.log', genLog);
+        } catch (e) {
+            console.error("Failed to write to deapi_generation_debug.log:", e);
+        }
+        
+        res.json(data);
+    } catch (e) {
+        console.error("deAPI Video error:", e);
+        
+        // Determina o status code apropriado para o erro
+        let statusCode = 500;
+        if (e.message.includes("429")) statusCode = 429;
+        else if (e.message.includes("401")) statusCode = 401;
+        else if (e.message.includes("402")) statusCode = 402;
+        else if (e.message.includes("403")) statusCode = 403;
+        else if (e.message.includes("400") || e.message.includes("422")) statusCode = 400;
+        
+        res.status(statusCode).json({ error: e.message });
+    }
+});
+
+app.post("/api/deapi/status", async (req, res) => {
+    const { apiKey, taskId } = req.body;
+    if (!apiKey || !taskId) {
+        return res.status(400).json({ error: "Chave API ou ID de tarefa não fornecido." });
+    }
+    try {
+        const statusEndpoints = [
+            `https://api.deapi.ai/v2/videos/generations/${taskId}`,
+            `https://api.deapi.ai/v2/video/generations/${taskId}`,
+            `https://api.deapi.ai/v1/video/generations/${taskId}`,
+            `https://api.deapi.ai/v1/videos/generations/${taskId}`,
+            `https://api.deapi.ai/v1/client/task/${taskId}`,
+            `https://api.deapi.ai/v1/client/task?task_id=${taskId}`,
+            `https://api.deapi.ai/v1/client/task?id=${taskId}`,
+            `https://api.deapi.ai/v1/client/task?request_id=${taskId}`,
+            `https://api.deapi.ai/v1/client/tasks/${taskId}`,
+            `https://api.deapi.ai/v1/client/tasks?task_id=${taskId}`,
+            `https://api.deapi.ai/v1/client/status?request_id=${taskId}`,
+            `https://api.deapi.ai/v1/client/status/${taskId}`,
+            `https://api.deapi.ai/v1/client/txt2video/status?request_id=${taskId}`,
+            `https://api.deapi.ai/v1/client/txt2video/status/${taskId}`,
+            `https://api.deapi.ai/v1/client/video/status?request_id=${taskId}`,
+            `https://api.deapi.ai/v1/client/video/status/${taskId}`,
+            `https://api.deapi.ai/v1/client/txt2video/${taskId}`,
+            `https://api.deapi.ai/v1/client/img2video/${taskId}`,
+            `https://api.deapi.ai/v1/client/prediction/${taskId}`,
+            `https://api.deapi.ai/v1/client/status?id=${taskId}`,
+            `https://api.deapi.ai/v1/client/job/${taskId}`,
+            `https://api.deapi.ai/v1/status/${taskId}`,
+            `https://api.deapi.ai/v1/status?request_id=${taskId}`,
+            `https://api.deapi.ai/v1/prediction/${taskId}`
+        ];
+
+        let response;
+        let lastError = null;
+        let successUrl = "";
+
+        console.log(`[deAPI Status] Checking status for taskId: ${taskId}`);
+        let debugLog = `--- STATUS CHECK FOR TASK ${taskId} AT ${new Date().toISOString()} ---\n`;
+        
+        for (const url of statusEndpoints) {
+            try {
+                // Silently try endpoints, only log if success or critical error
+                const headers = {
+                    "Authorization": `Bearer ${apiKey}`,
+                    "X-Api-Key": apiKey,
+                    "Accept": "application/json"
+                };
+
+                const resTemp = await fetch(url, { headers });
+                const status = resTemp.status;
+                const bodyText = await resTemp.text().catch(() => "");
+                
+                debugLog += `GET ${url} -> Status: ${status} | Body: ${bodyText.substring(0, 500)}\n`;
+
+                if (resTemp.ok) {
+                    console.log(`[deAPI Status] SUCCESS on endpoint: ${url}`);
+                    response = resTemp;
+                    successUrl = url;
+                    // Mocking methods since we already read the body
+                    response.text = () => Promise.resolve(bodyText);
+                    response.json = () => Promise.resolve(JSON.parse(bodyText));
+                    break;
+                } else if (status === 429) {
+                    console.log(`[deAPI Status] Rate limit on ${url}, waiting 2s...`);
+                    await new Promise(r => setTimeout(r, 2000));
+                    const resRetry = await fetch(url, { headers });
+                    if (resRetry.ok) {
+                        const retryText = await resRetry.text().catch(() => "");
+                        response = resRetry;
+                        successUrl = url;
+                        response.text = () => Promise.resolve(retryText);
+                        response.json = () => Promise.resolve(JSON.parse(retryText));
+                        break;
+                    }
+                }
+
+                if (status !== 404) {
+                    console.log(`[deAPI Status] Endpoint ${url} returned ${status}: ${bodyText.substring(0, 200)}`);
+                }
+                lastError = `Status ${status}: ${bodyText.substring(0, 50)}`;
+            } catch (err) {
+                lastError = err.message;
+                debugLog += `GET ${url} -> Error: ${err.message}\n`;
+            }
+        }
+
+        if (!response) {
+            console.log(`[deAPI Status] All GET endpoints failed for ${taskId}. Trying POST on /status...`);
+            try {
+                const postUrl = "https://api.deapi.ai/v1/client/status";
+                const postRes = await fetch(postUrl, {
+                    method: "POST",
+                    headers: {
+                        "Authorization": `Bearer ${apiKey}`,
+                        "X-Api-Key": apiKey,
+                        "Content-Type": "application/json",
+                        "Accept": "application/json"
+                    },
+                    body: JSON.stringify({ request_id: taskId, id: taskId })
+                });
+                const postStatus = postRes.status;
+                const postBody = await postRes.text().catch(() => "");
+                debugLog += `POST ${postUrl} -> Status: ${postStatus} | Body: ${postBody.substring(0, 500)}\n`;
+                
+                if (postRes.ok) {
+                    console.log(`[deAPI Status] SUCCESS on POST endpoint: ${postUrl}`);
+                    response = postRes;
+                    successUrl = postUrl + " (POST)";
+                } else {
+                    lastError = `POST status failed with ${postRes.status}: ${postBody.substring(0, 200)}`;
+                }
+            } catch (e) {
+                lastError = `POST status error: ${e.message}`;
+                debugLog += `POST to /client/status failed -> Error: ${e.message}\n`;
+            }
+        }
+
+        if (!response) {
+            console.log(`[deAPI Status] Trying POST on /task...`);
+            try {
+                const postUrl = "https://api.deapi.ai/v1/client/task";
+                const postRes = await fetch(postUrl, {
+                    method: "POST",
+                    headers: {
+                        "Authorization": `Bearer ${apiKey}`,
+                        "X-Api-Key": apiKey,
+                        "Content-Type": "application/json",
+                        "Accept": "application/json"
+                    },
+                    body: JSON.stringify({ task_id: taskId, request_id: taskId, id: taskId })
+                });
+                const postStatus = postRes.status;
+                const postBody = await postRes.text().catch(() => "");
+                debugLog += `POST ${postUrl} -> Status: ${postStatus} | Body: ${postBody.substring(0, 500)}\n`;
+                
+                if (postRes.ok) {
+                    console.log(`[deAPI Status] SUCCESS on POST endpoint: ${postUrl}`);
+                    response = postRes;
+                    successUrl = postUrl + " (POST)";
+                    // Mocking methods since we already read the body
+                    response.text = () => Promise.resolve(postBody);
+                    response.json = () => Promise.resolve(JSON.parse(postBody));
+                } else {
+                    lastError = `POST task failed with ${postRes.status}: ${postBody.substring(0, 200)}`;
+                }
+            } catch (e) {
+                lastError = `POST task error: ${e.message}`;
+                debugLog += `POST to /client/task failed -> Error: ${e.message}\n`;
+            }
+        }
+
+        // Write the debug log to a file
+        try {
+            fs.appendFileSync('deapi_status_debug.log', debugLog + "\n\n");
+        } catch (e) {
+            console.error("Failed to write to deapi_status_debug.log:", e);
+        }
+
+        if (!response) {
+            throw new Error(`Falha ao obter status nos endpoints deAPI. Último erro: ${lastError}`);
+        }
+
+        const data = await response.json();
+        console.log(`[deAPI Status] Success using endpoint: ${successUrl}`);
+        res.json(data);
+    } catch (e) {
+        console.error("deAPI Status error:", e);
+        
+        let statusCode = 500;
+        if (e.message.includes("Status 429")) statusCode = 429;
+        else if (e.message.includes("Status 401")) statusCode = 401;
+        
+        res.status(statusCode).json({ error: e.message });
+    }
+});
+
+// Proxy route
+app.post("/api/proxy", async (req, res) => {
+    const { url, method, headers, body } = req.body;
+    try {
+        console.log(`[Proxy] Requesting: ${url}`);
+        const fetchOptions = {
+            method: method || 'GET',
+            headers: headers || { 'Content-Type': 'application/json' },
+        };
+        if (body && (method === 'POST' || method === 'PUT')) {
+            fetchOptions.body = typeof body === 'string' ? body : JSON.stringify(body);
+        }
+        const response = await fetch(url, fetchOptions);
+        const contentType = response.headers.get("content-type");
+        
+        let responseData;
+        if (contentType && contentType.includes("application/json")) {
+            responseData = await response.json();
+        } else {
+            responseData = await response.text();
+        }
+        
+        res.status(response.status).json(responseData);
+    } catch (e) {
+        console.error(`[Proxy Error] ${e.message}`);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post("/api/runway/generate", async (req, res) => {
+    const { prompt, aspectRatio, apiKey } = req.body;
+    try {
+        const response = await fetch('https://api.runwayml.com/v1/image_to_video', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${apiKey}`,
+                'Content-Type': 'application/json',
+                'X-Runway-Version': '2024-05-01'
+            },
+            body: JSON.stringify({
+                promptText: prompt,
+                aspectRatio: aspectRatio || '9:16',
+                model: 'gen3'
+            })
+        });
+        const data = await response.json();
+        res.status(response.status).json(data);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post("/api/process/start/merge", async (req, res) => {
+    uploadAny(req, res, async (err) => {
+        if (err) return res.status(500).json({ error: "Upload failed" });
+        try {
+            const jobId = Date.now().toString();
+            jobs[jobId] = { progress: 1, status: "processing" };
+            const files = req.files || [];
+            if (files.length < 2) throw new Error("Requires video + audio");
+            
+            const vPath = path.join(UPLOAD_DIR, files[0].filename);
+            const aPath = path.join(UPLOAD_DIR, files[1].filename);
+            const outPath = path.join(OUTPUT_DIR, `merged_${jobId}.mp4`);
+            
+            const args = ["-y", "-i", vPath, "-i", aPath, "-c:v", "copy", "-c:a", "aac", "-map", "0:v:0", "-map", "1:a:0", "-shortest", outPath];
+            if (files[0].mimetype.startsWith('image')) {
+                 const dur = await getExactDuration(aPath) || 10;
+                 args.splice(3, 2); args.splice(1, 0, "-loop", "1"); args.push("-t", dur.toString(), ...getVideoArgs());
+            }
+
+            runFFmpeg(args).then(() => {
+                jobs[jobId].status = "completed"; jobs[jobId].downloadUrl = `/outputs/${path.basename(outPath)}`;
+            }).catch(e => { jobs[jobId].status = "failed"; jobs[jobId].error = e.toString(); });
+
+            res.json({ jobId });
+        } catch (e) { res.status(500).json({ error: e.message }); }
+    });
+});
+
+app.get("/api/process/status/:id", (req, res) => {
+    const job = jobs[req.params.id];
+    if (!job) return res.status(404).json({ status: "not_found" });
+    res.json(job);
+});
+
+app.get("/api/download/:file", (req, res) => {
+    const filePath = path.join(OUTPUT_DIR, req.params.file);
+    if (!fs.existsSync(filePath)) return res.status(404).send("File not found");
+    res.download(filePath);
+});
+
+// Static Files & SPA Fallback
+app.use(express.static(PUBLIC_DIR));
+app.use('/outputs', express.static(OUTPUT_DIR));
+
+// 404 for API routes
+app.use('/api/*', (req, res) => {
+    res.status(404).json({ error: `API route not found: ${req.originalUrl}` });
+});
+
+// Catch-all for SPA
+app.get('*', (req, res) => {
+    res.sendFile(path.join(PUBLIC_DIR, 'index.html'));
+});
+
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server Running on Port ${PORT}`);
+});
