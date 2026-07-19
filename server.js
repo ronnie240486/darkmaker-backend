@@ -2001,30 +2001,36 @@ app.post("/api/deapi/status", async (req, res) => {
     }
     try {
         const statusEndpoints = [
-            `https://api.deapi.ai/v2/videos/generations/${taskId}`,
-            `https://api.deapi.ai/v2/video/generations/${taskId}`,
+            `https://api.deapi.ai/api/v1/client/video/generations/${taskId}`,
+            `https://api.deapi.ai/api/v1/client/videos/generations/${taskId}`,
+            `https://api.deapi.ai/api/v1/client/task/${taskId}`,
+            `https://api.deapi.ai/api/v1/client/task?task_id=${taskId}`,
+            `https://api.deapi.ai/api/v1/client/task?id=${taskId}`,
+            `https://api.deapi.ai/api/v1/client/task?request_id=${taskId}`,
+            `https://api.deapi.ai/api/v1/client/status/${taskId}`,
+            `https://api.deapi.ai/api/v1/client/status?id=${taskId}`,
+            `https://api.deapi.ai/api/v1/client/status?request_id=${taskId}`,
+            `https://api.deapi.ai/api/v1/client/video/status/${taskId}`,
+            `https://api.deapi.ai/api/v1/client/video/status?id=${taskId}`,
+            `https://api.deapi.ai/api/v1/client/video/status?request_id=${taskId}`,
+            `https://api.deapi.ai/api/v1/client/txt2video/status/${taskId}`,
+            `https://api.deapi.ai/api/v1/client/txt2video/status?id=${taskId}`,
+            `https://api.deapi.ai/api/v1/client/txt2video/status?request_id=${taskId}`,
+            `https://api.deapi.ai/api/v1/client/img2video/status/${taskId}`,
+            `https://api.deapi.ai/api/v2/video/generations/${taskId}`,
+            `https://api.deapi.ai/api/v2/videos/generations/${taskId}`,
             `https://api.deapi.ai/v1/video/generations/${taskId}`,
             `https://api.deapi.ai/v1/videos/generations/${taskId}`,
+            `https://api.deapi.ai/api/v1/client/tasks/${taskId}`,
+            `https://api.deapi.ai/api/v1/client/tasks?task_id=${taskId}`,
+            `https://api.deapi.ai/api/v1/client/prediction/${taskId}`,
+            `https://api.deapi.ai/api/v1/client/job/${taskId}`,
+            `https://api.deapi.ai/api/v1/status/${taskId}`,
+            `https://api.deapi.ai/api/v1/status?request_id=${taskId}`,
             `https://api.deapi.ai/v1/client/task/${taskId}`,
-            `https://api.deapi.ai/v1/client/task?task_id=${taskId}`,
-            `https://api.deapi.ai/v1/client/task?id=${taskId}`,
-            `https://api.deapi.ai/v1/client/task?request_id=${taskId}`,
-            `https://api.deapi.ai/v1/client/tasks/${taskId}`,
-            `https://api.deapi.ai/v1/client/tasks?task_id=${taskId}`,
-            `https://api.deapi.ai/v1/client/status?request_id=${taskId}`,
             `https://api.deapi.ai/v1/client/status/${taskId}`,
-            `https://api.deapi.ai/v1/client/txt2video/status?request_id=${taskId}`,
-            `https://api.deapi.ai/v1/client/txt2video/status/${taskId}`,
-            `https://api.deapi.ai/v1/client/video/status?request_id=${taskId}`,
-            `https://api.deapi.ai/v1/client/video/status/${taskId}`,
-            `https://api.deapi.ai/v1/client/txt2video/${taskId}`,
-            `https://api.deapi.ai/v1/client/img2video/${taskId}`,
-            `https://api.deapi.ai/v1/client/prediction/${taskId}`,
-            `https://api.deapi.ai/v1/client/status?id=${taskId}`,
-            `https://api.deapi.ai/v1/client/job/${taskId}`,
-            `https://api.deapi.ai/v1/status/${taskId}`,
-            `https://api.deapi.ai/v1/status?request_id=${taskId}`,
-            `https://api.deapi.ai/v1/prediction/${taskId}`
+            `https://api.deapi.ai/v2/video/generations/${taskId}`,
+            `https://api.deapi.ai/v2/videos/generations/${taskId}`
         ];
 
         let response;
@@ -2084,7 +2090,7 @@ app.post("/api/deapi/status", async (req, res) => {
         if (!response) {
             console.log(`[deAPI Status] All GET endpoints failed for ${taskId}. Trying POST on /status...`);
             try {
-                const postUrl = "https://api.deapi.ai/v1/client/status";
+                const postUrl = "https://api.deapi.ai/api/v1/client/status";
                 const postRes = await fetch(postUrl, {
                     method: "POST",
                     headers: {
@@ -2115,7 +2121,7 @@ app.post("/api/deapi/status", async (req, res) => {
         if (!response) {
             console.log(`[deAPI Status] Trying POST on /task...`);
             try {
-                const postUrl = "https://api.deapi.ai/v1/client/task";
+                const postUrl = "https://api.deapi.ai/api/v1/client/task";
                 const postRes = await fetch(postUrl, {
                     method: "POST",
                     headers: {
