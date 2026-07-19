@@ -1747,7 +1747,7 @@ app.post("/api/gemini/transcribeAudio", async (req, res) => {
 
 // deAPI.ai Proxy Routes
 app.post("/api/deapi/video", async (req, res) => {
-    const { apiKey, prompt, aspectRatio, imageUrl, model, frames, width: customWidth, height: customHeight, fps, steps, negative_prompt } = req.body;
+    const { apiKey, prompt, aspectRatio, imageUrl, model, frames, width: customWidth, height: customHeight, fps, steps, negative_prompt, guidance_scale } = req.body;
     if (!apiKey) {
         return res.status(400).json({ error: "Chave API deAPI não fornecida." });
     }
@@ -1877,8 +1877,8 @@ app.post("/api/deapi/video", async (req, res) => {
             num_frames: frames !== undefined ? Number(frames) : 120,  // Compatibilidade
             fps: fps !== undefined ? Number(fps) : 30,                // Padrão v2 é 30
             steps: steps !== undefined ? Number(steps) : 25,
-            guidance: guidance_scale !== undefined ? Number(guidance_scale) : 1, // guidance na v2
-            guidance_scale: 3.5,
+            guidance: guidance_scale !== undefined ? Number(guidance_scale) : 3.5, // guidance na v2
+            guidance_scale: guidance_scale !== undefined ? Number(guidance_scale) : 3.5,
             negative_prompt: negative_prompt !== undefined ? negative_prompt : "low quality, bad anatomy, worst quality, text, logo, signature, watermark",
             seed: Math.floor(Math.random() * 1000000)
         };
