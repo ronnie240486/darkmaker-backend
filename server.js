@@ -2078,24 +2078,18 @@ app.post("/api/deapi/video", async (req, res) => {
             model: resolvedModel,
             prompt: prompt,
             aspect_ratio: ar,
-            aspectRatio: ar,
             width: width,
             height: height,
-            frames: frames !== undefined ? Number(frames) : 120,      // Obrigatório na v1 deAPI.ai
-            num_frames: frames !== undefined ? Number(frames) : 120,  // Compatibilidade
-            fps: fps !== undefined ? Number(fps) : 24,                // 24 é mais seguro
+            frames: frames !== undefined ? Number(frames) : 120,
+            fps: fps !== undefined ? Number(fps) : 24,
             steps: steps !== undefined ? Number(steps) : 25,
-            guidance: guidance_scale !== undefined ? Number(guidance_scale) : 3.5, // guidance na v2
             guidance_scale: guidance_scale !== undefined ? Number(guidance_scale) : 3.5,
             negative_prompt: negative_prompt !== undefined ? negative_prompt : "low quality, bad anatomy, worst quality, text, logo, signature, watermark",
             seed: Math.floor(Math.random() * 1000000)
         };
         if (imageUrl) {
-            payload.image = imageUrl; // v2 usa image
-            payload.first_frame_image = imageUrl;
-            payload.first_frame_image_url = imageUrl;
+            payload.image = imageUrl;
             payload.image_url = imageUrl;
-            payload.imageUrl = imageUrl;
         }
 
         console.log("[deAPI] Sending payload:", JSON.stringify(payload));
@@ -2103,22 +2097,12 @@ app.post("/api/deapi/video", async (req, res) => {
         const endpoints = [];
         if (imageUrl) {
             endpoints.push("https://api.deapi.ai/api/v2/videos/animations");
-            endpoints.push("https://api.deapi.ai/api/v2/videos/generations");
             endpoints.push("https://api.deapi.ai/api/v1/client/img2video");
         } else {
             endpoints.push("https://api.deapi.ai/api/v2/videos/generations");
             endpoints.push("https://api.deapi.ai/api/v1/client/txt2video");
         }
 
-        // Outros fallbacks genéricos de confiança
-        const fallbacks = [
-            "https://api.deapi.ai/api/v1/client/video/generate",
-            "https://api.deapi.ai/api/v2/video/generations",
-            "https://api.deapi.ai/api/v1/video/generations"
-        ];
-        fallbacks.forEach(f => { if(!endpoints.includes(f)) endpoints.push(f); });
-
-        let lastResponse = null;
         let lastError = null;
         let allErrors = [];
 
@@ -2149,17 +2133,14 @@ app.post("/api/deapi/video", async (req, res) => {
                     lastError = `Status ${status}: ${bodyText.substring(0, 500)}`;
                     allErrors.push({ url, status, error: bodyText });
 
-                    // Se for erro de autorização ou saldo, não adianta tentar outros
                     if (status === 401) throw new Error("Chave API deAPI.ai inválida ou expirada (401).");
                     if (status === 402) throw new Error("Saldo de créditos insuficiente na deAPI.ai (402).");
                     
-                    // Se for 429 (Rate Limit), vamos tentar esperar um pouco e continuar se houver mais endpoints,
-                    // mas se for o endpoint principal e der 429, o ideal é reportar.
                     if (status === 429) {
-                        console.warn(`[deAPI] Rate limit on ${url}, waiting 2s...`);
-                        await new Promise(r => setTimeout(r, 2000));
-                        // Se for um dos endpoints principais (v2/v1 client), e der 429, 
-                        // as chances são que a conta está limitada, mas vamos deixar o loop continuar.
+                        const retryAfter = resTemp.headers.get("retry-after");
+                        const waitSecs = retryAfter ? parseInt(retryAfter) : 5;
+                        console.warn(`[deAPI] Rate limit on ${url}, waiting ${waitSecs}s...`);
+                        await new Promise(r => setTimeout(r, waitSecs * 1000));
                     }
                 }
             } catch (err) {
@@ -2243,42 +2224,13 @@ app.post("/api/deapi/status", async (req, res) => {
     }
     try {
         const statusEndpoints = [
-            `https://api.deapi.ai/api/v2/jobs/${taskId}`,
-            `https://api.deapi.ai/api/v2/jobs?job_id=${taskId}`,
-            `https://api.deapi.ai/api/v1/client/task_status?request_id=${taskId}`,
-            `https://api.deapi.ai/api/v1/client/task?request_id=${taskId}`,
-            `https://api.deapi.ai/api/v1/client/video/generations/${taskId}`,
-            `https://api.deapi.ai/api/v1/client/videos/generations/${taskId}`,
-            `https://api.deapi.ai/api/v1/client/task/${taskId}`,
-            `https://api.deapi.ai/api/v1/client/task?task_id=${taskId}`,
-            `https://api.deapi.ai/api/v1/client/task?id=${taskId}`,
-            `https://api.deapi.ai/api/v1/client/task?request_id=${taskId}`,
-            `https://api.deapi.ai/api/v1/client/status/${taskId}`,
-            `https://api.deapi.ai/api/v1/client/status?id=${taskId}`,
-            `https://api.deapi.ai/api/v1/client/status?request_id=${taskId}`,
-            `https://api.deapi.ai/api/v1/client/video/status/${taskId}`,
-            `https://api.deapi.ai/api/v1/client/video/status?id=${taskId}`,
-            `https://api.deapi.ai/api/v1/client/video/status?request_id=${taskId}`,
-            `https://api.deapi.ai/api/v1/client/txt2video/status/${taskId}`,
-            `https://api.deapi.ai/api/v1/client/txt2video/status?id=${taskId}`,
-            `https://api.deapi.ai/api/v1/client/txt2video/status?request_id=${taskId}`,
-            `https://api.deapi.ai/api/v1/client/img2video/status/${taskId}`,
-            `https://api.deapi.ai/api/v2/video/generations/${taskId}`,
             `https://api.deapi.ai/api/v2/videos/generations/${taskId}`,
-            `https://api.deapi.ai/api/v2/jobs/${taskId}`,
-            `https://api.deapi.ai/v2/jobs/${taskId}`,
-            `https://api.deapi.ai/v1/video/generations/${taskId}`,
-            `https://api.deapi.ai/v1/videos/generations/${taskId}`,
+            `https://api.deapi.ai/api/v2/videos/animations/${taskId}`,
             `https://api.deapi.ai/api/v1/client/tasks/${taskId}`,
-            `https://api.deapi.ai/api/v1/client/tasks?task_id=${taskId}`,
-            `https://api.deapi.ai/api/v1/client/prediction/${taskId}`,
-            `https://api.deapi.ai/api/v1/client/job/${taskId}`,
-            `https://api.deapi.ai/api/v1/status/${taskId}`,
-            `https://api.deapi.ai/api/v1/status?request_id=${taskId}`,
-            `https://api.deapi.ai/v1/client/task/${taskId}`,
-            `https://api.deapi.ai/v1/client/status/${taskId}`,
-            `https://api.deapi.ai/v2/video/generations/${taskId}`,
-            `https://api.deapi.ai/v2/videos/generations/${taskId}`
+            `https://api.deapi.ai/api/v2/jobs/${taskId}`,
+            `https://api.deapi.ai/api/v1/client/status/${taskId}`,
+            `https://api.deapi.ai/api/v1/client/video/status/${taskId}`,
+            `https://api.deapi.ai/api/v1/client/task/${taskId}`
         ];
 
         let response;
