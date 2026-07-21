@@ -2163,7 +2163,7 @@ app.post("/api/deapi/video", async (req, res) => {
                                 const m = Math.floor(waitSecs / 60);
                                 timeMsg = `${m} minutos`;
                             }
-                            throw new Error(`Limite de taxa (Rate Limit) excedido (429). O servidor solicita aguardar ${timeMsg}. Por favor, tente novamente mais tarde.`);
+                            throw new Error(`Limite de taxa (Rate Limit - 429) atingido na deAPI.ai. O servidor solicita aguardar ${timeMsg}. Isso ocorre quando o limite do seu plano/conta é atingido. Verifique seu saldo ou tente novamente mais tarde.`);
                         }
 
                         console.warn(`[deAPI] Rate limit on ${url}, waiting ${waitSecs}s...`);
