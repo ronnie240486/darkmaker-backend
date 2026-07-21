@@ -2100,33 +2100,25 @@ app.post("/api/deapi/video", async (req, res) => {
 
         console.log("[deAPI] Sending payload:", JSON.stringify(payload));
 
-        // Prioridade para v2 conforme documentação mais recente, tentando versões com e sem o prefixo /api/
         const endpoints = [];
         if (imageUrl) {
             endpoints.push("https://api.deapi.ai/api/v2/videos/animations");
             endpoints.push("https://api.deapi.ai/api/v2/videos/generations");
-            endpoints.push("https://api.deapi.ai/v2/videos/animations");
-            endpoints.push("https://api.deapi.ai/v2/videos/generations");
             endpoints.push("https://api.deapi.ai/api/v1/client/img2video");
-            endpoints.push("https://api.deapi.ai/api/v1/img2video");
         } else {
             endpoints.push("https://api.deapi.ai/api/v2/videos/generations");
-            endpoints.push("https://api.deapi.ai/v2/videos/generations");
             endpoints.push("https://api.deapi.ai/api/v1/client/txt2video");
-            endpoints.push("https://api.deapi.ai/api/v1/txt2video");
         }
 
-        // Outros fallbacks genéricos
+        // Outros fallbacks genéricos de confiança
         const fallbacks = [
+            "https://api.deapi.ai/api/v1/client/video/generate",
             "https://api.deapi.ai/api/v2/video/generations",
-            "https://api.deapi.ai/api/v1/video/generations",
-            "https://api.deapi.ai/api/v1/videos/generations",
-            "https://api.deapi.ai/v1/video/generate",
-            "https://api.deapi.ai/api/v1/client/video/generate"
+            "https://api.deapi.ai/api/v1/video/generations"
         ];
         fallbacks.forEach(f => { if(!endpoints.includes(f)) endpoints.push(f); });
 
-        let response;
+        let lastResponse = null;
         let lastError = null;
         let allErrors = [];
 
@@ -2139,6 +2131,7 @@ app.post("/api/deapi/video", async (req, res) => {
                     "Content-Type": "application/json",
                     "Accept": "application/json"
                 };
+                
                 const resTemp = await fetch(url, { method: "POST", headers, body: JSON.stringify(payload) });
                 const status = resTemp.status;
                 const bodyText = await resTemp.text().catch(() => "");
@@ -2155,9 +2148,19 @@ app.post("/api/deapi/video", async (req, res) => {
                     console.log(`[deAPI] FAIL ${url} (${status}): ${bodyText}`);
                     lastError = `Status ${status}: ${bodyText.substring(0, 500)}`;
                     allErrors.push({ url, status, error: bodyText });
+
+                    // Se for erro de autorização ou saldo, não adianta tentar outros
                     if (status === 401) throw new Error("Chave API deAPI.ai inválida ou expirada (401).");
                     if (status === 402) throw new Error("Saldo de créditos insuficiente na deAPI.ai (402).");
-                    if (status === 429) await new Promise(r => setTimeout(r, 1000));
+                    
+                    // Se for 429 (Rate Limit), vamos tentar esperar um pouco e continuar se houver mais endpoints,
+                    // mas se for o endpoint principal e der 429, o ideal é reportar.
+                    if (status === 429) {
+                        console.warn(`[deAPI] Rate limit on ${url}, waiting 2s...`);
+                        await new Promise(r => setTimeout(r, 2000));
+                        // Se for um dos endpoints principais (v2/v1 client), e der 429, 
+                        // as chances são que a conta está limitada, mas vamos deixar o loop continuar.
+                    }
                 }
             } catch (err) {
                 lastError = err.message;
@@ -2166,13 +2169,18 @@ app.post("/api/deapi/video", async (req, res) => {
             }
         }
 
-        if (true) {
-            try {
-                const errLog = `--- ERROR AT ${new Date().toISOString()} ---\nLast Error: ${lastError}\nAttempts: ${JSON.stringify(allErrors)}\nPayload: ${JSON.stringify(payload)}\n\n`;
-                fs.appendFileSync('deapi_generation_debug.log', errLog);
-            } catch (e) {}
-            throw new Error(`Todos os endpoints deAPI falharam. Último erro: ${lastError}`);
+        // Se chegamos aqui e temos um erro 429 em algum lugar, vamos priorizar ele na mensagem final
+        const rateLimitError = allErrors.find(e => e.status === 429);
+        if (rateLimitError) {
+            throw new Error("Limite de taxa (Rate Limit) atingido na deAPI.ai. Por favor, aguarde alguns minutos antes de tentar novamente.");
         }
+
+        try {
+            const errLog = `--- ERROR AT ${new Date().toISOString()} ---\nLast Error: ${lastError}\nAttempts: ${JSON.stringify(allErrors)}\nPayload: ${JSON.stringify(payload)}\n\n`;
+            fs.appendFileSync('deapi_generation_debug.log', errLog);
+        } catch (e) {}
+        
+        throw new Error(`A geração de vídeo falhou em todos os servidores. Último erro: ${lastError}`);
     } catch (e) {
         console.error("deAPI Video error:", e);
         
@@ -2257,6 +2265,8 @@ app.post("/api/deapi/status", async (req, res) => {
             `https://api.deapi.ai/api/v1/client/img2video/status/${taskId}`,
             `https://api.deapi.ai/api/v2/video/generations/${taskId}`,
             `https://api.deapi.ai/api/v2/videos/generations/${taskId}`,
+            `https://api.deapi.ai/api/v2/jobs/${taskId}`,
+            `https://api.deapi.ai/v2/jobs/${taskId}`,
             `https://api.deapi.ai/v1/video/generations/${taskId}`,
             `https://api.deapi.ai/v1/videos/generations/${taskId}`,
             `https://api.deapi.ai/api/v1/client/tasks/${taskId}`,
