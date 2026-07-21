@@ -15,22 +15,6 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-app.get("/api/deapi/logs", async (req, res) => {
-    try {
-        const fs = require("fs");
-        let logs = "";
-        if (fs.existsSync("deapi_generation_debug.log")) {
-            logs += "--- GENERATION LOGS ---\n" + fs.readFileSync("deapi_generation_debug.log", "utf8") + "\n\n";
-        }
-        if (fs.existsSync("deapi_status_debug.log")) {
-            logs += "--- STATUS LOGS ---\n" + fs.readFileSync("deapi_status_debug.log", "utf8") + "\n\n";
-        }
-        res.send(logs || "Nenhum log encontrado.");
-    } catch (e) {
-        res.status(500).send("Erro ao ler logs: " + e.message);
-    }
-});
-
 const PORT = 3000;
 
 // Debug route to check headers
@@ -549,10 +533,26 @@ CRITICAL NEGATIVE CONSTRAINT: STRICTLY NO TYPOGRAPHY, LETTERS, OR WORDS in any o
         case 'grayscale':
              args.push('-vf', 'hue=s=0');
              break;
-        case 'watermark':
+        case 'watermark': {
              const wmText = escapeFFmpegText(config.text || "AI Studio Premium");
-             args.push('-vf', `drawtext=text='${wmText}':x=(w-text_w)/2:y=(h-text_h)/2:fontsize=36:fontcolor=white@0.4:box=1:boxcolor=black@0.1`);
+             const color = (config.color || '#ffffff').replace('#', '0x');
+             const size = config.size || 36;
+             const opacity = config.opacity !== undefined ? (Number(config.opacity) / 100).toFixed(2) : '0.5';
+             
+             let pos = 'x=(w-text_w)/2:y=(h-text_h)/2';
+             if (config.position === 'top-left') {
+                 pos = 'x=20:y=20';
+             } else if (config.position === 'top-right') {
+                 pos = 'x=w-text_w-20:y=20';
+             } else if (config.position === 'bottom-left') {
+                 pos = 'x=20:y=h-text_h-20';
+             } else if (config.position === 'bottom-right') {
+                 pos = 'x=w-text_w-20:y=h-text_h-20';
+             }
+             
+             args.push('-vf', `drawtext=text='${wmText}':${pos}:fontsize=${size}:fontcolor=${color}@${opacity}:box=1:boxcolor=black@0.1`);
              break;
+        }
         case 'join':
              if (files.length >= 2) {
                  const img1 = path.join(UPLOAD_DIR, files[0].filename);
@@ -670,12 +670,36 @@ async function processMedia(action, files, config, jobId) {
             break;
         case 'extract-audio':
             args.push('-vn', '-q:a', '0', '-map', 'a');
-            break;
-        case 'resize':
-             if(config.aspectRatio === '9:16') filterV.push('scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2');
-             else if(config.aspectRatio === '16:9') filterV.push('scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2');
-             else filterV.push(`scale=${config.width||1280}:${config.height||720}:force_original_aspect_ratio=decrease,pad=${config.width||1280}:${config.height||720}:(ow-iw)/2:(oh-ih)/2`);
+           case 'resize': {
+             const aspect = config.aspectRatio || config.socialProfile || '16:9';
+             let tw = 1280;
+             let th = 720;
+             if (aspect === '9:16' || aspect === 'tiktok' || aspect === 'reels') { tw = 720; th = 1280; }
+             else if (aspect === '1:1' || aspect === 'instagram') { tw = 720; th = 720; }
+             else if (aspect === '4:5' || aspect === 'pinterest') { tw = 720; th = 900; }
+             else if (aspect === '21:9' || aspect === 'cinematic') { tw = 1280; th = 544; }
+             
+             const framing = config.socialFraming || 'blur'; // 'blur', 'crop', 'pad'
+             if (framing === 'blur') {
+                 filterV.push(`split[bg][fg];[bg]scale=${tw}:${th}:force_original_aspect_ratio=increase,crop=${tw}:${th},boxblur=20:5[bg_blur];[fg]scale=${tw}:${th}:force_original_aspect_ratio=decrease[fg_scaled];[bg_blur][fg_scaled]overlay=(W-w)/2:(H-h)/2`);
+             } else if (framing === 'crop') {
+                 filterV.push(`scale=${tw}:${th}:force_original_aspect_ratio=increase,crop=${tw}:${th}`);
+             } else {
+                 filterV.push(`scale=${tw}:${th}:force_original_aspect_ratio=decrease,pad=${tw}:${th}:(ow-iw)/2:(oh-ih)/2:black`);
+             }
+             
+             if (config.socialBorder && config.socialBorder !== 'none') {
+                 let borderColor = '0xff00ff'; // pink
+                 if (config.socialBorder === 'blue') borderColor = '0x00ffff';
+                 if (config.socialBorder === 'orange') borderColor = '0xff6600';
+                 filterV.push(`drawbox=y=0:x=0:w=iw:h=ih:color=${borderColor}:t=6`);
+             }
+             
+             if (config.socialProgressBar) {
+                 filterV.push(`drawbox=y=ih-8:x=0:w='iw*(t/duration)':h=8:color=0xff6600:t=fill`);
+             }
              break;
+        }
         case 'cut':
              // Handled by input seeking above.
              break;
@@ -685,10 +709,21 @@ async function processMedia(action, files, config, jobId) {
              filterV.push(`setpts=${vpts}*PTS`);
              filterA.push(`atempo=${s}`);
              break;
-        case 'reverse':
-             filterV.push('reverse');
-             filterA.push('areverse');
+        case 'reverse': {
+             if (config.reversePingPong) {
+                 filterV.push('split[f][r];[r]reverse[rev];[f][rev]concat=n=2:v=1:a=0');
+                 filterA.push('areverse');
+             } else {
+                 filterV.push('reverse');
+                 if (config.reverseAudio === 'reverse') {
+                     filterA.push('areverse');
+                 } else if (config.reverseAudio === 'mute') {
+                     args.push('-an');
+                     filterA = [];
+                 }
+             }
              break;
+        }
         case 'watermark':
              const text = escapeFFmpegText(config.watermarkText || 'AI Studio');
              filterV.push(`drawtext=text='${text}':x=10:y=10:fontsize=24:fontcolor=white`);
@@ -703,89 +738,226 @@ async function processMedia(action, files, config, jobId) {
         case 'gif':
              filterV.push('fps=10,scale=320:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse');
              break;
-        case 'stabilize':
-             filterV.push('deshake=edge=mirror:blocksize=8:contrast=125:search=15');
+        case 'stabilize': {
+             const smoothing = parseInt(config.stabilizeSmoothing) || 15;
+             const border = config.stabilizeBorders || 'crop';
+             let borderArg = 'mirror';
+             if (border === 'blank') borderArg = 'blank';
+             
+             filterV.push(`deshake=edge=${borderArg}:blocksize=8:contrast=125:search=${smoothing}`);
+             if (border === 'crop') {
+                 filterV.push('scale=iw*1.08:ih*1.08:force_original_aspect_ratio=increase,crop=iw/1.08:ih/1.08');
+             }
              break;
-        case 'inpainting':
-             filterV.push('delogo=x=10:y=10:w=120:h=60:band=10');
+        }
+        case 'inpainting': {
+             let iw = 1280, ih = 720;
+             let px = Math.round((parseFloat(config.inpaintingX ?? 10) / 100) * iw);
+             let py = Math.round((parseFloat(config.inpaintingY ?? 10) / 100) * ih);
+             let pw = Math.round((parseFloat(config.inpaintingWidth ?? 20) / 100) * iw);
+             let ph = Math.round((parseFloat(config.inpaintingHeight ?? 15) / 100) * ih);
+             
+             if (px < 0) px = 0;
+             if (py < 0) py = 0;
+             if (pw < 10) pw = 10;
+             if (ph < 10) ph = 10;
+             if (px + pw > iw) pw = iw - px;
+             if (py + ph > ih) ph = ih - py;
+             
+             const padding = parseInt(config.inpaintingPadding) || 10;
+             filterV.push(`delogo=x=${px}:y=${py}:w=${pw}:h=${ph}:band=${padding}`);
              break;
+        }
         case 'subtitles':
              const sub = escapeFFmpegText(config.watermarkText || 'Legenda gerada por IA...');
              filterV.push(`drawtext=text='${sub}':x=(w-text_w)/2:y=h-80:fontsize=28:fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=10`);
              break;
         
         // --- AI PLACEHOLDERS (FFMPEG SIMULATIONS) ---
-        case 'upscale':
+        case 'upscale': {
              const targetScale = parseFloat(config.scale) || 2;
              const maxDim = targetScale >= 4 ? 3840 : 2560;
-             filterV.push(`scale=w='if(gt(iw,ih),min(${maxDim},iw*${targetScale}),-2)':h='if(gt(iw,ih),-2,min(${maxDim},ih*${targetScale}))':flags=lanczos`);
+             filterV.push(`scale=w='if(gt(iw,ih),min(${maxDim},iw*${targetScale}),-2)':h='if(gt(iw,ih),-2,min(${maxDim},iw*${targetScale}))':flags=lanczos`);
+             
+             const sharpen = parseInt(config.upscaleSharpen) || 0;
+             if (sharpen > 0) {
+                 const amount = (sharpen / 100) * 1.5;
+                 filterV.push(`unsharp=luma_msize_x=5:luma_msize_y=5:luma_amount=${amount.toFixed(2)}`);
+             }
+             
+             if (config.upscaleNoise && config.upscaleNoise !== 'none') {
+                 let denoiseArg = '1.5:1.5:4:4';
+                 if (config.upscaleNoise === 'low') denoiseArg = '1.0:1.0:3:3';
+                 if (config.upscaleNoise === 'high') denoiseArg = '3.0:3.0:7:7';
+                 filterV.push(`hqdn3d=${denoiseArg}`);
+             }
+             
              args.push('-c:v', 'libx264', '-crf', '18', '-preset', 'slow');
              break;
-        case 'colorize':
-             filterV.push('eq=saturation=1.5:contrast=1.1');
+        }
+        case 'colorize': {
+             const sat = config.colorizeSaturation || '1.5';
+             filterV.push(`eq=saturation=${sat}:contrast=1.1`);
+             
+             if (config.colorizeTint && config.colorizeTint !== 'neutral') {
+                 if (config.colorizeTint === 'warm') {
+                     filterV.push('colorbalance=rs=0.15:gs=0.08:bs=-0.1');
+                 } else if (config.colorizeTint === 'cool') {
+                     filterV.push('colorbalance=rs=-0.1:gs=0.0:bs=0.18');
+                 } else if (config.colorizeTint === 'vintage') {
+                     filterV.push('colorbalance=rs=0.2:gs=0.05:bs=-0.15:rm=0.15:gm=0.05:bm=-0.1');
+                 }
+             }
              break;
-        case 'cleanup':
-             filterV.push('hqdn3d=1.5:1.5:6:6');
+        }
+        case 'cleanup': {
+             let denoiseArg = '2.0:2.0:5.0:5.0';
+             if (config.cleanupIntensity === 'low') denoiseArg = '1.0:1.0:3.0:3.0';
+             else if (config.cleanupIntensity === 'high') denoiseArg = '4.0:4.0:8.0:8.0';
+             else if (config.cleanupIntensity === 'extreme') denoiseArg = '7.0:7.0:12.0:12.0';
+             
+             filterV.push(`hqdn3d=${denoiseArg}`);
+             
+             if (config.cleanupDeblock) {
+                 filterV.push('deblock=filter=strong:block=4');
+             }
+             
+             const sharp = parseInt(config.cleanupSharpness) || 0;
+             if (sharp > 0) {
+                 const amount = (sharp / 100) * 1.2;
+                 filterV.push(`unsharp=luma_msize_x=3:luma_msize_y=3:luma_amount=${amount.toFixed(2)}`);
+             }
              break;
-        case 'interpolation':
-             filterV.push('minterpolate=fps=60:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1');
+        }
+        case 'interpolation': {
+             const fps = parseInt(config.smoothingFps) || 60;
+             const mode = config.smoothingMode || 'mci';
+             const engine = config.smoothingEngine || 'aobmc';
+             const est = config.smoothingEst || 'bidir';
+             const vsbmc = config.smoothingVsbmc === false || config.smoothingVsbmc === 'false' ? 0 : 1;
+             const scd = config.smoothingScd || 'fdc';
+             
+             let filter = `minterpolate=fps=${fps}:mi_mode=${mode}`;
+             if (mode === 'mci') {
+                 filter += `:mc_mode=${engine}:me_mode=${est}:vsbmc=${vsbmc}`;
+                 if (scd === 'fdc') {
+                     filter += `:scdet=fdc`;
+                 } else {
+                     filter += `:scdet=none`;
+                 }
+             }
+             filterV.push(filter);
              break;
+        }
 
         // --- AUDIO TOOLS ---
-        case 'clean':
-             filterA.push('afftdn,highpass=f=50,lowpass=f=8000');
+        case 'clean': {
+             const noiseReduction = config.noiseReduction || 12;
+             const hpf = config.hpf || 50;
+             const lpf = config.lpf || 8000;
+             filterA.push(`afftdn=noise_reduction=${noiseReduction},highpass=f=${hpf},lowpass=f=${lpf}`);
              break;
-        case 'normalize':
-             filterA.push('loudnorm=I=-16:TP=-1.5:LRA=11');
+        }
+        case 'normalize': {
+             const loudness = config.loudness || -16;
+             const truePeak = config.truePeak || -1.5;
+             const loudnessRange = config.loudnessRange || 11;
+             filterA.push(`loudnorm=I=${loudness}:TP=${truePeak}:LRA=${loudnessRange}`);
              break;
-        case 'pitch':
+        }
+        case 'pitch': {
              const pitchVal = parseFloat(config.pitch) || 0;
              if (pitchVal !== 0) {
                  const factor = Math.pow(2, pitchVal / 12);
                  filterA.push(`asetrate=44100*${factor},atempo=${1/factor},aresample=44100`);
              }
              break;
-        case 'high-pass':
+        }
+        case 'high-pass': {
              const hpf = config.frequency || '300';
-             filterA.push(`highpass=f=${hpf}`);
+             const poles = config.poles || 2;
+             filterA.push(`highpass=f=${hpf}:poles=${poles}`);
              break;
-        case 'low-pass':
+        }
+        case 'low-pass': {
              const lpf = config.frequency || '3000';
-             filterA.push(`lowpass=f=${lpf}`);
+             const poles = config.poles || 2;
+             filterA.push(`lowpass=f=${lpf}:poles=${poles}`);
              break;
-        case 'limiter':
-             filterA.push('alimiter=level_in=1:level_out=1:limit=0.1:attack=5:release=50');
+        }
+        case 'limiter': {
+             const levelIn = config.levelIn || 1;
+             const levelOut = config.levelOut || 1;
+             const limit = config.limit || 0.1;
+             const attack = config.attack || 5;
+             const release = config.release || 50;
+             filterA.push(`alimiter=level_in=${levelIn}:level_out=${levelOut}:limit=${limit}:attack=${attack}:release=${release}`);
              break;
-        case 'bass':
-             filterA.push('equalizer=f=100:width_type=h:width=200:g=10');
+        }
+        case 'bass': {
+             const freq = config.frequency || 100;
+             const width = config.width || 200;
+             const gain = config.gain || 10;
+             filterA.push(`equalizer=f=${freq}:width_type=h:width=${width}:g=${gain}`);
              break;
-        case 'treble':
-             filterA.push('equalizer=f=10000:width_type=h:width=2000:g=10');
+        }
+        case 'treble': {
+             const freq = config.frequency || 10000;
+             const width = config.width || 2000;
+             const gain = config.gain || 10;
+             filterA.push(`equalizer=f=${freq}:width_type=h:width=${width}:g=${gain}`);
              break;
-        case '8d-audio':
-             filterA.push('apulsator=hz=0.125');
+        }
+        case '8d-audio': {
+             const hz = config.hz || 0.125;
+             const amount = config.amount || 1.0;
+             filterA.push(`apulsator=hz=${hz}:amount=${amount}`);
              break;
-        case 'echo':
-             filterA.push('aecho=0.8:0.9:1000:0.3');
+        }
+        case 'echo': {
+             const inGain = config.inGain || 0.8;
+             const outGain = config.outGain || 0.9;
+             const delays = config.delays || 1000;
+             const decays = config.decays || 0.3;
+             filterA.push(`aecho=${inGain}:${outGain}:${delays}:${decays}`);
              break;
-        case 'reverb':
-             filterA.push('aecho=0.8:0.88:60:0.4');
+        }
+        case 'reverb': {
+             const inGain = config.inGain || 0.8;
+             const outGain = config.outGain || 0.88;
+             const delays = config.delays || 60;
+             const decays = config.decays || 0.4;
+             filterA.push(`aecho=${inGain}:${outGain}:${delays}:${decays}`);
              break;
-        case 'chipmunk':
-             filterA.push('asetrate=44100*1.5,atempo=2/3,aresample=44100');
+        }
+        case 'chipmunk': {
+             const speed = config.speed || 1.5;
+             const pitch = config.pitch || 6;
+             const factor = Math.pow(2, pitch / 12);
+             filterA.push(`asetrate=44100*${factor},atempo=${speed / factor},aresample=44100`);
              break;
-        case 'robot-voice':
-             filterA.push('asetrate=44100*0.8,atempo=1.25,aresample=44100,flanger');
+        }
+        case 'robot-voice': {
+             const speed = config.speed || 0.8;
+             const flangerDelay = config.flangerDelay || 8;
+             filterA.push(`asetrate=44100*0.8,atempo=${speed / 0.8},aresample=44100,flanger=delay=${flangerDelay}`);
              break;
-        case 'vocal-remover':
-             filterA.push('stereotools=mode=karaoke');
+        }
+        case 'vocal-remover': {
+             const vocalRemoverMode = config.vocalRemoverMode || 'karaoke';
+             filterA.push(`stereotools=mode=${vocalRemoverMode}`);
              break;
-        case 'stereo-expand':
-             filterA.push('stereotools=mside_level=1.5');
+        }
+        case 'stereo-expand': {
+             const sideLevel = config.sideLevel || 1.5;
+             const stereoMode = config.stereoMode || 'lr>lr';
+             filterA.push(`stereotools=mside_level=${sideLevel}:mode=${stereoMode}`);
              break;
-        case 'convert':
-             // Just format change
+        }
+        case 'convert': {
+             // Formats handled by determine output extension
              break;
+        }
     }
 
     if (filterV.length > 0 && !isAudio && action !== 'extract-audio') {
@@ -1827,6 +1999,19 @@ app.post("/api/deapi/video", async (req, res) => {
 
         // Resolvendo dinamicamente o modelo correto do deAPI.ai se não for passado ou for genérico
         let resolvedModel = model || "Ltx2_3_22B_Dist_INT8";
+        
+        // Mapeamento de nomes amigáveis para IDs técnicos do deAPI.ai
+        const modelMapping = {
+            "ltx-video-v2.0": "Ltx2_3_22B_Dist_INT8",
+            "ltx-video-v1.3": "Ltxv_13B_0_9_8_Distilled_FP8",
+            "ltx-video-13b": "Ltxv_13B_0_9_8_Distilled_FP8",
+            "ltx-video": "Ltx2_3_22B_Dist_INT8"
+        };
+        
+        if (modelMapping[resolvedModel]) {
+            resolvedModel = modelMapping[resolvedModel];
+        }
+
         if (!model) {
             try {
                 const urls = [
@@ -1874,12 +2059,6 @@ app.post("/api/deapi/video", async (req, res) => {
             }
         }
 
-        // Se após a consulta continuarmos com o padrão, mas ltx-video-13b não existia antes,
-        // vamos usar o fallback mais comum "ltx-video" ou manter o solicitado caso o usuário tenha um plano diferente.
-        if (resolvedModel === "ltx-video-13b" || resolvedModel === "ltx-video") {
-            resolvedModel = "Ltx2_3_22B_Dist_INT8"; 
-        }
-
         console.log(`[deAPI] Resolved Model: ${resolvedModel}`);
 
         const payload = {
@@ -1891,7 +2070,7 @@ app.post("/api/deapi/video", async (req, res) => {
             height: height,
             frames: frames !== undefined ? Number(frames) : 120,      // Obrigatório na v1 deAPI.ai
             num_frames: frames !== undefined ? Number(frames) : 120,  // Compatibilidade
-            fps: fps !== undefined ? Number(fps) : 30,                // Padrão v2 é 30
+            fps: fps !== undefined ? Number(fps) : 24,                // 24 é mais seguro
             steps: steps !== undefined ? Number(steps) : 25,
             guidance: guidance_scale !== undefined ? Number(guidance_scale) : 3.5, // guidance na v2
             guidance_scale: guidance_scale !== undefined ? Number(guidance_scale) : 3.5,
@@ -1908,48 +2087,52 @@ app.post("/api/deapi/video", async (req, res) => {
 
         console.log("[deAPI] Sending payload:", JSON.stringify(payload));
 
-        // Prioridade para v2 conforme documentação mais recente
+        // Prioridade para v2 conforme documentação mais recente, tentando versões com e sem o prefixo /api/
         const endpoints = [];
         if (imageUrl) {
+            // v2 endpoints
             endpoints.push("https://api.deapi.ai/api/v2/videos/animations");
-            endpoints.push("https://api.deapi.ai/api/v2/video/animations");
             endpoints.push("https://api.deapi.ai/v2/videos/animations");
-            endpoints.push("https://api.deapi.ai/api/v1/client/img2video");
-            endpoints.push("https://api.deapi.ai/v1/client/img2video");
-        } else {
+            // Fallback para generations (v2 muitas vezes unifica)
             endpoints.push("https://api.deapi.ai/api/v2/videos/generations");
-            endpoints.push("https://api.deapi.ai/api/v2/video/generations");
+            endpoints.push("https://api.deapi.ai/v2/videos/generations");
+            // v1 endpoints
+            endpoints.push("https://api.deapi.ai/api/v1/client/img2video");
+            endpoints.push("https://api.deapi.ai/api/v1/img2video");
+            endpoints.push("https://api.deapi.ai/v1/client/img2video");
+            endpoints.push("https://api.deapi.ai/v1/img2video");
+        } else {
+            // v2 endpoints
+            endpoints.push("https://api.deapi.ai/api/v2/videos/generations");
+            endpoints.push("https://api.deapi.ai/v2/videos/generations");
+            // v1 endpoints
             endpoints.push("https://api.deapi.ai/api/v1/client/txt2video");
+            endpoints.push("https://api.deapi.ai/api/v1/txt2video");
             endpoints.push("https://api.deapi.ai/v1/client/txt2video");
+            endpoints.push("https://api.deapi.ai/v1/txt2video");
         }
 
-        // Fallbacks exaustivos
+        // Outros fallbacks genéricos
         endpoints.push(
-            "https://api.deapi.ai/api/v2/videos/generations",
+            "https://api.deapi.ai/api/v2/video/generations",
             "https://api.deapi.ai/api/v1/video/generations",
             "https://api.deapi.ai/api/v1/videos/generations",
-            "https://api.deapi.ai/api/v1/client/txt2video",
-            "https://api.deapi.ai/api/v1/client/img2video",
-            "https://api.deapi.ai/v2/videos/generations",
             "https://api.deapi.ai/v2/video/generations",
+            "https://api.deapi.ai/v2/videos/generations",
             "https://api.deapi.ai/v1/video/generations",
             "https://api.deapi.ai/v1/videos/generations",
-            "https://api.deapi.ai/v1/client/txt2video",
-            "https://api.deapi.ai/v1/client/img2video",
-            "https://api.deapi.ai/v1/img2video"
+            "https://api.deapi.ai/api/v1/video/generate",
+            "https://api.deapi.ai/v1/video/generate"
         );
 
         let response;
         let lastError = null;
         let successUrl = "";
-        let debugLog = `--- GENERATION ATTEMPT AT ${new Date().toISOString()} ---\nPayload: ${JSON.stringify(payload)}\n`;
 
         for (const url of endpoints) {
             try {
-                debugLog += `Trying ${url}... `;
                 console.log(`[deAPI] Trying endpoint: ${url}`);
                 
-                // Try with multiple headers for compatibility
                 const headers = {
                     "Authorization": `Bearer ${apiKey}`,
                     "X-Api-Key": apiKey,
@@ -1963,26 +2146,31 @@ app.post("/api/deapi/video", async (req, res) => {
                     body: JSON.stringify(payload)
                 });
                 
-                const status = resTemp.status;
-                const errText = await resTemp.text().catch(() => "");
-                debugLog += `Status: ${status} | Body: ${errText.substring(0, 100)}\n`;
-
                 if (resTemp.ok) {
                     response = resTemp;
                     successUrl = url;
-                    try {
-                        const data = JSON.parse(errText);
-                        const taskId = data.id || data.task_id || data.job_id || data.request_id || (data.data && (data.data.id || data.data.task_id || data.data.job_id || data.data.request_id));
-                        debugLog += `SUCCESS! TaskId: ${taskId}\n`;
-                    } catch(e) {}
                     break;
                 } else {
-                    console.log(`[deAPI] Endpoint ${url} returned ${status}: ${errText.substring(0, 200)}`);
+                    const status = resTemp.status;
+                    const errText = await resTemp.text().catch(() => "");
+                    console.log(`[deAPI] Endpoint ${url} returned ${status}: ${errText}`);
                     
-                    if (status === 401) throw new Error("Chave API deAPI.ai inválida ou expirada (401).");
-                    if (status === 402) throw new Error("Saldo de créditos insuficiente na deAPI.ai (402).");
+                    if (status === 401) {
+                        throw new Error("Chave API deAPI.ai inválida ou expirada (401).");
+                    }
+                    if (status === 402) {
+                        throw new Error("Saldo de créditos insuficiente na deAPI.ai (402).");
+                    }
                     
-                    lastError = `Status ${status}: ${errText.substring(0, 100)}`;
+                    lastError = `Status ${status}: ${errText.substring(0, 500)}`;
+                    
+                    // Se for 400 (Bad Request) ou 422 (Unprocessable Entity), é provável que o payload esteja errado.
+                    // Nesse caso, não adianta tentar outros endpoints v2 com o mesmo payload.
+                    if (status === 400 || status === 422) {
+                        // Se não for o último v2, continua tentando v1, mas registra o erro
+                        console.warn(`[deAPI] Payload error on ${url}: ${errText}`);
+                    }
+
                     if (status === 429) {
                         console.warn(`[deAPI] Rate limit on ${url}, waiting 1s...`);
                         await new Promise(r => setTimeout(r, 1000));
@@ -1990,18 +2178,18 @@ app.post("/api/deapi/video", async (req, res) => {
                 }
             } catch (err) {
                 console.log(`[deAPI] Endpoint ${url} failed:`, err.message);
-                debugLog += `ERROR: ${err.message}\n`;
                 lastError = err.message;
                 if (err.message.includes("401") || err.message.includes("402")) throw err;
             }
         }
 
-        try {
-            const fs = require("fs");
-            fs.appendFileSync("deapi_generation_debug.log", debugLog + "-------------------\n");
-        } catch(e) {}
-
         if (!response) {
+            try {
+                const errLog = `--- GENERATION ERROR AT ${new Date().toISOString()} ---\n` +
+                               `Last Error: ${lastError}\n` +
+                               `Payload Attempted: ${JSON.stringify(payload, null, 2)}\n\n`;
+                fs.appendFileSync('deapi_generation_debug.log', errLog);
+            } catch (e) {}
             throw new Error(`Todos os endpoints deAPI falharam. Último erro: ${lastError}`);
         }
 
@@ -2014,9 +2202,7 @@ app.post("/api/deapi/video", async (req, res) => {
                            `Payload Sent: ${JSON.stringify(payload, null, 2)}\n` +
                            `Response Received: ${JSON.stringify(data, null, 2)}\n\n`;
             fs.appendFileSync('deapi_generation_debug.log', genLog);
-        } catch (e) {
-            console.error("Failed to write to deapi_generation_debug.log:", e);
-        }
+        } catch (e) {}
         
         res.json(data);
     } catch (e) {
