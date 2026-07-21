@@ -2138,7 +2138,25 @@ app.post("/api/deapi/video", async (req, res) => {
                     
                     if (status === 429) {
                         const retryAfter = resTemp.headers.get("retry-after");
-                        const waitSecs = retryAfter ? parseInt(retryAfter) : 5;
+                        let waitSecs = 10;
+
+                        if (retryAfter) {
+                            if (/^\d+$/.test(retryAfter)) {
+                                waitSecs = parseInt(retryAfter);
+                            } else {
+                                const date = new Date(retryAfter);
+                                if (!isNaN(date.getTime())) {
+                                    waitSecs = Math.max(0, Math.ceil((date.getTime() - Date.now()) / 1000));
+                                }
+                            }
+                        }
+                        
+                        // Se o tempo de espera for absurdo (mais de 30s), falha logo para não travar o usuário
+                        if (waitSecs > 30) {
+                            console.error(`[deAPI] Rate limit too long (${waitSecs}s). Failing fast.`);
+                            throw new Error(`Limite de taxa (Rate Limit) excedido (429). O servidor solicita aguardar ${waitSecs} segundos. Por favor, tente novamente mais tarde.`);
+                        }
+
                         console.warn(`[deAPI] Rate limit on ${url}, waiting ${waitSecs}s...`);
                         await new Promise(r => setTimeout(r, waitSecs * 1000));
                     }
