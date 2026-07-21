@@ -2154,7 +2154,16 @@ app.post("/api/deapi/video", async (req, res) => {
                         // Se o tempo de espera for absurdo (mais de 30s), falha logo para não travar o usuário
                         if (waitSecs > 30) {
                             console.error(`[deAPI] Rate limit too long (${waitSecs}s). Failing fast.`);
-                            throw new Error(`Limite de taxa (Rate Limit) excedido (429). O servidor solicita aguardar ${waitSecs} segundos. Por favor, tente novamente mais tarde.`);
+                            let timeMsg = `${waitSecs} segundos`;
+                            if (waitSecs > 3600) {
+                                const h = Math.floor(waitSecs / 3600);
+                                const m = Math.floor((waitSecs % 3600) / 60);
+                                timeMsg = `${h}h ${m}m`;
+                            } else if (waitSecs > 60) {
+                                const m = Math.floor(waitSecs / 60);
+                                timeMsg = `${m} minutos`;
+                            }
+                            throw new Error(`Limite de taxa (Rate Limit) excedido (429). O servidor solicita aguardar ${timeMsg}. Por favor, tente novamente mais tarde.`);
                         }
 
                         console.warn(`[deAPI] Rate limit on ${url}, waiting ${waitSecs}s...`);
@@ -2168,10 +2177,9 @@ app.post("/api/deapi/video", async (req, res) => {
             }
         }
 
-        // Se chegamos aqui e temos um erro 429 em algum lugar, vamos priorizar ele na mensagem final
-        const rateLimitError = allErrors.find(e => e.status === 429);
-        if (rateLimitError) {
-            throw new Error("Limite de taxa (Rate Limit) atingido na deAPI.ai. Por favor, aguarde alguns minutos antes de tentar novamente.");
+        // Se chegamos aqui e o último erro foi de rate limit, vamos manter a mensagem específica
+        if (lastError && lastError.includes("429")) {
+            throw new Error(lastError);
         }
 
         try {
