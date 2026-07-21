@@ -2003,13 +2003,26 @@ app.post("/api/deapi/video", async (req, res) => {
         // Mapeamento de nomes amigáveis para IDs técnicos do deAPI.ai
         const modelMapping = {
             "ltx-video-v2.0": "Ltx2_3_22B_Dist_INT8",
+            "ltx-video-v2": "Ltx2_3_22B_Dist_INT8",
             "ltx-video-v1.3": "Ltxv_13B_0_9_8_Distilled_FP8",
+            "ltx-video-v1": "Ltxv_13B_0_9_8_Distilled_FP8",
             "ltx-video-13b": "Ltxv_13B_0_9_8_Distilled_FP8",
+            "ltx-video-22b": "Ltx2_3_22B_Dist_INT8",
             "ltx-video": "Ltx2_3_22B_Dist_INT8"
         };
         
         if (modelMapping[resolvedModel]) {
             resolvedModel = modelMapping[resolvedModel];
+        }
+
+        // Se o modelo for da família LTX, vamos garantir que a resolução seja compatível
+        // Algumas versões do deAPI.ai são estritas com resoluções como 768x512
+        const isLTX = resolvedModel.toLowerCase().includes("ltx");
+        if (isLTX && !customWidth && !customHeight) {
+            // Força resoluções mais seguras para LTX se o usuário não especificou
+            if (ar === "16:9") { width = 768; height = 512; }
+            else if (ar === "9:16") { width = 512; height = 768; }
+            else if (ar === "1:1") { width = 512; height = 512; }
         }
 
         if (!model) {
@@ -2090,121 +2103,76 @@ app.post("/api/deapi/video", async (req, res) => {
         // Prioridade para v2 conforme documentação mais recente, tentando versões com e sem o prefixo /api/
         const endpoints = [];
         if (imageUrl) {
-            // v2 endpoints
             endpoints.push("https://api.deapi.ai/api/v2/videos/animations");
-            endpoints.push("https://api.deapi.ai/v2/videos/animations");
-            // Fallback para generations (v2 muitas vezes unifica)
             endpoints.push("https://api.deapi.ai/api/v2/videos/generations");
+            endpoints.push("https://api.deapi.ai/v2/videos/animations");
             endpoints.push("https://api.deapi.ai/v2/videos/generations");
-            // v1 endpoints
             endpoints.push("https://api.deapi.ai/api/v1/client/img2video");
             endpoints.push("https://api.deapi.ai/api/v1/img2video");
-            endpoints.push("https://api.deapi.ai/v1/client/img2video");
-            endpoints.push("https://api.deapi.ai/v1/img2video");
         } else {
-            // v2 endpoints
             endpoints.push("https://api.deapi.ai/api/v2/videos/generations");
             endpoints.push("https://api.deapi.ai/v2/videos/generations");
-            // v1 endpoints
             endpoints.push("https://api.deapi.ai/api/v1/client/txt2video");
             endpoints.push("https://api.deapi.ai/api/v1/txt2video");
-            endpoints.push("https://api.deapi.ai/v1/client/txt2video");
-            endpoints.push("https://api.deapi.ai/v1/txt2video");
         }
 
         // Outros fallbacks genéricos
-        endpoints.push(
+        const fallbacks = [
             "https://api.deapi.ai/api/v2/video/generations",
             "https://api.deapi.ai/api/v1/video/generations",
             "https://api.deapi.ai/api/v1/videos/generations",
-            "https://api.deapi.ai/v2/video/generations",
-            "https://api.deapi.ai/v2/videos/generations",
-            "https://api.deapi.ai/v1/video/generations",
-            "https://api.deapi.ai/v1/videos/generations",
-            "https://api.deapi.ai/api/v1/video/generate",
-            "https://api.deapi.ai/v1/video/generate"
-        );
+            "https://api.deapi.ai/v1/video/generate",
+            "https://api.deapi.ai/api/v1/client/video/generate"
+        ];
+        fallbacks.forEach(f => { if(!endpoints.includes(f)) endpoints.push(f); });
 
         let response;
         let lastError = null;
-        let successUrl = "";
+        let allErrors = [];
 
         for (const url of endpoints) {
             try {
                 console.log(`[deAPI] Trying endpoint: ${url}`);
-                
                 const headers = {
                     "Authorization": `Bearer ${apiKey}`,
                     "X-Api-Key": apiKey,
                     "Content-Type": "application/json",
                     "Accept": "application/json"
                 };
-
-                const resTemp = await fetch(url, {
-                    method: "POST",
-                    headers,
-                    body: JSON.stringify(payload)
-                });
+                const resTemp = await fetch(url, { method: "POST", headers, body: JSON.stringify(payload) });
+                const status = resTemp.status;
+                const bodyText = await resTemp.text().catch(() => "");
                 
                 if (resTemp.ok) {
-                    response = resTemp;
-                    successUrl = url;
-                    break;
+                    const data = JSON.parse(bodyText || "{}");
+                    console.log(`[deAPI] SUCCESS on ${url}`);
+                    try {
+                        const genLog = `--- SUCCESS AT ${new Date().toISOString()} ---\nURL: ${url}\nResponse: ${JSON.stringify(data)}\n\n`;
+                        fs.appendFileSync('deapi_generation_debug.log', genLog);
+                    } catch (e) {}
+                    return res.json(data);
                 } else {
-                    const status = resTemp.status;
-                    const errText = await resTemp.text().catch(() => "");
-                    console.log(`[deAPI] Endpoint ${url} returned ${status}: ${errText}`);
-                    
-                    if (status === 401) {
-                        throw new Error("Chave API deAPI.ai inválida ou expirada (401).");
-                    }
-                    if (status === 402) {
-                        throw new Error("Saldo de créditos insuficiente na deAPI.ai (402).");
-                    }
-                    
-                    lastError = `Status ${status}: ${errText.substring(0, 500)}`;
-                    
-                    // Se for 400 (Bad Request) ou 422 (Unprocessable Entity), é provável que o payload esteja errado.
-                    // Nesse caso, não adianta tentar outros endpoints v2 com o mesmo payload.
-                    if (status === 400 || status === 422) {
-                        // Se não for o último v2, continua tentando v1, mas registra o erro
-                        console.warn(`[deAPI] Payload error on ${url}: ${errText}`);
-                    }
-
-                    if (status === 429) {
-                        console.warn(`[deAPI] Rate limit on ${url}, waiting 1s...`);
-                        await new Promise(r => setTimeout(r, 1000));
-                    }
+                    console.log(`[deAPI] FAIL ${url} (${status}): ${bodyText}`);
+                    lastError = `Status ${status}: ${bodyText.substring(0, 500)}`;
+                    allErrors.push({ url, status, error: bodyText });
+                    if (status === 401) throw new Error("Chave API deAPI.ai inválida ou expirada (401).");
+                    if (status === 402) throw new Error("Saldo de créditos insuficiente na deAPI.ai (402).");
+                    if (status === 429) await new Promise(r => setTimeout(r, 1000));
                 }
             } catch (err) {
-                console.log(`[deAPI] Endpoint ${url} failed:`, err.message);
                 lastError = err.message;
-                if (err.message.includes("401") || err.message.includes("402")) throw err;
+                allErrors.push({ url, error: err.message });
+                if (err.message.includes("401") || err.message.includes("402")) break;
             }
         }
 
-        if (!response) {
+        if (true) {
             try {
-                const errLog = `--- GENERATION ERROR AT ${new Date().toISOString()} ---\n` +
-                               `Last Error: ${lastError}\n` +
-                               `Payload Attempted: ${JSON.stringify(payload, null, 2)}\n\n`;
+                const errLog = `--- ERROR AT ${new Date().toISOString()} ---\nLast Error: ${lastError}\nAttempts: ${JSON.stringify(allErrors)}\nPayload: ${JSON.stringify(payload)}\n\n`;
                 fs.appendFileSync('deapi_generation_debug.log', errLog);
             } catch (e) {}
             throw new Error(`Todos os endpoints deAPI falharam. Último erro: ${lastError}`);
         }
-
-        const data = await response.json();
-        console.log(`[deAPI] Success using endpoint: ${successUrl}. Response:`, JSON.stringify(data));
-        
-        try {
-            const genLog = `--- GENERATION SUCCESS AT ${new Date().toISOString()} ---\n` +
-                           `Endpoint: ${successUrl}\n` +
-                           `Payload Sent: ${JSON.stringify(payload, null, 2)}\n` +
-                           `Response Received: ${JSON.stringify(data, null, 2)}\n\n`;
-            fs.appendFileSync('deapi_generation_debug.log', genLog);
-        } catch (e) {}
-        
-        res.json(data);
     } catch (e) {
         console.error("deAPI Video error:", e);
         
